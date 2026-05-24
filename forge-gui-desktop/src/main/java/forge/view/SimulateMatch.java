@@ -11,6 +11,7 @@ import forge.LobbyPlayer;
 import forge.deck.Deck;
 import forge.deck.DeckGroup;
 import forge.deck.io.DeckSerializer;
+import forge.game.BattleboxConfig;
 import forge.game.Game;
 import forge.game.GameEndReason;
 import forge.game.GameLogEntry;
@@ -117,13 +118,7 @@ public class SimulateMatch {
                 String name = TextUtil.concatNoSpace("Ai(", String.valueOf(i), ")-", d.getName());
                 sb.append(name);
 
-                RegisteredPlayer rp;
-
-                if (type.equals(GameType.Commander)) {
-                    rp = RegisteredPlayer.forCommander(d);
-                } else {
-                    rp = new RegisteredPlayer(d);
-                }
+                RegisteredPlayer rp = registeredPlayerForDeck(d, type);
                 rp.setPlayer(GamePlayerUtil.createAiPlayer(name, i - 1));
                 pp.add(rp);
                 i++;
@@ -346,8 +341,14 @@ public class SimulateMatch {
     private static Deck deckFromCommandLineParameter(String deckname, GameType type) {
         int dotpos = deckname.lastIndexOf('.');
         if (dotpos > 0 && dotpos == deckname.length() - 4) {
-            String baseDir = type.equals(GameType.Commander) ?
-                    ForgeConstants.DECK_COMMANDER_DIR : ForgeConstants.DECK_CONSTRUCTED_DIR;
+            File directFile = new File(deckname);
+            if (directFile.exists()) {
+                return DeckSerializer.fromFile(directFile);
+            }
+
+            String baseDir = type.equals(GameType.Commander) ? ForgeConstants.DECK_COMMANDER_DIR
+                    : type.equals(GameType.Battlebox) ? ForgeConstants.DECK_BATTLEBOX_DIR
+                    : ForgeConstants.DECK_CONSTRUCTED_DIR;
 
             File f = new File(baseDir + deckname);
             if (!f.exists()) {
@@ -362,11 +363,31 @@ public class SimulateMatch {
         // Add other game types here...
         if (type.equals(GameType.Commander)) {
             deckStore = FModel.getDecks().getCommander();
+        } else if (type.equals(GameType.Battlebox)) {
+            deckStore = FModel.getDecks().getBattlebox();
         } else {
             deckStore = FModel.getDecks().getConstructed();
         }
 
         return deckStore.get(deckname);
+    }
+
+    private static RegisteredPlayer registeredPlayerForDeck(final Deck deck, final GameType type) {
+        final RegisteredPlayer rp = type.equals(GameType.Commander)
+                ? RegisteredPlayer.forCommander(deck)
+                : new RegisteredPlayer(deck);
+
+        if (type.equals(GameType.Battlebox)) {
+            final BattleboxConfig config = BattleboxConfig.fromDeck(deck);
+            rp.setStartingLife(config.getStartingLife());
+            rp.setStartingHand(config.getStartingHandSize());
+            rp.setMaxHand(config.getMaxHandSize());
+            if (BattleboxConfig.getLandStation(deck) != null) {
+                rp.setBattleboxLandStation(BattleboxConfig.getLandStation(deck).toFlatList());
+            }
+        }
+
+        return rp;
     }
 
 }

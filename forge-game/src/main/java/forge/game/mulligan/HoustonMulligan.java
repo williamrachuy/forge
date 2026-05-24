@@ -11,7 +11,7 @@ public class HoustonMulligan extends AbstractMulligan {
 
     @Override
     public int handSizeAfterNextMulligan() {
-        return player.getMaxHandSize();
+        return startingHandSize();
     }
 
     public HoustonMulligan(Player p, boolean firstMullFree) {

@@ -43,6 +43,7 @@ public class CardCollections {
     private IStorage<Deck> commander;
     private IStorage<Deck> commanderPrecons;
     private IStorage<Deck> oathbreaker;
+    private IStorage<Deck> battlebox;
     private IStorage<Deck> tinyLeaders;
     private IStorage<Deck> brawl;
     private IStorage<Deck> genetic;
@@ -123,6 +124,14 @@ public class CardCollections {
                     new DeckStorage(new File(ForgeConstants.DECK_OATHBREAKER_DIR), ForgeConstants.DECK_BASE_DIR));
         }
         return oathbreaker;
+    }
+
+    public IStorage<Deck> getBattlebox() {
+        if (battlebox == null) {
+            battlebox = new StorageImmediatelySerialized<>("Battlebox decks",
+                    new DeckStorage(new File(ForgeConstants.DECK_BATTLEBOX_DIR), ForgeConstants.DECK_BASE_DIR));
+        }
+        return battlebox;
     }
 
     public IStorage<Deck> getCommanderPrecons() {

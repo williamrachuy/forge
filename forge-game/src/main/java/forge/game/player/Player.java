@@ -87,6 +87,7 @@ public class Player extends GameEntity implements Comparable<Player> {
     private int lifeGainedTimesThisTurn;
     private int lifeGainedByTeamThisTurn;
     private int maxHandSize = 7;
+    private int baseMaxHandSize = 7;
     private int startingHandSize = 7;
     private boolean unlimitedHandSize = false;
     private Card lastDrawnCard;
@@ -152,10 +153,14 @@ public class Player extends GameEntity implements Comparable<Player> {
     private boolean tappedLandForManaThisTurn = false;
 
     private final Map<ZoneType, PlayerZone> zones = Maps.newEnumMap(ZoneType.class);
+    private PlayerZone sharedLibraryZone = null;
+    private PlayerZone sharedCommandZone = null;
+    private PlayerZone sharedGraveyardZone = null;
     private List<PlayerZone> extraZones = null;
 
     private final Map<Long, Integer> adjustLandPlays = Maps.newHashMap();
     private final Set<Long> adjustLandPlaysInfinite = Sets.newHashSet();
+    private int battleboxCommandLandsPlayedThisTurn;
     private Map<Card, Card> maingameCardsMap = Maps.newHashMap();
 
     private CardCollection currentPlanes = new CardCollection();
@@ -187,6 +192,7 @@ public class Player extends GameEntity implements Comparable<Player> {
     private final Map<Card, Integer> commanderCast = Maps.newHashMap();
     private final Map<Card, Integer> commanderDamage = Maps.newHashMap();
     private DetachedCardEffect commanderEffect = null;
+    private DetachedCardEffect battleboxLandStationEffect = null;
 
     private Card monarchEffect;
     private Card initiativeEffect;
@@ -1070,6 +1076,7 @@ public class Player extends GameEntity implements Comparable<Player> {
 
             if (toGrave != null) {
                 for (Card c : toGrave) {
+                    claimBattleboxSharedLibraryCard(c);
                     Card moved = getGame().getAction().moveToGraveyard(c, cause, params);
                     moved.setSurveilled(true);
                     numToGrave++;
@@ -1215,6 +1222,7 @@ public class Player extends GameEntity implements Comparable<Player> {
                 }
             }
 
+            claimBattleboxSharedLibraryCard(c);
             c = game.getAction().moveTo(hand, c, cause, params);
             drawn.add(c);
 
@@ -1287,15 +1295,99 @@ public class Player extends GameEntity implements Comparable<Player> {
      * Returns PlayerZone corresponding to the given zone of game.
      */
     public final PlayerZone getZone(final ZoneType zone) {
+        if (zone == ZoneType.Library && sharedLibraryZone != null) {
+            return sharedLibraryZone;
+        }
+        if (zone == ZoneType.Command && sharedCommandZone != null) {
+            return sharedCommandZone;
+        }
+        if (zone == ZoneType.Graveyard && sharedGraveyardZone != null) {
+            return sharedGraveyardZone;
+        }
         return zones.get(zone);
     }
     public void updateZoneForView(PlayerZone zone) {
-        view.updateZone(zone);
+        view.updateZone(zone, this);
+    }
+
+    public void setSharedLibraryZone(final PlayerZone zone) {
+        sharedLibraryZone = zone;
+        updateZoneForView(zone);
+    }
+
+    public void setSharedCommandZone(final PlayerZone zone) {
+        sharedCommandZone = zone;
+        updateZoneForView(zone);
+    }
+
+    public void setSharedGraveyardZone(final PlayerZone zone) {
+        sharedGraveyardZone = zone;
+        updateZoneForView(zone);
+    }
+
+    public boolean hasSharedLibrary() {
+        return sharedLibraryZone != null;
+    }
+
+    public boolean isSharedLibraryZone(final PlayerZone zone) {
+        return sharedLibraryZone != null && sharedLibraryZone == zone;
+    }
+
+    public boolean isBattleboxSharedLibraryCard(final Card card) {
+        return card != null && sharedLibraryZone != null && card.getZone() == sharedLibraryZone;
+    }
+
+    public void claimBattleboxSharedLibraryCard(final Card card) {
+        if (isBattleboxSharedLibraryCard(card) && (card.getOwner() != this || card.getController() != this)) {
+            card.clearControllers();
+            if (card.getOwner() != this) {
+                card.setOwner(this);
+            }
+        }
+    }
+
+    public boolean isBattleboxSharedLandStationCard(final Card card) {
+        return card != null && sharedCommandZone != null && card.getZone() == sharedCommandZone && card.isLand();
+    }
+
+    public void claimBattleboxSharedLandStationCard(final Card card) {
+        if (isBattleboxSharedLandStationCard(card) && (card.getOwner() != this || card.getController() != this)) {
+            card.clearControllers();
+            if (card.getOwner() != this) {
+                card.setOwner(this);
+            }
+        }
+    }
+
+    public boolean isSharedGraveyardZone(final PlayerZone zone) {
+        return sharedGraveyardZone != null && sharedGraveyardZone == zone;
+    }
+
+    public boolean isBattleboxSharedGraveyardCard(final Card card) {
+        return card != null && sharedGraveyardZone != null && card.getZone() == sharedGraveyardZone;
+    }
+
+    public void claimBattleboxSharedGraveyardCard(final Card card) {
+        if (isBattleboxSharedGraveyardCard(card) && (card.getOwner() != this || card.getController() != this)) {
+            card.clearControllers();
+            if (card.getOwner() != this) {
+                card.setOwner(this);
+            }
+        }
     }
 
     public void updateAllZonesForView() {
         for (PlayerZone zone : zones.values()) {
             updateZoneForView(zone);
+        }
+        if (sharedLibraryZone != null) {
+            updateZoneForView(sharedLibraryZone);
+        }
+        if (sharedCommandZone != null) {
+            updateZoneForView(sharedCommandZone);
+        }
+        if (sharedGraveyardZone != null) {
+            updateZoneForView(sharedGraveyardZone);
         }
     }
 
@@ -1373,24 +1465,31 @@ public class Player extends GameEntity implements Comparable<Player> {
 
     public CardCollectionView getCardsActivatableInExternalZones(boolean includeCommandZone) {
         final CardCollection cl = new CardCollection();
+        final Set<PlayerZone> seenZones = Collections.newSetFromMap(new IdentityHashMap<>());
 
-        cl.addAll(getZone(ZoneType.Graveyard).getCardsPlayerCanActivate(this));
-        cl.addAll(getZone(ZoneType.Exile).getCardsPlayerCanActivate(this));
-        cl.addAll(getZone(ZoneType.Library).getCardsPlayerCanActivate(this));
+        addCardsPlayerCanActivate(cl, seenZones, getZone(ZoneType.Graveyard));
+        addCardsPlayerCanActivate(cl, seenZones, getZone(ZoneType.Exile));
+        addCardsPlayerCanActivate(cl, seenZones, getZone(ZoneType.Library));
         if (includeCommandZone) {
-            cl.addAll(getZone(ZoneType.Command).getCardsPlayerCanActivate(this));
-            cl.addAll(getZone(ZoneType.Sideboard).getCardsPlayerCanActivate(this));
+            addCardsPlayerCanActivate(cl, seenZones, getZone(ZoneType.Command));
+            addCardsPlayerCanActivate(cl, seenZones, getZone(ZoneType.Sideboard));
         }
 
         //External activatables from all opponents
         for (final Player other : getAllOtherPlayers()) {
-            cl.addAll(other.getZone(ZoneType.Exile).getCardsPlayerCanActivate(this));
-            cl.addAll(other.getZone(ZoneType.Graveyard).getCardsPlayerCanActivate(this));
-            cl.addAll(other.getZone(ZoneType.Library).getCardsPlayerCanActivate(this));
-            cl.addAll(other.getZone(ZoneType.Hand).getCardsPlayerCanActivate(this));
+            addCardsPlayerCanActivate(cl, seenZones, other.getZone(ZoneType.Exile));
+            addCardsPlayerCanActivate(cl, seenZones, other.getZone(ZoneType.Graveyard));
+            addCardsPlayerCanActivate(cl, seenZones, other.getZone(ZoneType.Library));
+            addCardsPlayerCanActivate(cl, seenZones, other.getZone(ZoneType.Hand));
         }
         cl.addAll(getGame().getCardsPlayerCanActivateInStack());
         return cl;
+    }
+
+    private void addCardsPlayerCanActivate(final CardCollection cards, final Set<PlayerZone> seenZones, final PlayerZone zone) {
+        if (zone != null && seenZones.add(zone)) {
+            cards.addAll(zone.getCardsPlayerCanActivate(this));
+        }
     }
 
     public final CardCollectionView getAllCards() {
@@ -1577,6 +1676,7 @@ public class Player extends GameEntity implements Comparable<Player> {
         }
 
         for (Card m : milled) {
+            claimBattleboxSharedLibraryCard(m);
             Card moved = game.getAction().moveTo(destination, m, sa, params);
             moved.setMilled(true);
 
@@ -1627,6 +1727,12 @@ public class Player extends GameEntity implements Comparable<Player> {
     }
 
     public final Card playLand(final Card land, SpellAbility cause) {
+        final ZoneType originZone = land.getZone() == null ? null : land.getZone().getZoneType();
+        final boolean battleboxSharedStationLand = game.getRules().hasAppliedVariant(GameType.Battlebox)
+                && isBattleboxSharedLandStationCard(land);
+        if (battleboxSharedStationLand) {
+            claimBattleboxSharedLandStationCard(land);
+        }
         land.setController(this, 0);
         if (land.isFaceDown()) {
             land.turnFaceUp(null);
@@ -1648,6 +1754,9 @@ public class Player extends GameEntity implements Comparable<Player> {
 
         game.getStack().unfreezeStack();
         addLandPlayedThisTurn();
+        if (originZone == ZoneType.Command && battleboxSharedStationLand) {
+            battleboxCommandLandsPlayedThisTurn++;
+        }
 
         // play a sound
         game.fireEvent(new GameEventLandPlayed(PlayerView.get(this), CardView.get(c)));
@@ -1673,6 +1782,10 @@ public class Player extends GameEntity implements Comparable<Player> {
             final Zone zone = game.getZoneOf(land);
             if (zone != null && (zone.is(ZoneType.Battlefield) || (!zone.is(ZoneType.Hand) && !mayPlay
                     && (landSa == null || !landSa.isAlternativeCost(AlternativeCost.Mayhem))))) {
+                return false;
+            }
+            if (zone != null && zone.is(ZoneType.Command) && game.getRules().hasAppliedVariant(GameType.Battlebox)
+                    && isBattleboxSharedLandStationCard(land) && battleboxCommandLandsPlayedThisTurn >= 1) {
                 return false;
             }
         }
@@ -2208,6 +2321,20 @@ public class Player extends GameEntity implements Comparable<Player> {
         return maxHandSize;
     }
     public final void setMaxHandSize(int size) {
+        baseMaxHandSize = size;
+        setCurrentMaxHandSize(size);
+    }
+    public final int getBaseMaxHandSize() {
+        return baseMaxHandSize;
+    }
+    public final void setBaseMaxHandSize(int size) {
+        baseMaxHandSize = size;
+        setCurrentMaxHandSize(size);
+    }
+    public final void setMaxHandSizeFromStaticEffect(int size) {
+        setCurrentMaxHandSize(size);
+    }
+    private void setCurrentMaxHandSize(int size) {
         if (maxHandSize == size) { return; }
         maxHandSize = size;
         view.updateMaxHandSize(this);
@@ -2242,6 +2369,7 @@ public class Player extends GameEntity implements Comparable<Player> {
     }
     public final void resetLandsPlayedThisTurn() {
         landsPlayedThisTurn = 0;
+        battleboxCommandLandsPlayedThisTurn = 0;
         view.updateNumLandThisTurn(this);
     }
     public final void setLandsPlayedThisTurn(int num) {
@@ -2969,6 +3097,10 @@ public class Player extends GameEntity implements Comparable<Player> {
             this.addCommander(cmd);
         }
 
+        if (game.getRules().hasAppliedVariant(GameType.Battlebox)) {
+            createBattleboxLandStationEffect();
+        }
+
         // Conspiracies
         for (IPaperCard cp : registeredPlayer.getConspiracies()) {
             Card conspire = Card.fromPaperCard(cp, this);
@@ -3175,6 +3307,19 @@ public class Player extends GameEntity implements Comparable<Player> {
         eff.addStaticAbility(stAb);
 
         return eff;
+    }
+
+    public void createBattleboxLandStationEffect() {
+        PlayerZone com = getZone(ZoneType.Command);
+        if (this.battleboxLandStationEffect != null) {
+            com.remove(this.battleboxLandStationEffect);
+        }
+
+        DetachedCardEffect eff = new DetachedCardEffect(this, "Battlebox Land Station Effect");
+        String mayPlayStationLand = "Mode$ Continuous | EffectZone$ Command | MayPlay$ True | Affected$ Land | AffectedZone$ Command";
+        eff.addStaticAbility(mayPlayStationLand);
+        this.battleboxLandStationEffect = eff;
+        com.add(eff);
     }
 
     public void createCommanderEffect() {
@@ -3411,7 +3556,7 @@ public class Player extends GameEntity implements Comparable<Player> {
     }
 
     public String getMonarchSet() {
-        return monarchEffect == null ? monarchEffect.getSetCode() : null;
+        return monarchEffect == null ? null : monarchEffect.getSetCode();
     }
 
     public void createMonarchEffect(final String set) {

@@ -60,6 +60,7 @@ public class DeckFileHeader {
     private final Set<String> tags;
     private final HashMap<String, String> draftNotes;
     private final List<String> keyCards;
+    private final HashMap<String, String> metadata;
 
     private final boolean intendedForAi;
     private final String aiHints;
@@ -73,6 +74,7 @@ public class DeckFileHeader {
     }
 
     public DeckFileHeader(final FileSection kvPairs) {
+        this.metadata = new HashMap<>(kvPairs.asMap());
         this.name = kvPairs.get(DeckFileHeader.NAME);
         this.comment = kvPairs.get(DeckFileHeader.COMMENT);
         this.deckType = DeckFormat.smartValueOf(kvPairs.get(DeckFileHeader.DECK_TYPE), DeckFormat.Constructed);
@@ -146,5 +148,9 @@ public class DeckFileHeader {
 
     public final List<String> getKeyCards() {
         return keyCards;
+    }
+
+    public final HashMap<String, String> getMetadata() {
+        return metadata;
     }
 }

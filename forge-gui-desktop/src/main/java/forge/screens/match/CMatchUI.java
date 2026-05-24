@@ -25,6 +25,7 @@ import java.util.*;
 import java.util.List;
 import java.util.Map.Entry;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import javax.swing.JCheckBoxMenuItem;
 import javax.swing.JMenu;
 import javax.swing.JOptionPane;
@@ -43,11 +44,13 @@ import forge.LobbyPlayer;
 import forge.Singletons;
 import forge.StaticData;
 import forge.ai.GameState;
+import forge.ai.llm.UltronAdvisor;
 import forge.card.CardStateName;
 import forge.control.KeyboardShortcuts;
 import forge.deck.CardPool;
 import forge.deck.Deck;
 import forge.deckchooser.FDeckViewer;
+import forge.game.Game;
 import forge.game.GameEntityView;
 import forge.game.GameView;
 import forge.game.card.Card;
@@ -157,6 +160,7 @@ public final class CMatchUI
     private final CMatchUIMenus menus = new CMatchUIMenus(this);
     private final Map<EDocID, IVDoc<? extends ICDoc>> myDocs;
     private final TargetingOverlay targetingOverlay = new TargetingOverlay(this);
+    private final UltronChatDialog ultronChatDialog = new UltronChatDialog(this);
 
     private FCollectionView<PlayerView> sortedPlayers;
     private final Map<String, String> avatarImages = new HashMap<>();
@@ -175,8 +179,10 @@ public final class CMatchUI
     private final CLog cLog = new CLog(this);
     private final CPrompt cPrompt = new CPrompt(this);
     private final CStack cStack = new CStack(this);
+    private final Consumer<UltronAdvisor.StatusEvent> ultronStatusListener = this::onUltronStatus;
     private int nextNotifiableStackIndex = 0;
     private String lastPromptMessage = "";
+    private Game lastUltronChatGame;
 
     public CMatchUI() {
         this.view = new VMatchUI(this);
@@ -197,6 +203,7 @@ public final class CMatchUI
         this.myDocs.put(EDocID.REPORT_LOG, cLog.getView());
         this.myDocs.put(EDocID.DEV_MODE, getCDev().getView());
         this.myDocs.put(EDocID.BUTTON_DOCK, getCDock().getView());
+        UltronAdvisor.get().addStatusListener(ultronStatusListener);
     }
 
     private void registerDocs() {
@@ -226,6 +233,7 @@ public final class CMatchUI
         gameView0 = getGameView(); //ensure updated game view used for below logic
         if (gameView0 == null) { return; }
 
+        updateLastUltronChatGame(gameView0.getGame());
         cDetailPicture.setGameView(gameView0);
         screen.setTabCaption(gameView0.getTitle());
         refreshAllViews();
@@ -314,6 +322,33 @@ public final class CMatchUI
         final Deck deck = getGameView().getDeck(getCurrentPlayer());
         if (deck != null) {
             FDeckViewer.show(deck);
+        }
+    }
+
+    public void showUltronChat() {
+        ultronChatDialog.show();
+    }
+
+    Game getUltronChatGame() {
+        GameView gameView = getGameView();
+        if (gameView != null) {
+            Game game = gameView.getGame();
+            if (UltronAdvisor.get().hasUltronPlayer(game)) {
+                lastUltronChatGame = game;
+                return game;
+            }
+        }
+        return lastUltronChatGame;
+    }
+
+    private void updateLastUltronChatGame(final Game game) {
+        if (game == null) {
+            return;
+        }
+        if (UltronAdvisor.get().hasUltronPlayer(game)) {
+            lastUltronChatGame = game;
+        } else {
+            lastUltronChatGame = null;
         }
     }
 
@@ -1084,6 +1119,22 @@ public final class CMatchUI
 
     public String getPromptMessage() {
         return lastPromptMessage;
+    }
+
+    private void onUltronStatus(final UltronAdvisor.StatusEvent event) {
+        if (event == null) {
+            return;
+        }
+        GameView currentGame = getGameView();
+        if ((currentGame == null || currentGame.getGame() != event.game()) && lastUltronChatGame != event.game()) {
+            return;
+        }
+        FThreads.invokeInEdtLater(() -> {
+            GameView latestGame = getGameView();
+            if ((latestGame != null && latestGame.getGame() == event.game()) || lastUltronChatGame == event.game()) {
+                cPrompt.setUltronStatus(event.active(), event.message());
+            }
+        });
     }
 
     @Override

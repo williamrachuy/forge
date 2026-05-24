@@ -62,6 +62,12 @@ public class DeckSerializer {
         if (!d.getKeyCards().isEmpty()) {
             out.add(TextUtil.concatNoSpace(DeckFileHeader.KEY_CARDS, "=", StringUtils.join(d.getKeyCards(), ";")));
         }
+        for (Entry<String, String> metadata : d.getMetadata().entrySet()) {
+            if (isSerializedMetadataKey(metadata.getKey())) {
+                continue;
+            }
+            out.add(TextUtil.concatNoSpace(metadata.getKey(), "=", metadata.getValue()));
+        }
 
         for (Entry<DeckSection, CardPool> s : d) {
             if(s.getValue().isEmpty())
@@ -103,10 +109,20 @@ public class DeckSerializer {
         d.setAiHints(dh.getAiHints());
         d.getTags().addAll(dh.getTags());
         d.setDraftNotes(dh.getDraftNotes());
+        d.setMetadata(dh.getMetadata());
         for (String keyCard : dh.getKeyCards()) {
             d.addKeyCard(keyCard);
         }
         d.setDeferredSections(sections);
         return d;
+    }
+
+    private static boolean isSerializedMetadataKey(final String key) {
+        return DeckFileHeader.NAME.equalsIgnoreCase(key)
+                || DeckFileHeader.COMMENT.equalsIgnoreCase(key)
+                || DeckFileHeader.TAGS.equalsIgnoreCase(key)
+                || DeckFileHeader.AI_HINTS.equalsIgnoreCase(key)
+                || DeckFileHeader.DRAFT_NOTES.equalsIgnoreCase(key)
+                || DeckFileHeader.KEY_CARDS.equalsIgnoreCase(key);
     }
 }

@@ -23,6 +23,7 @@ import com.google.common.collect.Sets;
 import forge.ai.AiCardMemory.MemorySet;
 import forge.ai.ability.ChangeZoneAi;
 import forge.ai.ability.LearnAi;
+import forge.ai.llm.UltronAdvisor;
 import forge.ai.simulation.GameStateEvaluator;
 import forge.ai.simulation.SpellAbilityPicker;
 import forge.card.CardStateName;
@@ -1379,22 +1380,55 @@ public class AiController {
         if (landsWannaPlay != null) {
             landsWannaPlay = filterLandsToPlay(landsWannaPlay);
             if (landsWannaPlay != null && !landsWannaPlay.isEmpty()) {
-                // TODO search for other land it might want to play?
-                Card land = chooseBestLandToPlay(landsWannaPlay);
-                if (land != null && (!game.getPhaseHandler().is(PhaseType.MAIN1) || !isSafeToHoldLandDropForMain2(land))) {
-                    final List<SpellAbility> abilities = land.getAllPossibleAbilities(player, true);
-                    // skip non Land Abilities
-                    abilities.removeIf(sa -> !sa.isLandAbility());
-
-                    if (!abilities.isEmpty()) {
-                        // TODO extend this logic to evaluate MDFC with both sides land
-                        return abilities;
+                if (UltronAdvisor.get().isEnabledFor(player)) {
+                    List<SpellAbility> landAbilities = getLandAbilitiesToPlay(landsWannaPlay);
+                    if (!landAbilities.isEmpty()) {
+                        UltronAdvisor.Decision decision = UltronAdvisor.get().chooseSpellAbility(game, player, landAbilities, memory);
+                        if (decision.hasAdvice()) {
+                            if (decision.getSpellAbility() != null) {
+                                return singleSpellAbilityList(decision.getSpellAbility());
+                            }
+                        } else {
+                            SpellAbility fallbackLand = chooseDefaultLandAbility(landsWannaPlay);
+                            if (fallbackLand != null) {
+                                return singleSpellAbilityList(fallbackLand);
+                            }
+                        }
                     }
+                }
+
+                // TODO search for other land it might want to play?
+                SpellAbility fallbackLand = chooseDefaultLandAbility(landsWannaPlay);
+                if (fallbackLand != null) {
+                    return singleSpellAbilityList(fallbackLand);
                 }
             }
         }
 
         return singleSpellAbilityList(getSpellAbilityToPlay());
+    }
+
+    private List<SpellAbility> getLandAbilitiesToPlay(CardCollection landsWannaPlay) {
+        List<SpellAbility> result = Lists.newArrayList();
+        for (Card land : landsWannaPlay) {
+            if (land == null) {
+                continue;
+            }
+            final List<SpellAbility> abilities = land.getAllPossibleAbilities(player, true);
+            abilities.removeIf(sa -> !sa.isLandAbility());
+            result.addAll(abilities);
+        }
+        return result;
+    }
+
+    private SpellAbility chooseDefaultLandAbility(CardCollection landsWannaPlay) {
+        Card land = chooseBestLandToPlay(landsWannaPlay);
+        if (land == null || (game.getPhaseHandler().is(PhaseType.MAIN1) && isSafeToHoldLandDropForMain2(land))) {
+            return null;
+        }
+        final List<SpellAbility> abilities = land.getAllPossibleAbilities(player, true);
+        abilities.removeIf(sa -> !sa.isLandAbility());
+        return abilities.isEmpty() ? null : abilities.get(0);
     }
 
     private boolean isSafeToHoldLandDropForMain2(Card landToPlay) {
@@ -1599,9 +1633,13 @@ public class AiController {
         // in case of infinite loop reset below would not be reached
         timeoutReached = false;
 
+        final UltronAdvisor ultronAdvisor = UltronAdvisor.get();
+        final boolean useUltronAdvisor = ultronAdvisor.isEnabledFor(player);
+
         FutureTask<SpellAbility> future = new FutureTask<>(() -> {
             //avoid ComputerUtil.aiLifeInDanger in loops as it slows down a lot.. call this outside loops will generally be fast...
             boolean isLifeInDanger = useLivingEnd && ComputerUtil.aiLifeInDanger(player, true, 0);
+            List<SpellAbility> ultronCandidates = useUltronAdvisor ? Lists.newArrayList() : null;
             for (final SpellAbility sa : ComputerUtilAbility.getOriginalAndAltCostAbilities(all, player)) {
                 // Don't add Counterspells to the "normal" playcard lookups
                 if (skipCounter && sa.getApi() == ApiType.Counter) {
@@ -1676,7 +1714,23 @@ public class AiController {
                 if (opinion != AiPlayDecision.WillPlay)
                     continue;
 
+                if (ultronCandidates != null) {
+                    ultronCandidates.add(sa);
+                    if (ultronCandidates.size() >= ultronAdvisor.getCandidateLimit()) {
+                        break;
+                    }
+                    continue;
+                }
+
                 return sa;
+            }
+
+            if (ultronCandidates != null && !ultronCandidates.isEmpty()) {
+                UltronAdvisor.Decision decision = ultronAdvisor.chooseSpellAbility(game, player, ultronCandidates, memory);
+                if (decision.hasAdvice()) {
+                    return decision.getSpellAbility();
+                }
+                return ultronCandidates.get(0);
             }
 
             return null;

@@ -150,6 +150,10 @@ public class FDeckChooser extends JPanel implements IDecksComboBoxListener {
         }
     }
 
+    private void updateBattlebox() {
+        updateDecks(DeckProxy.getAllBattleboxDecks(), ItemManagerConfig.CONSTRUCTED_DECKS);
+    }
+
     private void updateColors(Predicate<PaperCard> formatFilter) {
         lstDecks.setAllowMultipleSelections(true);
 
@@ -546,6 +550,9 @@ public class FDeckChooser extends JPanel implements IDecksComboBoxListener {
         switch (deckType) {
             case CUSTOM_DECK:
                 updateCustom();
+                break;
+            case BATTLEBOX_DECK:
+                updateBattlebox();
                 break;
             case COMMANDER_DECK:
                 updateCustom();

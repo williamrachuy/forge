@@ -19,6 +19,7 @@ import forge.game.player.PlayerController;
 import forge.game.player.RegisteredPlayer;
 import forge.game.trigger.Trigger;
 import forge.game.zone.PlayerZone;
+import forge.game.zone.SharedPlayerZone;
 import forge.game.zone.ZoneType;
 import forge.item.PaperCard;
 import forge.util.Localizer;
@@ -199,6 +200,10 @@ public class Match {
 
     private static void preparePlayerZone(Player player, final ZoneType zoneType, CardPool section, boolean canRandomFoil) {
         PlayerZone library = player.getZone(zoneType);
+        library.setCards(createCardsForZone(player, section, canRandomFoil));
+    }
+
+    private static List<Card> createCardsForZone(Player player, CardPool section, boolean canRandomFoil) {
         List<Card> newLibrary = new ArrayList<>();
         for (final Entry<PaperCard, Integer> stackOfCards : section) {
             final PaperCard cp = stackOfCards.getKey();
@@ -214,7 +219,61 @@ public class Match {
                 newLibrary.add(card);
             }
         }
-        library.setCards(newLibrary);
+        return newLibrary;
+    }
+
+    private static void prepareBattleboxSharedLibrary(final FCollectionView<Player> players, final List<RegisteredPlayer> playersConditions) {
+        if (players.isEmpty() || playersConditions.isEmpty()) {
+            return;
+        }
+        final Player host = players.get(0);
+        final SharedPlayerZone sharedLibrary = new SharedPlayerZone(ZoneType.Library, host);
+        for (final Player player : players) {
+            sharedLibrary.addPlayer(player);
+            player.setSharedLibraryZone(sharedLibrary);
+        }
+        final RegisteredPlayer battleboxSource = playersConditions.get(0);
+        final BattleboxConfig config = BattleboxConfig.fromDeck(battleboxSource.getDeck());
+        sharedLibrary.setCards(createCardsForZone(host, config.getSharedLibrary(battleboxSource.getDeck(), players.size()),
+                battleboxSource.useRandomFoil()));
+        sharedLibrary.shuffle();
+    }
+
+    private static void prepareBattleboxSharedCommand(final FCollectionView<Player> players, final List<RegisteredPlayer> playersConditions) {
+        if (players.isEmpty() || playersConditions.isEmpty()) {
+            return;
+        }
+        final Player host = players.get(0);
+        final SharedPlayerZone sharedCommand = new SharedPlayerZone(ZoneType.Command, host);
+        for (final Player player : players) {
+            sharedCommand.addPlayer(player);
+            player.setSharedCommandZone(sharedCommand);
+        }
+
+        final RegisteredPlayer battleboxSource = playersConditions.get(0);
+        final BattleboxConfig config = BattleboxConfig.fromDeck(battleboxSource.getDeck());
+        final CardPool landStation = config.getLandStation(battleboxSource.getDeck(), players.size());
+        if (landStation == null) {
+            return;
+        }
+        for (final PaperCard pc : landStation.toFlatList()) {
+            final Card stationLand = Card.fromPaperCard(pc, host);
+            stationLand.setCollectible(true);
+            stationLand.setStartsGameInPlay(true);
+            sharedCommand.add(stationLand);
+        }
+    }
+
+    private static void prepareBattleboxSharedGraveyard(final FCollectionView<Player> players) {
+        if (players.isEmpty()) {
+            return;
+        }
+        final Player host = players.get(0);
+        final SharedPlayerZone sharedGraveyard = new SharedPlayerZone(ZoneType.Graveyard, host);
+        for (final Player player : players) {
+            sharedGraveyard.addPlayer(player);
+            player.setSharedGraveyardZone(sharedGraveyard);
+        }
     }
 
     private void prepareAllZones(final Game game) {
@@ -231,7 +290,8 @@ public class Match {
         final List<RegisteredPlayer> playersConditions = game.getMatch().getPlayers();
 
         boolean isFirstGame = gameOutcomes.isEmpty();
-        boolean canSideBoard = !isFirstGame && rules.getGameType().isSideboardingAllowed();
+        final boolean isBattlebox = rules.hasAppliedVariant(GameType.Battlebox);
+        boolean canSideBoard = !isFirstGame && rules.getGameType().isSideboardingAllowed() && !isBattlebox;
         // Only allow this if feature flag is on AND for certain match types
         boolean sideboardForAIs = rules.getSideboardForAI() &&
             rules.getGameType().getDeckFormat().equals(DeckFormat.Constructed);
@@ -245,6 +305,12 @@ public class Match {
                     break;
                 }
             }
+        }
+
+        if (isBattlebox) {
+            prepareBattleboxSharedLibrary(players, playersConditions);
+            prepareBattleboxSharedCommand(players, playersConditions);
+            prepareBattleboxSharedGraveyard(players);
         }
 
         for (int i = 0; i < playersConditions.size(); i++) {
@@ -313,8 +379,10 @@ public class Match {
                 }
             }
 
-            preparePlayerZone(player, ZoneType.Library, myDeck.getLeft().getMain(), psc.useRandomFoil());
-            if (myDeck.getLeft().has(DeckSection.Sideboard)) {
+            if (!isBattlebox) {
+                preparePlayerZone(player, ZoneType.Library, myDeck.getLeft().getMain(), psc.useRandomFoil());
+            }
+            if (!isBattlebox && myDeck.getLeft().has(DeckSection.Sideboard)) {
                 preparePlayerZone(player, ZoneType.Sideboard, myDeck.getLeft().get(DeckSection.Sideboard), psc.useRandomFoil());
 
                 player.assignCompanion(game, person);
@@ -322,7 +390,9 @@ public class Match {
 
             player.initVariantsZones(psc);
 
-            player.shuffle(null);
+            if (!isBattlebox) {
+                player.shuffle(null);
+            }
 
             if (isFirstGame) {
                 Map<DeckSection, List<? extends PaperCard>> cardsComplained = player.getController().complainCardsCantPlayWell(myDeck.getLeft());

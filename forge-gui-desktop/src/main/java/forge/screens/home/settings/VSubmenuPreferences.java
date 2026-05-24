@@ -73,6 +73,7 @@ public enum VSubmenuPreferences implements IVSubmenu<CSubmenuPreferences> {
     private final JCheckBox cbAnteMatchRarity = new OptionsCheckBox(localizer.getMessage("cbAnteMatchRarity"));
     private final JCheckBox cbAnteIncludeBasicLands = new OptionsCheckBox(localizer.getMessage("cbAnteIncludeBasicLands"));
     private final JCheckBox cbEnableAICheats = new OptionsCheckBox(localizer.getMessage("cbEnableAICheats"));
+    private final JCheckBox cbUltronSpeech = new OptionsCheckBox(localizer.getMessage("cbUltronSpeech"));
     private final JCheckBox cbManaBurn = new OptionsCheckBox(localizer.getMessage("cbManaBurn"));
     private final JCheckBox cbOrderCombatants = new OptionsCheckBox(localizer.getMessage("cbOrderCombatants"));
     private final JCheckBox cbManaLostPrompt = new OptionsCheckBox(localizer.getMessage("cbManaLostPrompt"));
@@ -148,6 +149,8 @@ public enum VSubmenuPreferences implements IVSubmenu<CSubmenuPreferences> {
     private final FComboBoxPanel<String> cbpAiProfiles = new FComboBoxPanel<>(localizer.getMessage("cbpAiProfiles")+":");
     private final FComboBoxPanel<String> cbpAiSideboardingMode = new FComboBoxPanel<>(localizer.getMessage("cbpAiSideboardingMode")+":");
     private final FComboBoxPanel<String> cbpAiTimeout = new FComboBoxPanel<>(localizer.getMessage("cbAITimeout")+":");
+    private final FComboBoxPanel<String> cbpUltronDeepSeekModel = new FComboBoxPanel<>(localizer.getMessage("cbpUltronDeepSeekModel")+":");
+    private final FComboBoxPanel<String> cbpUltronReasoningEffort = new FComboBoxPanel<>(localizer.getMessage("cbpUltronReasoningEffort")+":");
     private final FComboBoxPanel<String> cbpStackAdditions = new FComboBoxPanel<>(localizer.getMessage("cbpStackAdditions")+":");
     private final FComboBoxPanel<String> cbpLandPlayed = new FComboBoxPanel<>(localizer.getMessage("cbpLandPlayed")+":");
     private final FComboBoxPanel<String> cbpDisplayCurrentCardColors = new FComboBoxPanel<>(localizer.getMessage("cbpDisplayCurrentCardColors")+":");
@@ -266,6 +269,12 @@ public enum VSubmenuPreferences implements IVSubmenu<CSubmenuPreferences> {
 
         pnlPrefs.add(cbpAiTimeout, titleConstraints);
         pnlPrefs.add(new NoteLabel(localizer.getMessage("nlAITimeout")), descriptionConstraints);
+
+        pnlPrefs.add(cbpUltronDeepSeekModel, comboBoxConstraints);
+        pnlPrefs.add(new NoteLabel(localizer.getMessage("nlpUltronDeepSeekModel")), descriptionConstraints);
+
+        pnlPrefs.add(cbpUltronReasoningEffort, comboBoxConstraints);
+        pnlPrefs.add(new NoteLabel(localizer.getMessage("nlpUltronReasoningEffort")), descriptionConstraints);
 
         pnlPrefs.add(cbOrderHand, titleConstraints);
         pnlPrefs.add(new NoteLabel(localizer.getMessage("nlOrderHand")), descriptionConstraints);
@@ -476,6 +485,9 @@ public enum VSubmenuPreferences implements IVSubmenu<CSubmenuPreferences> {
 
         pnlPrefs.add(cbEnableSounds, titleConstraints);
         pnlPrefs.add(new NoteLabel(localizer.getMessage("nlEnableSounds")), descriptionConstraints);
+
+        pnlPrefs.add(cbUltronSpeech, titleConstraints);
+        pnlPrefs.add(new NoteLabel(localizer.getMessage("nlUltronSpeech")), descriptionConstraints);
 
         pnlPrefs.add(cbpSoundSets, comboBoxConstraints);
         pnlPrefs.add(new NoteLabel(localizer.getMessage("nlpSoundSets")), descriptionConstraints);
@@ -732,6 +744,11 @@ public enum VSubmenuPreferences implements IVSubmenu<CSubmenuPreferences> {
     }
 
     /** @return {@link javax.swing.JCheckBox} */
+    public JCheckBox getCbUltronSpeech() {
+        return cbUltronSpeech;
+    }
+
+    /** @return {@link javax.swing.JCheckBox} */
     public JCheckBox getCbEnableUnknownCards() {
         return cbEnableUnknownCards;
     }
@@ -855,6 +872,14 @@ public enum VSubmenuPreferences implements IVSubmenu<CSubmenuPreferences> {
 
     public FComboBoxPanel<String> getAiTimeoutComboBox() {
         return cbpAiTimeout;
+    }
+
+    public FComboBoxPanel<String> getUltronDeepSeekModelComboBox() {
+        return cbpUltronDeepSeekModel;
+    }
+
+    public FComboBoxPanel<String> getUltronReasoningEffortComboBox() {
+        return cbpUltronReasoningEffort;
     }
 
     public FComboBoxPanel<String> getCbpStackAdditionsComboBoxPanel() {

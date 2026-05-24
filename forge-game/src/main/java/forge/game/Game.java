@@ -211,17 +211,27 @@ public class Game {
         lastStateBattlefield.clear();
         lastStateGraveyard.clear();
         Map<Integer, Card> cachedMap = Maps.newHashMap();
+        Set<PlayerZone> seenGraveyardZones = Collections.newSetFromMap(new IdentityHashMap<>());
         for (final Player p : getPlayers()) {
             lastStateBattlefield.addAll(p.getZone(ZoneType.Battlefield).getLKICopy(cachedMap));
-            lastStateGraveyard.addAll(p.getZone(ZoneType.Graveyard).getLKICopy(cachedMap));
+            final PlayerZone graveyard = p.getZone(ZoneType.Graveyard);
+            if (seenGraveyardZones.add(graveyard)) {
+                lastStateGraveyard.addAll(graveyard.getLKICopy(cachedMap));
+            }
         }
     }
 
     public CardCollectionView copyLastState(ZoneType type) {
         CardCollection result = new CardCollection();
         Map<Integer, Card> cachedMap = Maps.newHashMap();
+        Set<PlayerZone> seenSharedZones = type == ZoneType.Library || type == ZoneType.Command || type == ZoneType.Graveyard
+                ? Collections.newSetFromMap(new IdentityHashMap<>()) : null;
         for (final Player p : getPlayers()) {
-            result.addAll(p.getZone(type).getLKICopy(cachedMap));
+            final PlayerZone zone = p.getZone(type);
+            if (seenSharedZones != null && !seenSharedZones.add(zone)) {
+                continue;
+            }
+            result.addAll(zone.getLKICopy(cachedMap));
         }
         return result;
     }
@@ -344,7 +354,7 @@ public class Game {
             } else {
                 pl.setStartingLife(psc.getStartingLife());
             }
-            pl.setMaxHandSize(psc.getStartingHand());
+            pl.setMaxHandSize(psc.getMaxHand());
             pl.setStartingHandSize(psc.getStartingHand());
 
             if (psc.getManaShards() > 0) {
@@ -602,7 +612,12 @@ public class Game {
         }
 
         CardCollection cards = new CardCollection();
+        Set<Zone> seenSharedZones = zone == ZoneType.Library || zone == ZoneType.Command || zone == ZoneType.Graveyard
+                ? Collections.newSetFromMap(new IdentityHashMap<>()) : null;
         for (final Player p : getPlayers()) {
+            if (seenSharedZones != null && !seenSharedZones.add(p.getZone(zone))) {
+                continue;
+            }
             cards.addAll(p.getCardsIn(zone, false));
         }
         return cards;
@@ -733,14 +748,19 @@ public class Game {
     }
     // Allows visiting cards in game without allocating a temporary list.
     public void forEachCardInGame(Visitor<Card> visitor, boolean withSideboard) {
+        final Set<PlayerZone> seenLibraryZones = Collections.newSetFromMap(new IdentityHashMap<>());
+        final Set<PlayerZone> seenGraveyardZones = Collections.newSetFromMap(new IdentityHashMap<>());
+        final Set<PlayerZone> seenCommandZones = Collections.newSetFromMap(new IdentityHashMap<>());
         for (final Player player : getPlayers()) {
-            if (!visitor.visitAll(player.getZone(ZoneType.Graveyard).getCards())) {
+            final PlayerZone graveyard = player.getZone(ZoneType.Graveyard);
+            if (seenGraveyardZones.add(graveyard) && !visitor.visitAll(graveyard.getCards())) {
                 return;
             }
             if (!visitor.visitAll(player.getZone(ZoneType.Hand).getCards())) {
                 return;
             }
-            if (!visitor.visitAll(player.getZone(ZoneType.Library).getCards())) {
+            final PlayerZone library = player.getZone(ZoneType.Library);
+            if (seenLibraryZones.add(library) && !visitor.visitAll(library.getCards())) {
                 return;
             }
             if (!visitor.visitAll(player.getZone(ZoneType.Battlefield).getCards(false))) {
@@ -752,8 +772,17 @@ public class Game {
             if (!visitor.visitAll(player.getZone(ZoneType.Exile).getCards())) {
                 return;
             }
-            if (!visitor.visitAll(player.getCardsIn(ZoneType.PART_OF_COMMAND_ZONE))) {
+            final PlayerZone command = player.getZone(ZoneType.Command);
+            if (seenCommandZones.add(command) && !visitor.visitAll(command.getCards())) {
                 return;
+            }
+            for (final ZoneType commandZone : ZoneType.PART_OF_COMMAND_ZONE) {
+                if (commandZone == ZoneType.Command) {
+                    continue;
+                }
+                if (!visitor.visitAll(player.getZone(commandZone).getCards())) {
+                    return;
+                }
             }
             if (withSideboard && !visitor.visitAll(player.getZone(ZoneType.Sideboard).getCards())) {
                 return;

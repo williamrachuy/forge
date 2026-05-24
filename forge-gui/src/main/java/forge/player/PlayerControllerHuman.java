@@ -201,7 +201,9 @@ public class PlayerControllerHuman extends PlayerController implements IGameCont
     public SpellAbility getAbilityToPlay(final Card hostCard, final List<SpellAbility> abilities,
                                          final ITriggerEvent triggerEvent) {
         // make sure another human player can't choose opponents cards just because he might see them
-        if (triggerEvent != null && !hostCard.isInPlay() && !hostCard.getOwner().equals(player) &&
+        final boolean battleboxSharedAccessible = player.isBattleboxSharedGraveyardCard(hostCard)
+                || player.isBattleboxSharedLandStationCard(hostCard);
+        if (triggerEvent != null && !hostCard.isInPlay() && !battleboxSharedAccessible && !hostCard.getOwner().equals(player) &&
                 !hostCard.getController().equals(player) &&
                 // If player cast Shaman's Trance, they can play spells from any Graveyard (if other effects allow it to be cast)
                 (!player.hasKeyword("Shaman's Trance") || !hostCard.isInZone(ZoneType.Graveyard))) {
@@ -2819,6 +2821,24 @@ public class PlayerControllerHuman extends PlayerController implements IGameCont
             }
 
             player.setLife(life, null);
+        }
+
+        /*
+         * (non-Javadoc)
+         *
+         * @see forge.player.IDevModeCheats#becomeMonarch()
+         */
+        @Override
+        public void becomeMonarch() {
+            GameEntityViewMap<Player, PlayerView> gameCachePlayer = GameEntityView.getMap(getGame().getPlayers());
+
+            final PlayerView pv = getGui().oneOrNone(localizer.getMessage("lblBecomeMonarchForWhichPlayer"), gameCachePlayer.getTrackableKeys());
+            if (pv == null || !gameCachePlayer.containsKey(pv)) {
+                return;
+            }
+            final Player player = gameCachePlayer.get(pv);
+
+            getGame().getAction().invoke(() -> getGame().getAction().becomeMonarch(player, "CN2"));
         }
 
         /*

@@ -2,6 +2,10 @@
 
 pushd %~dp0
 
+set "_JAVA_OPTIONS="
+set "ULTRON_LEARNING_DIR=%USERPROFILE%\.forge\ultron-learning"
+set "ULTRON_TRACE_DIR=%ULTRON_LEARNING_DIR%\trace"
+
 java -version 1>nul 2>nul || (
    echo no java installed
    popd

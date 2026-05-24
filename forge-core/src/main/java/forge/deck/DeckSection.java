@@ -9,6 +9,7 @@ import java.util.function.Function;
 public enum DeckSection {
     Main("lblMainDeck", Validators.DECK_AND_SIDE_VALIDATOR),
     Sideboard("lblSideboard", Validators.DECK_AND_SIDE_VALIDATOR),
+    LandStation("lblLandStation", Validators.LAND_STATION_VALIDATOR),
     Commander("lblCommander", Validators.COMMANDER_VALIDATOR),
     Avatar("lblAvatar", Validators.AVATAR_VALIDATOR),
     Planes("lblPlanarDeck", Validators.PLANES_VALIDATOR),
@@ -91,6 +92,8 @@ public enum DeckSection {
             // Those will be matched later, in case (see `Deck::normalizeDeferredSections`)
             return !t.isConspiracy() && !t.isDungeon() && !t.isPhenomenon() && !t.isPlane() && !t.isScheme() && !t.isVanguard();
         };
+
+        static final Function<PaperCard, Boolean> LAND_STATION_VALIDATOR = card -> card.getRules().getType().isLand();
 
         static final Function<PaperCard, Boolean> COMMANDER_VALIDATOR = card -> {
             CardType t = card.getRules().getType();

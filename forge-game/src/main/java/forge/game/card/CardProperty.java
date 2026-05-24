@@ -174,7 +174,7 @@ public class CardProperty {
                 return false;
             }
         } else if (property.startsWith("YouCtrl")) {
-            if (!controller.equals(sourceController)) {
+            if (!controller.equals(sourceController) && !isBattleboxSharedZoneCardFor(card, sourceController)) {
                 return false;
             }
         } else if (property.startsWith("YourTeamCtrl")) {
@@ -182,10 +182,13 @@ public class CardProperty {
                 return false;
             }
         } else if (property.startsWith("YouDontCtrl")) {
-            if (controller.equals(sourceController)) {
+            if (controller.equals(sourceController) || isBattleboxSharedZoneCardFor(card, sourceController)) {
                 return false;
             }
         } else if (property.startsWith("OppCtrl")) {
+            if (isBattleboxSharedZoneCardFor(card, sourceController)) {
+                return false;
+            }
             if (!controller.getOpponents().contains(sourceController)) {
                 return false;
             }
@@ -282,24 +285,47 @@ public class CardProperty {
                 return false;
             }
         } else if (property.startsWith("YouOwn")) {
-            if (!card.getOwner().equals(sourceController)) {
+            if (!card.getOwner().equals(sourceController) && !isBattleboxSharedZoneCardFor(card, sourceController)) {
                 return false;
             }
         } else if (property.startsWith("YouDontOwn")) {
-            if (card.getOwner().equals(sourceController)) {
+            if (card.getOwner().equals(sourceController) || isBattleboxSharedZoneCardFor(card, sourceController)) {
                 return false;
             }
         } else if (property.startsWith("OppOwn")) {
-            if (!card.getOwner().getOpponents().contains(sourceController)) {
+            if (!card.getOwner().getOpponents().contains(sourceController) && !isBattleboxSharedGraveyardCardFor(card, sourceController)) {
                 return false;
             }
         } else if (property.equals("TargetedPlayerOwn")) {
-            if (!AbilityUtils.getDefinedPlayers(source, "TargetedPlayer", spellAbility).contains(card.getOwner())) {
+            final List<Player> targetedPlayers = AbilityUtils.getDefinedPlayers(source, "TargetedPlayer", spellAbility);
+            if (!targetedPlayers.contains(card.getOwner()) && targetedPlayers.stream().noneMatch(p -> p.isBattleboxSharedGraveyardCard(card) || p.isBattleboxSharedLibraryCard(card))) {
                 return false;
             }
         } else if (property.startsWith("OwnedBy")) {
             final String valid = property.substring(8);
-            if (!card.getOwner().isValid(valid, sourceController, source, spellAbility)) {
+            if (isBattleboxSharedZoneCardFor(card, sourceController)) {
+                boolean matchesSharedOwner = false;
+                List<Player> definedPlayers = null;
+                for (final Player player : game.getPlayersInTurnOrder()) {
+                    if (!player.isBattleboxSharedGraveyardCard(card) && !player.isBattleboxSharedLibraryCard(card)) {
+                        continue;
+                    }
+                    if (player.isValid(valid, sourceController, source, spellAbility)) {
+                        matchesSharedOwner = true;
+                        break;
+                    }
+                    if (definedPlayers == null) {
+                        definedPlayers = AbilityUtils.getDefinedPlayers(source, valid, spellAbility);
+                    }
+                    if (definedPlayers.contains(player)) {
+                        matchesSharedOwner = true;
+                        break;
+                    }
+                }
+                if (!matchesSharedOwner) {
+                    return false;
+                }
+            } else if (!card.getOwner().isValid(valid, sourceController, source, spellAbility)) {
                 final List<Player> lp = AbilityUtils.getDefinedPlayers(source, valid, spellAbility);
                 if (!lp.contains(card.getOwner())) {
                     return false;
@@ -307,7 +333,23 @@ public class CardProperty {
             }
         } else if (property.startsWith("ControlledBy")) {
             final String valid = property.substring(13);
-            if (!controller.isValid(valid, sourceController, source, spellAbility)) {
+            if (isBattleboxSharedZoneCardFor(card, sourceController)) {
+                boolean matchesSharedController = false;
+                for (final Player player : game.getPlayersInTurnOrder()) {
+                    if ((player.isBattleboxSharedGraveyardCard(card) || player.isBattleboxSharedLibraryCard(card))
+                            && player.isValid(valid, sourceController, source, spellAbility)) {
+                        matchesSharedController = true;
+                        break;
+                    }
+                }
+                if (!matchesSharedController) {
+                    final List<Player> lp = AbilityUtils.getDefinedPlayers(source, valid, spellAbility);
+                    matchesSharedController = lp.stream().anyMatch(p -> p.isBattleboxSharedGraveyardCard(card) || p.isBattleboxSharedLibraryCard(card));
+                }
+                if (!matchesSharedController) {
+                    return false;
+                }
+            } else if (!controller.isValid(valid, sourceController, source, spellAbility)) {
                 final List<Player> lp = AbilityUtils.getDefinedPlayers(source, valid, spellAbility);
                 if (!lp.contains(controller)) {
                     return false;
@@ -2113,5 +2155,13 @@ public class CardProperty {
             }
         }
         return match;
+    }
+
+    private static boolean isBattleboxSharedGraveyardCardFor(final Card card, final Player player) {
+        return player != null && player.isBattleboxSharedGraveyardCard(card);
+    }
+
+    private static boolean isBattleboxSharedZoneCardFor(final Card card, final Player player) {
+        return player != null && (player.isBattleboxSharedGraveyardCard(card) || player.isBattleboxSharedLibraryCard(card));
     }
 }

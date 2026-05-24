@@ -26,6 +26,8 @@ public interface IDevModeCheats {
 
     void setPlayerLife();
 
+    void becomeMonarch();
+
     void winGame();
 
     void addCardToHand();
@@ -88,6 +90,9 @@ public interface IDevModeCheats {
         }
         @Override
         public void setPlayerLife() {
+        }
+        @Override
+        public void becomeMonarch() {
         }
         @Override
         public void setCanPlayUnlimitedLands(final boolean canPlayUnlimitedLands0) {

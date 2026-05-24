@@ -24,6 +24,7 @@ public class RegisteredPlayer {
 
     private int startingLife = 20;
     private int startingHand = 7;
+    private int maxHand = 7;
     private int manaShards = 0;
     private Iterable<IPaperCard> extraCardsOnBattlefield = null;
     private Iterable<IPaperCard> extraCardsInCommandZone = null;
@@ -32,6 +33,7 @@ public class RegisteredPlayer {
     private Iterable<PaperCard> conspiracies = null;
     private Iterable<PaperCard> attractions = null;
     private Iterable<PaperCard> contraptions = null;
+    private Iterable<PaperCard> battleboxLandStation = null;
     private List<PaperCard> commanders = Lists.newArrayList();
     private List<PaperCard> vanguardAvatars = null;
     private PaperCard planeswalker = null;
@@ -102,6 +104,14 @@ public class RegisteredPlayer {
     }
     public void setStartingHand(int startingHand0) {
         this.startingHand = startingHand0;
+        this.maxHand = startingHand0;
+    }
+
+    public int getMaxHand() {
+        return maxHand;
+    }
+    public void setMaxHand(int maxHand0) {
+        this.maxHand = maxHand0;
     }
 
     public Iterable<? extends IPaperCard> getSchemes() {
@@ -230,6 +240,12 @@ public class RegisteredPlayer {
 
     public Iterable<PaperCard> getContraptions() {
         return contraptions;
+    }
+    public Iterable<PaperCard> getBattleboxLandStation() {
+        return battleboxLandStation == null ? EmptyList : battleboxLandStation;
+    }
+    public void setBattleboxLandStation(Iterable<PaperCard> battleboxLandStation0) {
+        battleboxLandStation = battleboxLandStation0;
     }
     private void assignContraptions() {
         contraptions = currentDeck.has(DeckSection.Contraptions)

@@ -747,6 +747,9 @@ public class GameAction {
     }
 
     public final Card moveTo(final ZoneType name, final Card c, final int libPosition, SpellAbility cause, Map<AbilityKey, Object> params) {
+        claimBattleboxSharedLibraryCard(c, name, cause);
+        claimBattleboxSharedGraveyardCard(c, name, cause);
+
         // Call specific functions to set PlayerZone, then move onto moveTo
         try {
             return switch (name) {
@@ -774,9 +777,11 @@ public class GameAction {
         }
     }
 
-    private Card moveTo(final Zone zoneTo, Card c, Integer position, SpellAbility cause, Map<AbilityKey, Object> params) {
+    private Card moveTo(Zone zoneTo, Card c, Integer position, SpellAbility cause, Map<AbilityKey, Object> params) {
         // Ideally move to should never be called without a prevZone
         // Remove card from Current Zone, if it has one
+        zoneTo = getBattleboxSharedLibraryDestination(c, zoneTo, cause);
+        zoneTo = getBattleboxSharedGraveyardDestination(c, zoneTo, cause);
         final Zone zoneFrom = game.getZoneOf(c);
         // String prevName = prev != null ? prev.getZoneName() : "";
 
@@ -828,6 +833,100 @@ public class GameAction {
         }
 
         return c;
+    }
+
+    private void claimBattleboxSharedLibraryCard(final Card c, final ZoneType destination, final SpellAbility cause) {
+        if (destination == ZoneType.Library) {
+            return;
+        }
+        final Player claimant = getBattleboxSharedLibraryClaimant(c, null, cause);
+        if (claimant != null) {
+            claimant.claimBattleboxSharedLibraryCard(c);
+        }
+    }
+
+    private Zone getBattleboxSharedLibraryDestination(final Card c, final Zone zoneTo, final SpellAbility cause) {
+        final Player claimant = getBattleboxSharedLibraryClaimant(c, zoneTo, cause);
+        if (claimant == null) {
+            return zoneTo;
+        }
+
+        claimant.claimBattleboxSharedLibraryCard(c);
+        if (zoneTo != null && zoneTo.getPlayer() != null && zoneTo.getPlayer() != claimant) {
+            return claimant.getZone(zoneTo.getZoneType());
+        }
+        return zoneTo;
+    }
+
+    private Player getBattleboxSharedLibraryClaimant(final Card c, final Zone zoneTo, final SpellAbility cause) {
+        if (c == null || !game.getRules().hasAppliedVariant(GameType.Battlebox)) {
+            return null;
+        }
+        final Zone zoneFrom = game.getZoneOf(c);
+        if (zoneFrom == null || !zoneFrom.is(ZoneType.Library)) {
+            return null;
+        }
+        final Player currentOwner = c.getOwner();
+        if (currentOwner == null || !currentOwner.isBattleboxSharedLibraryCard(c)) {
+            return null;
+        }
+        if (zoneTo != null && zoneTo.is(ZoneType.Library)) {
+            return null;
+        }
+
+        final Player destinationPlayer = zoneTo == null ? null : zoneTo.getPlayer();
+        if (destinationPlayer != null) {
+            return destinationPlayer;
+        }
+        final Player activatingPlayer = cause == null ? null : cause.getActivatingPlayer();
+        return activatingPlayer == null ? destinationPlayer : activatingPlayer;
+    }
+
+    private void claimBattleboxSharedGraveyardCard(final Card c, final ZoneType destination, final SpellAbility cause) {
+        if (destination == ZoneType.Graveyard) {
+            return;
+        }
+        final Player claimant = getBattleboxSharedGraveyardClaimant(c, null, cause);
+        if (claimant != null) {
+            claimant.claimBattleboxSharedGraveyardCard(c);
+        }
+    }
+
+    private Zone getBattleboxSharedGraveyardDestination(final Card c, final Zone zoneTo, final SpellAbility cause) {
+        final Player claimant = getBattleboxSharedGraveyardClaimant(c, zoneTo, cause);
+        if (claimant == null) {
+            return zoneTo;
+        }
+
+        claimant.claimBattleboxSharedGraveyardCard(c);
+        if (zoneTo != null && zoneTo.getPlayer() != null && zoneTo.getPlayer() != claimant) {
+            return claimant.getZone(zoneTo.getZoneType());
+        }
+        return zoneTo;
+    }
+
+    private Player getBattleboxSharedGraveyardClaimant(final Card c, final Zone zoneTo, final SpellAbility cause) {
+        if (c == null || !game.getRules().hasAppliedVariant(GameType.Battlebox)) {
+            return null;
+        }
+        final Zone zoneFrom = game.getZoneOf(c);
+        if (zoneFrom == null || !zoneFrom.is(ZoneType.Graveyard)) {
+            return null;
+        }
+        final Player currentOwner = c.getOwner();
+        if (currentOwner == null || !currentOwner.isBattleboxSharedGraveyardCard(c)) {
+            return null;
+        }
+        if (zoneTo != null && zoneTo.is(ZoneType.Graveyard)) {
+            return null;
+        }
+
+        final Player destinationPlayer = zoneTo == null ? null : zoneTo.getPlayer();
+        if (destinationPlayer != null) {
+            return destinationPlayer;
+        }
+        final Player activatingPlayer = cause == null ? null : cause.getActivatingPlayer();
+        return activatingPlayer == null ? destinationPlayer : activatingPlayer;
     }
 
     public final Card moveToStack(final Card c, SpellAbility cause) {
@@ -2283,23 +2382,24 @@ public class GameAction {
     }
 
     private void drawStartingHand(Player p1) {
+        final int startingHandSize = p1.getStartingHandSize();
         //check initial hand
         List<Card> lib1 = Lists.newArrayList(p1.getZone(ZoneType.Library).getCards().threadSafeIterable());
-        List<Card> hand1 = lib1.subList(0,p1.getMaxHandSize());
+        List<Card> hand1 = lib1.subList(0, startingHandSize);
 
         //shuffle
         List<Card> shuffledCards = Lists.newArrayList(p1.getZone(ZoneType.Library).getCards().threadSafeIterable());
         Collections.shuffle(shuffledCards);
 
         //check a second hand
-        List<Card> hand2 = shuffledCards.subList(0,p1.getMaxHandSize());
+        List<Card> hand2 = shuffledCards.subList(0, startingHandSize);
 
         //choose better hand according to land count
         float averageLandRatio = getLandRatio(lib1);
         if (getHandScore(hand1, averageLandRatio) > getHandScore(hand2, averageLandRatio)) {
             p1.getZone(ZoneType.Library).setCards(shuffledCards);
         }
-        p1.drawCards(p1.getMaxHandSize());
+        p1.drawCards(startingHandSize);
     }
 
     private float getLandRatio(List<Card> deck) {

@@ -25,7 +25,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.MissingResourceException;
 import java.util.function.Supplier;
 
 import javax.sound.sampled.AudioFormat;
@@ -216,13 +215,14 @@ public class AudioClip implements IAudioClip {
                 return clip;
             } catch (IOException ex) {
                 System.err.println("Unable to load sound file: " + filename);
+                return null;
             } catch (LineUnavailableException ex) {
                 System.err.println("Error initializing sound system: " + ex);
+                return null;
             } catch (UnsupportedAudioFileException ex) {
                 System.err.println("Unsupported file type of the sound file: " + fSound + " - " + ex.getMessage());
                 return null;
             }
-            throw new MissingResourceException("Sound clip failed to load", this.getClass().getName(), filename);
         }
 
         private void applyVolume(float volume) {

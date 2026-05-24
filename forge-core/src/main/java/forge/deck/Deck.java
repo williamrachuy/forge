@@ -41,8 +41,8 @@ import java.util.stream.Collectors;
  * </p>
  * 
  * The set of MTG legal cards that become player's library when the game starts.
- * Any other data is not part of a deck and should be stored elsewhere. Current
- * fields allowed for deck metadata are Name, Title, Description and Deck Type.
+ * Any other data is not part of a deck and should be stored elsewhere. Deck
+ * metadata is preserved for mode-specific configuration.
  */
 @SuppressWarnings("serial")
 public class Deck extends DeckBase implements Iterable<Entry<DeckSection, CardPool>> {
@@ -53,6 +53,7 @@ public class Deck extends DeckBase implements Iterable<Entry<DeckSection, CardPo
     private final Set<String> aiHints = new TreeSet<>();
     private final List<String> keyCards = new ArrayList<>();
     private final Map<String, String> draftNotes = new HashMap<>();
+    private final Map<String, String> metadata = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
     private Map<String, List<String>> deferredSections = null;
     private Map<String, List<String>> loadedSections = null;
     private String lastCardArtPreferenceUsed = "";
@@ -253,6 +254,7 @@ public class Deck extends DeckBase implements Iterable<Entry<DeckSection, CardPo
         }
         result.setAiHints(StringUtils.join(aiHints, " | "));
         result.setDraftNotes(draftNotes);
+        result.setMetadata(metadata);
         //noinspection ConstantValue
         if(tags != null) //Can happen deserializing old Decks.
             result.tags.addAll(this.tags);
@@ -611,6 +613,17 @@ public class Deck extends DeckBase implements Iterable<Entry<DeckSection, CardPo
 
     public Map<String, String> getDraftNotes() {
         return draftNotes;
+    }
+
+    public Map<String, String> getMetadata() {
+        return metadata;
+    }
+
+    public void setMetadata(Map<String, String> metadata) {
+        this.metadata.clear();
+        if (metadata != null) {
+            this.metadata.putAll(metadata);
+        }
     }
 
     public void setAiHints(String aiHintsInfo) {

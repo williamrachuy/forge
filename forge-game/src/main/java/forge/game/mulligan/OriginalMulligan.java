@@ -39,6 +39,6 @@ public class OriginalMulligan extends AbstractMulligan {
     }
 
     public int handSizeAfterNextMulligan() {
-        return player.getMaxHandSize();
+        return startingHandSize();
     }
 }

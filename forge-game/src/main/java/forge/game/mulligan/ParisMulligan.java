@@ -15,6 +15,6 @@ public class ParisMulligan extends AbstractMulligan {
     public int handSizeAfterNextMulligan() {
         int extraCard = firstMulliganFree ? 1 : 0;
 
-        return player.getMaxHandSize() - timesMulliganed + extraCard;
+        return Math.max(0, startingHandSize() - timesMulliganed + extraCard);
     }
 }

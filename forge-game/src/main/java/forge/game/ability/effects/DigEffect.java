@@ -399,7 +399,10 @@ public class DigEffect extends SpellAbilityEffect {
                                 moveParams.put(AbilityKey.CounterTable, table);
                             }
                         }
-                        c = game.getAction().moveTo(c.getController().getZone(destZone1), c, sa, moveParams);
+                        final Player destinationPlayer = destZone1.equals(ZoneType.Battlefield) && sa.hasParam("GainControl")
+                                ? c.getController()
+                                : p;
+                        c = game.getAction().moveTo(destinationPlayer.getZone(destZone1), c, sa, moveParams);
                         if (destZone1.equals(ZoneType.Battlefield)) {
                             if (addToCombat(c, sa, "Attacking", "Blocking")) {
                                 combatChanged = true;

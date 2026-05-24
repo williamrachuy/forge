@@ -48,6 +48,7 @@ public final class CDev implements ICDoc {
         view.getLblTapPermanent().addMouseListener(onClick(this::tapPermanent));
         view.getLblUntapPermanent().addMouseListener(onClick(this::untapPermanent));
         view.getLblSetLife().addMouseListener(onClick(this::setPlayerLife));
+        view.getLblBecomeMonarch().addMouseListener(onClick(this::becomeMonarch));
         view.getLblWinGame().addMouseListener(onClick(this::winGame));
         view.getLblExileFromPlay().addMouseListener(onClick(this::exileCardsFromPlay));
         view.getLblRemoveFromGame().addMouseListener(onClick(this::removeCardsFromGame));
@@ -137,6 +138,9 @@ public final class CDev implements ICDoc {
     }
     public void setPlayerLife() {
         getController().cheat().setPlayerLife();
+    }
+    public void becomeMonarch() {
+        getController().cheat().becomeMonarch();
     }
     public void winGame() {
         getController().cheat().winGame();

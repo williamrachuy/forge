@@ -58,6 +58,7 @@ public final class GameMenu {
         menu.add(getMenuItem_SeparateCombatStacks());
         menu.add(getMenuItem_AutoYieldsAndTriggers());
         menu.addSeparator();
+        menu.add(getMenuItem_UltronChat());
         menu.add(getMenuItem_ViewDeckList());
         return menu;
     }
@@ -188,6 +189,12 @@ public final class GameMenu {
         final SkinnedMenuItem menuItem = new SkinnedMenuItem(localizer.getMessage("lblDeckList"));
         menuItem.setIcon((showIcons ? MenuUtil.getMenuIcon(FSkinProp.ICO_DECKLIST) : null));
         menuItem.addActionListener(getViewDeckListAction());
+        return menuItem;
+    }
+
+    private SkinnedMenuItem getMenuItem_UltronChat() {
+        final SkinnedMenuItem menuItem = new SkinnedMenuItem("Chat with Ultron");
+        menuItem.addActionListener(e -> matchUI.showUltronChat());
         return menuItem;
     }
 

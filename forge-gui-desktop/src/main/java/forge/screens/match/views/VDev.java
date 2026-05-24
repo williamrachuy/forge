@@ -66,6 +66,7 @@ public class VDev implements IVDoc<CDev>, IDevListener {
     private final DevLabel lblTapPermanent = new DevLabel(Localizer.getInstance().getMessage("lblTapPermanent"));
     private final DevLabel lblUntapPermanent = new DevLabel(Localizer.getInstance().getMessage("lblUntapPermanent"));
     private final DevLabel lblSetLife = new DevLabel(Localizer.getInstance().getMessage("lblSetLife"));
+    private final DevLabel lblBecomeMonarch = new DevLabel(Localizer.getInstance().getMessage("lblBecomeMonarch"));
     private final DevLabel lblWinGame = new DevLabel(Localizer.getInstance().getMessage("lblWinGame"));
     private final DevLabel lblCardToBattlefield = new DevLabel(Localizer.getInstance().getMessage("lblCardToBattlefield"));
     private final DevLabel lblTokenToBattlefield = new DevLabel(Localizer.getInstance().getMessage("lblTokenToBattlefield"));
@@ -112,17 +113,18 @@ public class VDev implements IVDoc<CDev>, IDevListener {
         viewport.add(this.lblExileFromHand, halfConstraints);
         viewport.add(this.lblExileFromPlay, halfConstraintsLeft);
         viewport.add(this.lblSetLife, halfConstraints);
-        viewport.add(this.lblWinGame, halfConstraintsLeft);
-        viewport.add(this.lblAddCounterPermanent, halfConstraints);
-        viewport.add(this.lblSubCounterPermanent, halfConstraintsLeft);
-        viewport.add(this.lblTapPermanent, halfConstraints);
-        viewport.add(this.lblUntapPermanent, halfConstraintsLeft);
-        viewport.add(this.lblRiggedRoll, halfConstraints);
-        viewport.add(this.lblWalkTo, halfConstraintsLeft);
-        viewport.add(this.lblAskAI, halfConstraints);
-        viewport.add(this.lblAskSimulationAI, halfConstraintsLeft);
-        viewport.add(this.lblSetupGame, halfConstraints);
-        viewport.add(this.lblDumpGame, halfConstraintsLeft);
+        viewport.add(this.lblBecomeMonarch, halfConstraintsLeft);
+        viewport.add(this.lblWinGame, halfConstraints);
+        viewport.add(this.lblAddCounterPermanent, halfConstraintsLeft);
+        viewport.add(this.lblSubCounterPermanent, halfConstraints);
+        viewport.add(this.lblTapPermanent, halfConstraintsLeft);
+        viewport.add(this.lblUntapPermanent, halfConstraints);
+        viewport.add(this.lblRiggedRoll, halfConstraintsLeft);
+        viewport.add(this.lblWalkTo, halfConstraints);
+        viewport.add(this.lblAskAI, halfConstraintsLeft);
+        viewport.add(this.lblAskSimulationAI, halfConstraints);
+        viewport.add(this.lblSetupGame, halfConstraintsLeft);
+        viewport.add(this.lblDumpGame, halfConstraints);
     }
 
     //========= Overridden methods
@@ -291,6 +293,10 @@ public class VDev implements IVDoc<CDev>, IDevListener {
     /** @return {@link forge.screens.match.views.VDev.DevLabel} */
     public DevLabel getLblSetLife() {
         return this.lblSetLife;
+    }
+
+    public DevLabel getLblBecomeMonarch() {
+        return this.lblBecomeMonarch;
     }
 
     /** @return {@link forge.screens.match.views.VDev.DevLabel} */

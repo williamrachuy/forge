@@ -21,6 +21,7 @@ import forge.game.replacement.ReplacementType;
 import forge.game.spellability.SpellAbility;
 import forge.game.spellability.SpellAbilityStackInstance;
 import forge.game.trigger.TriggerType;
+import forge.game.zone.SharedPlayerZone;
 import forge.game.zone.Zone;
 import forge.game.zone.ZoneType;
 import forge.util.*;
@@ -29,6 +30,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.tuple.Pair;
 
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -667,7 +669,10 @@ public class ChangeZoneEffect extends SpellAbilityEffect {
                     CardFactoryUtil.setFaceDownState(gameCard, sa);
                 }
 
-                movedCard = game.getAction().moveTo(gameCard.getController().getZone(destination), gameCard, sa, moveParams);
+                final Player controller = sa.hasParam("GainControl")
+                        ? gameCard.getController()
+                        : getBattleboxBattlefieldController(game, gameCard, activator, originZone);
+                movedCard = game.getAction().moveTo(controller.getZone(destination), gameCard, sa, moveParams);
                 // below stuff only if it changed zones
                 if (movedCard.getZone().equals(originZone)) {
                     continue;
@@ -900,7 +905,8 @@ public class ChangeZoneEffect extends SpellAbilityEffect {
         final boolean defined = sa.hasParam("Defined") || chooseFromDef;
         final String changeType = sa.getParamOrDefault("ChangeType", "");
         boolean mandatory = sa.hasParam("Mandatory");
-        Map<Player, HiddenOriginChoices> hiddenChoices = Maps.newHashMap();
+        Map<Player, HiddenOriginChoices> hiddenChoices = new LinkedHashMap<>();
+        CardCollection battleboxSharedGraveyardChoices = new CardCollection();
 
         List<Player> fetchers = AbilityUtils.getDefinedPlayers(sa.getHostCard(), sa.getParam("DefinedPlayer"), sa);
         Player chooser = null;
@@ -1039,7 +1045,8 @@ public class ChangeZoneEffect extends SpellAbilityEffect {
             if (!defined && !sa.hasParam("AlreadyRevealed")) {
                 Set<ZoneType> revealZones = Sets.newHashSet();
                 Iterable<Card> toReveal = null;
-                if (origin.contains(ZoneType.Library) && searchedLibrary) {
+                if (origin.contains(ZoneType.Library) && searchedLibrary
+                        && !isBattleboxSharedLibrarySearch(game, player, origin)) {
                     final int fetchNum = Math.min(player.getCardsIn(ZoneType.Library).size(), 4);
                     // Look at whole library before moving onto choosing a card
                     toReveal = !decider.hasKeyword("LimitSearchLibrary") ? player.getCardsIn(ZoneType.Library) : player.getCardsIn(ZoneType.Library, fetchNum);
@@ -1088,6 +1095,9 @@ public class ChangeZoneEffect extends SpellAbilityEffect {
 
             if (!defined && !changeType.isEmpty() && !changeType.startsWith("EACH")) {
                 fetchList = (CardCollection)AbilityUtils.filterListByType(fetchList, sa.getParam("ChangeType"), sa);
+            }
+            if (isBattleboxSharedGraveyardSearch(game, player, origin)) {
+                fetchList.removeAll(battleboxSharedGraveyardChoices);
             }
             fetchList.sort();
 
@@ -1275,6 +1285,13 @@ public class ChangeZoneEffect extends SpellAbilityEffect {
             choices.origin = origin;
             choices.destination = destination;
             hiddenChoices.put(player, choices);
+            if (isBattleboxSharedGraveyardSearch(game, player, origin)) {
+                for (final Card chosenCard : chosenCards) {
+                    if (player.isBattleboxSharedGraveyardCard(chosenCard)) {
+                        battleboxSharedGraveyardChoices.add(chosenCard);
+                    }
+                }
+            }
         }
 
         final boolean remember = sa.hasParam("RememberChanged");
@@ -1391,7 +1408,10 @@ public class ChangeZoneEffect extends SpellAbilityEffect {
                         c.turnFaceDown(true);
                         CardFactoryUtil.setFaceDownState(c, sa);
                     }
-                    movedCard = game.getAction().moveToPlay(c, c.getController(), sa, moveParams);
+                    final Player controller = sa.hasParam("GainControl")
+                            ? c.getController()
+                            : getBattleboxBattlefieldController(game, c, player, originZone);
+                    movedCard = game.getAction().moveToPlay(c, controller, sa, moveParams);
 
                     if (sa.hasParam("AttachAfter") && movedCard.isAttachment() && movedCard.isInPlay()) {
                         CardCollection list = AbilityUtils.getDefinedCards(source, sa.getParam("AttachAfter"), sa);
@@ -1411,7 +1431,7 @@ public class ChangeZoneEffect extends SpellAbilityEffect {
                     if (!c.canExiledBy(sa, true)) {
                         continue;
                     }
-                    movedCard = game.getAction().exile(c, sa, moveParams);
+                    movedCard = moveToBattleboxSharedOriginExile(game, player, c, origin, sa, moveParams);
 
                     handleExiledWith(movedCard, sa);
 
@@ -1557,6 +1577,53 @@ public class ChangeZoneEffect extends SpellAbilityEffect {
         int libraryPos;
         List<ZoneType> origin;
         ZoneType destination;
+    }
+
+    private static boolean isBattleboxSharedGraveyardSearch(final Game game, final Player player, final List<ZoneType> origin) {
+        return game.getRules().hasAppliedVariant(GameType.Battlebox)
+                && origin.contains(ZoneType.Graveyard)
+                && player != null;
+    }
+
+    private static boolean isBattleboxSharedLibrarySearch(final Game game, final Player player, final List<ZoneType> origin) {
+        return game.getRules().hasAppliedVariant(GameType.Battlebox)
+                && origin.contains(ZoneType.Library)
+                && player != null
+                && player.getZone(ZoneType.Library) instanceof SharedPlayerZone;
+    }
+
+    private static Player getBattleboxBattlefieldController(final Game game, final Card card,
+            final Player destinationController, final Zone originZone) {
+        if (destinationController != null
+                && originZone != null
+                && game.getRules().hasAppliedVariant(GameType.Battlebox)) {
+            if (originZone.is(ZoneType.Library) && destinationController.isBattleboxSharedLibraryCard(card)) {
+                destinationController.claimBattleboxSharedLibraryCard(card);
+                return destinationController;
+            }
+            if (originZone.is(ZoneType.Graveyard) && destinationController.isBattleboxSharedGraveyardCard(card)) {
+                if (card.getOwner() != destinationController) {
+                    destinationController.claimBattleboxSharedGraveyardCard(card);
+                } else if (card.getController() != destinationController) {
+                    card.clearControllers();
+                }
+                return destinationController;
+            }
+        }
+        return card.getController();
+    }
+
+    private static Card moveToBattleboxSharedOriginExile(final Game game, final Player player, final Card card,
+            final List<ZoneType> origin, final SpellAbility sa, final Map<AbilityKey, Object> moveParams) {
+        if (player != null && game.getRules().hasAppliedVariant(GameType.Battlebox)) {
+            if (origin.contains(ZoneType.Library) && player.isBattleboxSharedLibraryCard(card)) {
+                return game.getAction().moveTo(player.getZone(ZoneType.Exile), card, sa, moveParams);
+            }
+            if (origin.contains(ZoneType.Graveyard) && player.isBattleboxSharedGraveyardCard(card)) {
+                return game.getAction().moveTo(player.getZone(ZoneType.Exile), card, sa, moveParams);
+            }
+        }
+        return game.getAction().exile(card, sa, moveParams);
     }
 
     private static boolean allowMultiSelect(Player decider, SpellAbility sa) {

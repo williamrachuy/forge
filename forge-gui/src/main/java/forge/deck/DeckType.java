@@ -6,6 +6,7 @@ import forge.util.Localizer;
 public enum DeckType {
     CUSTOM_DECK("lblCustomUserDecks"),
     CONSTRUCTED_DECK("lblConstructedDecks"),
+    BATTLEBOX_DECK("lblBattleboxDecks"),
     COMMANDER_DECK("lblCommanderDecks"),
     RANDOM_COMMANDER_DECK("lblRandomCommanderDecks"),
     RANDOM_CARDGEN_COMMANDER_DECK("lblRandomCommanderCard-basedDecks"),
@@ -44,6 +45,7 @@ public enum DeckType {
 
     public static DeckType[] ConstructedOptions;
     public static DeckType[] CommanderOptions;
+    public static DeckType[] BattleboxOptions = new DeckType[]{DeckType.BATTLEBOX_DECK};
 
     static {
         if (FModel.isdeckGenMatrixLoaded()) {

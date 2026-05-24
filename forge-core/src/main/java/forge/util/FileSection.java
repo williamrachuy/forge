@@ -124,7 +124,11 @@ public class FileSection {
     public String get(final String fieldName) {
         return this.lines.get(fieldName);
     }
-    
+
+    public Map<String, String> asMap() {
+        return Collections.unmodifiableMap(lines);
+    }
+
     public String get(final String fieldName, final String defaultValue) {
         return lines.containsKey(fieldName) ? this.lines.get(fieldName) : defaultValue;
     }

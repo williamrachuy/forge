@@ -509,13 +509,13 @@ public final class StaticAbilityContinuous {
                     } else {
                         p.setUnlimitedHandSize(false);
                         int max = AbilityUtils.calculateAmount(hostCard, mhs, stAb);
-                        p.setMaxHandSize(max);
+                        p.setMaxHandSizeFromStaticEffect(max);
                     }
                 }
                 if (params.containsKey("RaiseMaxHandSize")) {
                     String rmhs = params.get("RaiseMaxHandSize");
                     int rmax = AbilityUtils.calculateAmount(hostCard, rmhs, stAb);
-                    p.setMaxHandSize(p.getMaxHandSize() + rmax);
+                    p.setMaxHandSizeFromStaticEffect(p.getMaxHandSize() + rmax);
                 }
 
                 if (params.containsKey("AdjustLandPlays")) {

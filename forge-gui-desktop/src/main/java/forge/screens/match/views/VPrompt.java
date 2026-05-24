@@ -65,6 +65,7 @@ public class VPrompt implements IVDoc<CPrompt> {
     private final FScrollPane messageScroller = new FScrollPane(tarMessage, false,
     		ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED, ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
     private final JLabel lblGames;
+    private final JLabel lblUltronStatus;
     private CardView card = null;
 
     public void setCardView(final CardView card) {
@@ -94,6 +95,13 @@ public class VPrompt implements IVDoc<CPrompt> {
                 .fontAlign(SwingConstants.CENTER)
                 .opaque()
                 .build();
+        lblUltronStatus = new FLabel.Builder()
+                .fontSize(11)
+                .fontStyle(Font.ITALIC)
+                .fontAlign(SwingConstants.RIGHT)
+                .build();
+        lblUltronStatus.setForeground(FSkin.getColor(FSkin.Colors.CLR_TEXT).getColor());
+        lblUltronStatus.setVisible(false);
 
         btnOK.addKeyListener(buttonKeyAdapter);
         btnCancel.addKeyListener(buttonKeyAdapter);
@@ -124,9 +132,11 @@ public class VPrompt implements IVDoc<CPrompt> {
         container.setLayout(new MigLayout("wrap 2, gap 0px!, insets 1px 1px 3px 1px"));
         if (prefs.getPrefBoolean(FPref.UI_COMPACT_PROMPT)) { //hide header and use smaller font if compact prompt
             tarMessage.setFont(FSkin.getFont());
+            container.add(lblUltronStatus, "span 2, w 10:100%, h 16px!, hidemode 3");
         }
         else {
         	container.add(lblGames, "span 2, w 10:100%, h 22px!");
+            container.add(lblUltronStatus, "span 2, w 10:100%, h 16px!, hidemode 3");
             tarMessage.setFont(FSkin.getRelativeFont(14));
         }
         lblGames.setText(localizer.getMessage("lblGameSetup"));
@@ -200,5 +210,9 @@ public class VPrompt implements IVDoc<CPrompt> {
     /** @return {@link javax.swing.JLabel} */
     public JLabel getLblGames() {
         return this.lblGames;
+    }
+
+    public JLabel getLblUltronStatus() {
+        return this.lblUltronStatus;
     }
 }

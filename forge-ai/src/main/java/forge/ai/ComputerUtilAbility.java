@@ -49,6 +49,7 @@ public class ComputerUtilAbility {
         });
 
         final CardCollection landsNotInHand = new CardCollection(player.getCardsIn(ZoneType.Graveyard));
+        landsNotInHand.addAll(player.getCardsIn(ZoneType.Command));
         landsNotInHand.addAll(game.getCardsIn(ZoneType.Exile));
         if (!player.getCardsIn(ZoneType.Library).isEmpty()) {
             landsNotInHand.add(player.getCardsIn(ZoneType.Library).get(0));

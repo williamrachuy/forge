@@ -50,6 +50,8 @@ import forge.toolbox.FSkin;
 public class CPrompt implements ICDoc {
     private final CMatchUI matchUI;
     private final VPrompt view;
+    private int ultronStatusDepth;
+
     public CPrompt(final CMatchUI matchUI) {
         this.matchUI = matchUI;
         this.view = new VPrompt(this);
@@ -151,6 +153,20 @@ public class CPrompt implements ICDoc {
     public void setMessage(final String s0, final CardView card) {
     	view.getTarMessage().setText(FSkin.encodeSymbols(s0, false));
     	view.setCardView(card);
+    }
+
+    public void setUltronStatus(final boolean active, final String message) {
+        FThreads.assertExecutedByEdt(true);
+        if (active) {
+            ultronStatusDepth++;
+        } else if (ultronStatusDepth > 0) {
+            ultronStatusDepth--;
+        }
+
+        final boolean visible = ultronStatusDepth > 0;
+        view.getLblUltronStatus().setText(visible && message != null && !message.isBlank()
+                ? message : "Ultron thinking...");
+        view.getLblUltronStatus().setVisible(visible);
     }
 
     /**

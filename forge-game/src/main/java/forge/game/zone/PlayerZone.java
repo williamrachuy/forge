@@ -100,7 +100,7 @@ public class PlayerZone extends Zone {
 
     public Iterable<Card> getCardsPlayerCanActivate(Player who) {
         Iterable<Card> cl = getCards(false);
-        boolean checkingForOwner = who == player;
+        boolean checkingForOwner = who != null && (who == player || who.isSharedGraveyardZone(this));
 
         if (checkingForOwner && (is(ZoneType.Battlefield) || is(ZoneType.Hand))) {
             return cl;

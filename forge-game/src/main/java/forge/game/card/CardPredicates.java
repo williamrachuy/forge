@@ -51,7 +51,7 @@ public final class CardPredicates {
         return c -> pList.contains(c.getController());
     }
     public static Predicate<Card> isOwner(final Player p) {
-        return c -> p.equals(c.getOwner());
+        return c -> p.equals(c.getOwner()) || p.isBattleboxSharedGraveyardCard(c);
     }
 
     public static Predicate<Card> ownerLives() {

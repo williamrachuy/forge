@@ -2,10 +2,13 @@ package forge.game.player;
 
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.IdentityHashMap;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.function.Predicate;
 
 import forge.game.card.CardCollection;
+import forge.game.zone.PlayerZone;
 import forge.game.zone.ZoneType;
 import forge.util.Aggregates;
 import forge.util.IterableUtil;
@@ -29,7 +32,12 @@ public class PlayerCollection extends FCollection<Player> {
     // card collection functions
     public final CardCollection getCardsIn(ZoneType zone) {
         CardCollection result = new CardCollection();
+        Set<PlayerZone> seenSharedZones = zone == ZoneType.Library || zone == ZoneType.Command || zone == ZoneType.Graveyard
+                ? Collections.newSetFromMap(new IdentityHashMap<>()) : null;
         for (Player p : this) {
+            if (seenSharedZones != null && !seenSharedZones.add(p.getZone(zone))) {
+                continue;
+            }
             result.addAll(p.getCardsIn(zone));
         }
         return result;
@@ -37,8 +45,8 @@ public class PlayerCollection extends FCollection<Player> {
 
     public final CardCollection getCardsIn(Iterable<ZoneType> zones) {
         CardCollection result = new CardCollection();
-        for (Player p : this) {
-            result.addAll(p.getCardsIn(zones));
+        for (ZoneType zone : zones) {
+            result.addAll(getCardsIn(zone));
         }
         return result;
     }

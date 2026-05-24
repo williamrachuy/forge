@@ -183,7 +183,8 @@ public class GameSnapshot {
         for (int j = 0; j < origPlayer.getSpellsCastThisTurn(); j++) {
             newPlayer.addSpellCastThisTurn();
         }
-        newPlayer.setMaxHandSize(origPlayer.getMaxHandSize());
+        newPlayer.setBaseMaxHandSize(origPlayer.getBaseMaxHandSize());
+        newPlayer.setMaxHandSizeFromStaticEffect(origPlayer.getMaxHandSize());
         newPlayer.setUnlimitedHandSize(origPlayer.isUnlimitedHandSize());
         newPlayer.setCrankCounter(origPlayer.getCrankCounter());
         // TODO creatureAttackedThisTurn
@@ -481,4 +482,3 @@ public class GameSnapshot {
         return null;
     }
 }
-

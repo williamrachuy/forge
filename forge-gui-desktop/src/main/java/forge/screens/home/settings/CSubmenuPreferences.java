@@ -4,6 +4,7 @@ import forge.MulliganDefs;
 import forge.Singletons;
 import forge.StaticData;
 import forge.ai.AiProfileUtil;
+import forge.ai.llm.UltronAdvisor;
 import forge.control.FControl.CloseAction;
 import forge.download.AutoUpdater;
 import forge.game.GameLogVerbosity;
@@ -123,6 +124,7 @@ public enum CSubmenuPreferences implements ICDoc {
         lstControls.add(Pair.of(view.getCbRemoveArtifacts(), FPref.DECKGEN_ARTIFACTS));
         lstControls.add(Pair.of(view.getCbSingletons(), FPref.DECKGEN_SINGLETONS));
         lstControls.add(Pair.of(view.getCbEnableAICheats(), FPref.UI_ENABLE_AI_CHEATS));
+        lstControls.add(Pair.of(view.getCbUltronSpeech(), FPref.ULTRON_ENABLE_SPEECH));
         lstControls.add(Pair.of(view.getCbEnableUnknownCards(), FPref.UI_LOAD_UNKNOWN_CARDS));
         lstControls.add(Pair.of(view.getCbEnableNonLegalCards(), FPref.UI_LOAD_NONLEGAL_CARDS));
         lstControls.add(Pair.of(view.getCbAllowCustomCardsDeckConformance(), FPref.ALLOW_CUSTOM_CARDS_IN_DECKS_CONFORMANCE));
@@ -170,6 +172,9 @@ public enum CSubmenuPreferences implements ICDoc {
 
               prefs.setPref(kv.getValue(), String.valueOf(kv.getKey().isSelected()));
               prefs.save();
+              if (kv.getValue() == FPref.ULTRON_ENABLE_SPEECH) {
+                  UltronAdvisor.get().setSpeechPreferenceEnabled(kv.getKey().isSelected());
+              }
           });
         }
 
@@ -210,6 +215,8 @@ public enum CSubmenuPreferences implements ICDoc {
         initializeAiProfilesComboBox();
         initializeAiSideboardingModeComboBox();
         initializeAiTimeoutComboBox();
+        initializeUltronDeepSeekModelComboBox();
+        initializeUltronReasoningEffortComboBox();
         initializeSoundSetsComboBox();
         initializeMusicSetsComboBox();
         initializeStackAdditionsComboBox();
@@ -247,6 +254,8 @@ public enum CSubmenuPreferences implements ICDoc {
         for(final Pair<JCheckBox, FPref> kv: lstControls) {
             kv.getKey().setSelected(prefs.getPrefBoolean(kv.getValue()));
         }
+        UltronAdvisor.get().setSpeechPreferenceEnabled(prefs.getPrefBoolean(FPref.ULTRON_ENABLE_SPEECH));
+        applyUltronDeepSeekPreferences();
         view.reloadShortcuts();
 
         SwingUtilities.invokeLater(() -> view.getCbRemoveSmall().requestFocusInWindow());
@@ -460,6 +469,38 @@ public enum CSubmenuPreferences implements ICDoc {
         final FComboBox<String> comboBox = createComboBox(new String[] {"5", "10", "60", "120", "240", "300", "600"}, userSetting);
         final String selectedItem = this.prefs.getPref(userSetting);
         panel.setComboBox(comboBox, selectedItem);
+    }
+
+    private void initializeUltronDeepSeekModelComboBox() {
+        final FPref userSetting = FPref.ULTRON_DEEPSEEK_MODEL;
+        final FComboBoxPanel<String> panel = this.view.getUltronDeepSeekModelComboBox();
+        final FComboBox<String> comboBox = createComboBox(new String[] {"deepseek-v4-pro", "deepseek-v4-flash"}, userSetting);
+        final String selectedItem = this.prefs.getPref(userSetting);
+        panel.setComboBox(comboBox, selectedItem);
+        comboBox.addActionListener(actionEvent -> {
+            prefs.setPref(userSetting, String.valueOf(comboBox.getSelectedItem()));
+            prefs.save();
+            applyUltronDeepSeekPreferences();
+        });
+    }
+
+    private void initializeUltronReasoningEffortComboBox() {
+        final FPref userSetting = FPref.ULTRON_DEEPSEEK_REASONING_EFFORT;
+        final FComboBoxPanel<String> panel = this.view.getUltronReasoningEffortComboBox();
+        final FComboBox<String> comboBox = createComboBox(new String[] {"high", "medium", "low", "max"}, userSetting);
+        final String selectedItem = this.prefs.getPref(userSetting);
+        panel.setComboBox(comboBox, selectedItem);
+        comboBox.addActionListener(actionEvent -> {
+            prefs.setPref(userSetting, String.valueOf(comboBox.getSelectedItem()));
+            prefs.save();
+            applyUltronDeepSeekPreferences();
+        });
+    }
+
+    private void applyUltronDeepSeekPreferences() {
+        System.setProperty("ULTRON_DEEPSEEK_MODEL", prefs.getPref(FPref.ULTRON_DEEPSEEK_MODEL));
+        System.setProperty("ULTRON_DEEPSEEK_REASONING_EFFORT", prefs.getPref(FPref.ULTRON_DEEPSEEK_REASONING_EFFORT));
+        UltronAdvisor.get().reloadClient();
     }
 
     private void initializeSoundSetsComboBox() {

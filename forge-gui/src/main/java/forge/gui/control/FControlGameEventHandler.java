@@ -4,6 +4,8 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Multimap;
 import com.google.common.eventbus.Subscribe;
+import forge.game.GameType;
+import forge.game.GameView;
 import forge.game.card.CardView;
 import forge.game.event.*;
 import forge.game.player.PlayerView;
@@ -296,7 +298,18 @@ public class FControlGameEventHandler extends IGameEventVisitor.Base<Void> {
     @Override
     public Void visit(final GameEventZone event) {
         if (event.player() != null) {
-            // anything except stack will get here
+            // Battlebox uses physical library, command, and graveyard zones shared by every player view.
+            if (event.zoneType() == ZoneType.Library || event.zoneType() == ZoneType.Command || event.zoneType() == ZoneType.Graveyard) {
+                final GameView gameView = matchController.getGameView();
+                if (gameView != null && gameView.getGame() != null
+                        && gameView.getGame().getRules().hasAppliedVariant(GameType.Battlebox)
+                        && gameView.getPlayers() != null) {
+                    for (final PlayerView player : gameView.getPlayers()) {
+                        updateZone(player, event.zoneType());
+                    }
+                    return processEvent();
+                }
+            }
             updateZone(event.player(), event.zoneType());
             return processEvent();
         }

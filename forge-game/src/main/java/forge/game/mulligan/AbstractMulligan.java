@@ -21,6 +21,10 @@ public abstract class AbstractMulligan {
 
     public Player getPlayer() { return player; }
 
+    protected int startingHandSize() {
+        return player.getStartingHandSize();
+    }
+
     public void beforeFirstMulligan() {}
     public abstract boolean canMulligan();
     public abstract int handSizeAfterNextMulligan();

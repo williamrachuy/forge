@@ -9,6 +9,7 @@ import forge.deck.CardPool;
 import forge.deck.Deck;
 import forge.deck.DeckFormat;
 import forge.deck.DeckSection;
+import forge.game.BattleboxConfig;
 import forge.game.GameType;
 import forge.game.GameView;
 import forge.game.IHasGameType;
@@ -232,9 +233,24 @@ public abstract class GameLobby implements IHasGameType {
     public void applyVariant(final GameType variant) {
         setGameType(variant);
         data.appliedVariants.add(variant);
+        if (variant != GameType.Battlebox) {
+            data.appliedVariants.remove(GameType.Battlebox);
+        }
 
         //ensure other necessary variants are unchecked
         switch (variant) {
+        case Battlebox:
+            data.appliedVariants.remove(GameType.Commander);
+            data.appliedVariants.remove(GameType.Oathbreaker);
+            data.appliedVariants.remove(GameType.TinyLeaders);
+            data.appliedVariants.remove(GameType.Brawl);
+            data.appliedVariants.remove(GameType.Vanguard);
+            data.appliedVariants.remove(GameType.MomirBasic);
+            data.appliedVariants.remove(GameType.MoJhoSto);
+            data.appliedVariants.remove(GameType.Planechase);
+            data.appliedVariants.remove(GameType.Archenemy);
+            data.appliedVariants.remove(GameType.ArchenemyRumble);
+            break;
         case Archenemy:
             data.appliedVariants.remove(GameType.ArchenemyRumble);
             break;
@@ -339,6 +355,38 @@ public abstract class GameLobby implements IHasGameType {
         return false;
     }
 
+    private boolean validateBattleboxDeck(final Deck deck, final int playerCount) {
+        if (deck == null) {
+            SOptionPane.showMessageDialog("Please specify a Battlebox deck for the first player.");
+            return false;
+        }
+
+        final CardPool landStation = BattleboxConfig.getLandStation(deck);
+        if (landStation == null || landStation.countAll() == 0) {
+            SOptionPane.showErrorDialog("Battlebox decks need a [LandStation] section with the shared lands players may play from command.", "Invalid Battlebox Deck");
+            return false;
+        }
+
+        final Set<String> nonLands = BattleboxConfig.getNonLandNamesInLandStation(deck);
+        if (!nonLands.isEmpty()) {
+            SOptionPane.showErrorDialog("Battlebox land stations can contain only lands: " + String.join(", ", nonLands), "Invalid Battlebox Deck");
+            return false;
+        }
+
+        final String librarySizeProblem = BattleboxConfig.getLibrarySizeProblem(deck, playerCount);
+        if (librarySizeProblem != null) {
+            SOptionPane.showErrorDialog(librarySizeProblem, "Invalid Battlebox Deck");
+            return false;
+        }
+
+        final Set<String> duplicates = BattleboxConfig.getDuplicateNamesInMain(deck);
+        if (!duplicates.isEmpty()) {
+            SOptionPane.showMessageDialog("Battlebox shared library contains duplicate card names. Forge will allow this deck as written: " + String.join(", ", duplicates));
+        }
+
+        return true;
+    }
+
     protected final void updateView(final boolean fullUpdate) {
         if (listener != null) {
             listener.update(fullUpdate);
@@ -371,6 +419,8 @@ public abstract class GameLobby implements IHasGameType {
         boolean isOathbreakerMatch = false;
         boolean isTinyLeadersMatch = false;
         boolean isBrawlMatch = false;
+        final boolean isBattleboxMatch = variantTypes.contains(GameType.Battlebox);
+        final Deck battleboxDeck = isBattleboxMatch ? activeSlots.get(0).getDeck() : null;
         if (!variantTypes.isEmpty()) {
             isOathbreakerMatch = variantTypes.contains(GameType.Oathbreaker);
             isTinyLeadersMatch = variantTypes.contains(GameType.TinyLeaders);
@@ -391,7 +441,7 @@ public abstract class GameLobby implements IHasGameType {
                 SOptionPane.showMessageDialog(Localizer.getInstance().getMessage("lblPlayerIsNotReady", slot.getName()));
                 return null;
             }
-            if (slot.getDeck() == null && autoGenerateVariant == null) {
+            if (slot.getDeck() == null && autoGenerateVariant == null && !(isBattleboxMatch && slot != activeSlots.get(0))) {
                 SOptionPane.showMessageDialog(Localizer.getInstance().getMessage("lblPleaseSpecifyPlayerDeck", slot.getName()));
                 return null;
             }
@@ -407,7 +457,11 @@ public abstract class GameLobby implements IHasGameType {
 
         //Auto-generated decks don't need to be checked here
         //Commander deck replaces regular deck and is checked later
-        if (checkLegality && autoGenerateVariant == null && !isCommanderMatch) {
+        if (isBattleboxMatch && !validateBattleboxDeck(battleboxDeck, activeSlots.size())) {
+            return null;
+        }
+
+        if (checkLegality && autoGenerateVariant == null && !isCommanderMatch && !isBattleboxMatch) {
             for (final LobbySlot slot : activeSlots) {
                 final String name = slot.getName();
                 final String errMsg = GameType.Constructed.getDeckFormat().getDeckConformanceProblem(slot.getDeck());
@@ -446,7 +500,7 @@ public abstract class GameLobby implements IHasGameType {
                 lobbyPlayer = GamePlayerUtil.getGuiPlayer(name, avatar, sleeve, setNameNow);
             }
 
-            Deck deck = slot.getDeck();
+            Deck deck = isBattleboxMatch ? battleboxDeck : slot.getDeck();
             if (autoGenerateVariant != null) {
                 deck = autoGenerateVariant.autoGenerateDeck(null);
             }
@@ -506,6 +560,14 @@ public abstract class GameLobby implements IHasGameType {
                 }
 
                 rp = RegisteredPlayer.forVariants(activeSlots.size(), variantTypes, deck, schemes, isArchenemy, planes, avatarPool);
+            }
+
+            if (isBattleboxMatch) {
+                final BattleboxConfig config = BattleboxConfig.fromDeck(battleboxDeck);
+                rp.setStartingLife(config.getStartingLife());
+                rp.setStartingHand(config.getStartingHandSize());
+                rp.setMaxHand(config.getMaxHandSize());
+                rp.setBattleboxLandStation(BattleboxConfig.getLandStation(battleboxDeck).toFlatList());
             }
 
             rp.setTeamNumber(team);

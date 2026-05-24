@@ -38,6 +38,7 @@ public class DevModeMenu implements ActionListener, IDevListener {
         EXILE_FROM_HAND("lblExileFromHand"),
         EXILE_FROM_PLAY("lblExileFromPlay"),
         SET_PLAYER_LIFE("lblSetLife"),
+        BECOME_MONARCH("lblBecomeMonarch"),
         WIN_GAME("lblWinGame"),
         SETUP_GAME_STATE("lblSetupGame"),
         DUMP_GAME_STATE("lblDumpGame"),
@@ -85,6 +86,7 @@ public class DevModeMenu implements ActionListener, IDevListener {
         menu.add(getMenuItem(DevMenuItem.EXILE_FROM_PLAY));
         menu.addSeparator();
         menu.add(getMenuItem(DevMenuItem.SET_PLAYER_LIFE));
+        menu.add(getMenuItem(DevMenuItem.BECOME_MONARCH));
         menu.add(getMenuItem(DevMenuItem.WIN_GAME));
         menu.addSeparator();
         menu.add(getMenuItem(DevMenuItem.SETUP_GAME_STATE));
@@ -130,6 +132,7 @@ public class DevModeMenu implements ActionListener, IDevListener {
         case EXILE_FROM_PLAY:	   { controller.exileCardsFromPlay(); break; }
         case EXILE_FROM_HAND:	   { controller.exileCardsFromHand(); break; }
         case SET_PLAYER_LIFE:      { controller.setPlayerLife(); break; }
+        case BECOME_MONARCH:       { controller.becomeMonarch(); break; }
         case WIN_GAME:             { controller.winGame(); break; }
         case SETUP_GAME_STATE:     { controller.setupGameState(); break; }
         case DUMP_GAME_STATE:      { controller.dumpGameState(); break; }
