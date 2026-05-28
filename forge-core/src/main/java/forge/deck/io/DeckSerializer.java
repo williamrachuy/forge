@@ -75,6 +75,13 @@ public class DeckSerializer {
             out.add(TextUtil.enclosedBracket(s.getKey().toString()));
             out.add(s.getValue().toCardList(System.lineSeparator()));
         }
+        for (Entry<String, List<String>> s : d.getUnparsedSections().entrySet()) {
+            if (s.getValue().isEmpty()) {
+                continue;
+            }
+            out.add(TextUtil.enclosedBracket(s.getKey()));
+            out.addAll(s.getValue());
+        }
         return out;
     }
 

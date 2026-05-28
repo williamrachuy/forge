@@ -13,6 +13,7 @@ import forge.game.player.RegisteredPlayer;
 import forge.game.spellability.SpellAbility;
 import forge.game.spellability.SpellAbilityStackInstance;
 import forge.game.trigger.TriggerType;
+import forge.game.zone.PlayerZone;
 import forge.game.zone.PlayerZoneBattlefield;
 import forge.game.zone.ZoneType;
 
@@ -288,6 +289,7 @@ public class GameSnapshot {
         if (fromGame.getMonarchBeginTurn() != null) {
             toGame.setMonarchBeginTurn(findBy(toGame, fromGame.getMonarchBeginTurn()));
         }
+        toGame.setBattleboxMonarchChoiceMade(fromGame.isBattleboxMonarchChoiceMade());
         if (fromGame.getHasInitiative() != null) {
             toGame.setHasInitiative(findBy(toGame, fromGame.getHasInitiative()));
         }
@@ -379,8 +381,11 @@ public class GameSnapshot {
             toGame.getStackZone().add(newCard);
             newCard.setZone(toGame.getStackZone());
         } else {
-            toPlayer.getZone(fromType).add(newCard);
-            newCard.setZone(toPlayer.getZone(fromType));
+            final PlayerZone destination = fromType == ZoneType.Command
+                    && fromCard.getZone() == fromCard.getController().getPersonalCommandZone()
+                    ? toPlayer.getPersonalCommandZone() : toPlayer.getZone(fromType);
+            destination.add(newCard);
+            newCard.setZone(destination);
         }
 
         // TODO: This is a bit of a mess. We should probably have a method to copy a card's state.

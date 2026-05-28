@@ -1306,7 +1306,16 @@ public class Player extends GameEntity implements Comparable<Player> {
         }
         return zones.get(zone);
     }
+    public PlayerZone getPersonalCommandZone() {
+        return zones.get(ZoneType.Command);
+    }
     public void updateZoneForView(PlayerZone zone) {
+        if (zone.is(ZoneType.Command) && sharedCommandZone != null) {
+            final CardCollection cards = new CardCollection(sharedCommandZone.getCards(false));
+            cards.addAll(getPersonalCommandZone().getCards(false));
+            view.updateZone(ZoneType.Command, cards, this);
+            return;
+        }
         view.updateZone(zone, this);
     }
 
@@ -1424,6 +1433,11 @@ public class Player extends GameEntity implements Comparable<Player> {
         }
 
         PlayerZone zone = getZone(zoneType);
+        if (zoneType == ZoneType.Command && sharedCommandZone != null) {
+            final CardCollection cards = new CardCollection(sharedCommandZone.getCards(filterOutPhasedOut));
+            cards.addAll(getPersonalCommandZone().getCards(filterOutPhasedOut));
+            return cards;
+        }
         return zone == null ? CardCollection.EMPTY : zone.getCards(filterOutPhasedOut);
     }
 
@@ -3560,7 +3574,7 @@ public class Player extends GameEntity implements Comparable<Player> {
     }
 
     public void createMonarchEffect(final String set) {
-        final PlayerZone com = getZone(ZoneType.Command);
+        final PlayerZone com = getPersonalCommandZone();
         if (monarchEffect == null) {
             monarchEffect = new Card(game.nextCardId(), null, game);
             monarchEffect.setOwner(this);
@@ -3597,7 +3611,7 @@ public class Player extends GameEntity implements Comparable<Player> {
         this.updateZoneForView(com);
     }
     public void removeMonarchEffect() {
-        final PlayerZone com = getZone(ZoneType.Command);
+        final PlayerZone com = getPersonalCommandZone();
         if (monarchEffect != null) {
             com.remove(monarchEffect);
             this.updateZoneForView(com);

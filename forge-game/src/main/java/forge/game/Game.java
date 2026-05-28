@@ -123,6 +123,7 @@ public class Game {
     private Player initiative;
     private Player monarch;
     private Player monarchBeginTurn;
+    private boolean battleboxMonarchChoiceMade;
     private Player startingPlayer;
 
     private Direction turnOrder = Direction.getDefaultDirection();
@@ -169,6 +170,13 @@ public class Game {
     }
     public void setMonarchBeginTurn(Player monarchBeginTurn) {
         this.monarchBeginTurn = monarchBeginTurn;
+    }
+
+    public boolean isBattleboxMonarchChoiceMade() {
+        return battleboxMonarchChoiceMade;
+    }
+    public void setBattleboxMonarchChoiceMade(final boolean battleboxMonarchChoiceMade) {
+        this.battleboxMonarchChoiceMade = battleboxMonarchChoiceMade;
     }
 
     public Player getHasInitiative() {
@@ -228,6 +236,13 @@ public class Game {
                 ? Collections.newSetFromMap(new IdentityHashMap<>()) : null;
         for (final Player p : getPlayers()) {
             final PlayerZone zone = p.getZone(type);
+            if (type == ZoneType.Command && p.getPersonalCommandZone() != zone) {
+                if (seenSharedZones.add(zone)) {
+                    result.addAll(zone.getLKICopy(cachedMap));
+                }
+                result.addAll(p.getPersonalCommandZone().getLKICopy(cachedMap));
+                continue;
+            }
             if (seenSharedZones != null && !seenSharedZones.add(zone)) {
                 continue;
             }
@@ -615,6 +630,13 @@ public class Game {
         Set<Zone> seenSharedZones = zone == ZoneType.Library || zone == ZoneType.Command || zone == ZoneType.Graveyard
                 ? Collections.newSetFromMap(new IdentityHashMap<>()) : null;
         for (final Player p : getPlayers()) {
+            if (zone == ZoneType.Command && p.getPersonalCommandZone() != p.getZone(zone)) {
+                if (seenSharedZones.add(p.getZone(zone))) {
+                    cards.addAll(p.getZone(zone).getCards(false));
+                }
+                cards.addAll(p.getPersonalCommandZone().getCards(false));
+                continue;
+            }
             if (seenSharedZones != null && !seenSharedZones.add(p.getZone(zone))) {
                 continue;
             }
@@ -774,6 +796,10 @@ public class Game {
             }
             final PlayerZone command = player.getZone(ZoneType.Command);
             if (seenCommandZones.add(command) && !visitor.visitAll(command.getCards())) {
+                return;
+            }
+            final PlayerZone personalCommand = player.getPersonalCommandZone();
+            if (personalCommand != command && !visitor.visitAll(personalCommand.getCards())) {
                 return;
             }
             for (final ZoneType commandZone : ZoneType.PART_OF_COMMAND_ZONE) {

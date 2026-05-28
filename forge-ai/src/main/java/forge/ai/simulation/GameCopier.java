@@ -231,6 +231,7 @@ public class GameCopier {
         if (origGame.getMonarchBeginTurn() != null) {
             newGame.setMonarchBeginTurn(playerMap.get(origGame.getMonarchBeginTurn()));
         }
+        newGame.setBattleboxMonarchChoiceMade(origGame.isBattleboxMonarchChoiceMade());
         if (origGame.getHasInitiative() != null) {
             newGame.setHasInitiative(playerMap.get(origGame.getHasInitiative()));
         }
@@ -442,6 +443,8 @@ public class GameCopier {
 
         if (zone == ZoneType.Stack) {
             newGame.getStackZone().add(newCard);
+        } else if (zone == ZoneType.Command && c.getZone() == c.getController().getPersonalCommandZone()) {
+            zoneOwner.getPersonalCommandZone().add(newCard);
         } else {
             zoneOwner.getZone(zone).add(newCard);
         }

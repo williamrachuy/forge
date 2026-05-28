@@ -1186,6 +1186,8 @@ public final class CMatchUI
 
     @Override
     public void openView(final TrackableCollection<PlayerView> myPlayers) {
+        // Starting a new game may reuse this GUI object; discard zone tabs/windows still bound to old PlayerViews.
+        FloatingZone.closeAll();
         final GameView gameView = getGameView();
         gameView.getGameLog().addObserver(cLog);
 

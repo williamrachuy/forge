@@ -236,6 +236,38 @@ public class Deck extends DeckBase implements Iterable<Entry<DeckSection, CardPo
         this.deferredSections = deferredSections;
     }
 
+    /**
+     * Returns an unparsed custom section. Custom mode configuration can use syntax that is
+     * intentionally not a {@link CardPool} card-list syntax.
+     */
+    public List<String> getUnparsedSection(final String sectionName) {
+        loadDeferredSections();
+        if (sectionName == null || loadedSections == null) {
+            return Collections.emptyList();
+        }
+        for (final Entry<String, List<String>> section : loadedSections.entrySet()) {
+            if (section.getKey().equalsIgnoreCase(sectionName) && DeckSection.smartValueOf(section.getKey()) == null) {
+                return Collections.unmodifiableList(section.getValue());
+            }
+        }
+        return Collections.emptyList();
+    }
+
+    /** Returns custom, non-metadata sections retained from the source deck file. */
+    public Map<String, List<String>> getUnparsedSections() {
+        loadDeferredSections();
+        final Map<String, List<String>> result = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+        if (loadedSections == null) {
+            return result;
+        }
+        for (final Entry<String, List<String>> section : loadedSections.entrySet()) {
+            if (!"metadata".equalsIgnoreCase(section.getKey()) && DeckSection.smartValueOf(section.getKey()) == null) {
+                result.put(section.getKey(), new ArrayList<>(section.getValue()));
+            }
+        }
+        return result;
+    }
+
     /* (non-Javadoc)
      * @see forge.deck.DeckBase#cloneFieldsTo(forge.deck.DeckBase)
      */
@@ -255,6 +287,10 @@ public class Deck extends DeckBase implements Iterable<Entry<DeckSection, CardPo
         result.setAiHints(StringUtils.join(aiHints, " | "));
         result.setDraftNotes(draftNotes);
         result.setMetadata(metadata);
+        final Map<String, List<String>> rawSections = getUnparsedSections();
+        if (!rawSections.isEmpty()) {
+            result.loadedSections = rawSections;
+        }
         //noinspection ConstantValue
         if(tags != null) //Can happen deserializing old Decks.
             result.tags.addAll(this.tags);

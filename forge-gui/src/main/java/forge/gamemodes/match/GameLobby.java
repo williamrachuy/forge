@@ -379,6 +379,11 @@ public abstract class GameLobby implements IHasGameType {
             return false;
         }
 
+        final List<String> basicLandWarnings = BattleboxConfig.getBasicLandsSetWarnings(deck);
+        if (!basicLandWarnings.isEmpty()) {
+            SOptionPane.showMessageDialog("Battlebox basic land print warnings:\n" + String.join("\n", basicLandWarnings));
+        }
+
         final Set<String> duplicates = BattleboxConfig.getDuplicateNamesInMain(deck);
         if (!duplicates.isEmpty()) {
             SOptionPane.showMessageDialog("Battlebox shared library contains duplicate card names. Forge will allow this deck as written: " + String.join(", ", duplicates));

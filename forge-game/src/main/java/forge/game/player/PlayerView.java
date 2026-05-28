@@ -9,6 +9,7 @@ import forge.card.MagicColor;
 import forge.card.mana.ManaAtom;
 import forge.game.GameEntityView;
 import forge.game.card.Card;
+import forge.game.card.CardCollectionView;
 import forge.game.card.CardView;
 import forge.game.card.CounterType;
 import forge.game.zone.PlayerZone;
@@ -473,12 +474,16 @@ public class PlayerView extends GameEntityView {
     }
 
     void updateZone(PlayerZone zone, Player viewOwner) {
-        TrackableProperty prop = zone.getZoneType().getTrackableProperty();
+        updateZone(zone.getZoneType(), zone.getCards(false), viewOwner);
+    }
+
+    void updateZone(ZoneType zoneType, CardCollectionView cards, Player viewOwner) {
+        TrackableProperty prop = zoneType.getTrackableProperty();
         if (prop == null) { return; }
-        set(prop, CardView.getCollection(zone.getCards(false)));
+        set(prop, CardView.getCollection(cards));
 
         //update flashback zone when relevant zones change
-        switch (zone.getZoneType()) {
+        switch (zoneType) {
             case Command:
             case Graveyard:
             case Library:

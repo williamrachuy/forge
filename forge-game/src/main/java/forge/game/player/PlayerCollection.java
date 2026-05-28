@@ -35,6 +35,13 @@ public class PlayerCollection extends FCollection<Player> {
         Set<PlayerZone> seenSharedZones = zone == ZoneType.Library || zone == ZoneType.Command || zone == ZoneType.Graveyard
                 ? Collections.newSetFromMap(new IdentityHashMap<>()) : null;
         for (Player p : this) {
+            if (zone == ZoneType.Command && p.getPersonalCommandZone() != p.getZone(zone)) {
+                if (seenSharedZones.add(p.getZone(zone))) {
+                    result.addAll(p.getZone(zone).getCards());
+                }
+                result.addAll(p.getPersonalCommandZone().getCards());
+                continue;
+            }
             if (seenSharedZones != null && !seenSharedZones.add(p.getZone(zone))) {
                 continue;
             }

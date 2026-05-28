@@ -11,9 +11,11 @@ import forge.game.ability.AbilityKey;
 import forge.game.card.Card;
 import forge.game.card.CardCollectionView;
 import forge.game.event.Event;
+import forge.game.event.EventValueChangeType;
 import forge.game.event.GameEventAddLog;
 import forge.game.event.GameEventAnteCardsSelected;
 import forge.game.event.GameEventGameFinished;
+import forge.game.event.GameEventZone;
 import forge.game.player.Player;
 import forge.game.player.PlayerController;
 import forge.game.player.RegisteredPlayer;
@@ -254,6 +256,7 @@ public class Match {
         final BattleboxConfig config = BattleboxConfig.fromDeck(battleboxSource.getDeck());
         final CardPool landStation = config.getLandStation(battleboxSource.getDeck(), players.size());
         if (landStation == null) {
+            host.getGame().fireEvent(new GameEventZone(ZoneType.Command, host, EventValueChangeType.ComplexUpdate, null));
             return;
         }
         for (final PaperCard pc : landStation.toFlatList()) {
@@ -262,6 +265,7 @@ public class Match {
             stationLand.setStartsGameInPlay(true);
             sharedCommand.add(stationLand);
         }
+        host.getGame().fireEvent(new GameEventZone(ZoneType.Command, host, EventValueChangeType.ComplexUpdate, null));
     }
 
     private static void prepareBattleboxSharedGraveyard(final FCollectionView<Player> players) {
@@ -274,6 +278,8 @@ public class Match {
             sharedGraveyard.addPlayer(player);
             player.setSharedGraveyardZone(sharedGraveyard);
         }
+        // An empty new shared graveyard otherwise produces no zone-change event, leaving stale UI contents visible.
+        host.getGame().fireEvent(new GameEventZone(ZoneType.Graveyard, host, EventValueChangeType.ComplexUpdate, null));
     }
 
     private void prepareAllZones(final Game game) {

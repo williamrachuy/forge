@@ -2664,6 +2664,52 @@ public class GameAction {
         game.getTriggerHandler().runTrigger(TriggerType.BecomeMonarch, runParams, false);
     }
 
+    private void offerBattleboxMonarchOnFirstCombatDamage(final CardDamageMap damageMap) {
+        if (!game.getRules().hasAppliedVariant(GameType.Battlebox) || game.isBattleboxMonarchChoiceMade()) {
+            return;
+        }
+
+        for (final Map.Entry<Card, Map<GameEntity, Integer>> sourceDamage : damageMap.rowMap().entrySet()) {
+            final Card source = sourceDamage.getKey();
+            final Player damagingPlayer = source.getController();
+            if (damagingPlayer == null) {
+                continue;
+            }
+            for (final Map.Entry<GameEntity, Integer> targetDamage : sourceDamage.getValue().entrySet()) {
+                if (!(targetDamage.getKey() instanceof Player damagedPlayer) || targetDamage.getValue() <= 0
+                        || !damagedPlayer.isOpponentOf(damagingPlayer)) {
+                    continue;
+                }
+
+                game.setBattleboxMonarchChoiceMade(true);
+                // An existing monarch has already established normal monarch transfer rules.
+                if (game.getMonarch() != null) {
+                    return;
+                }
+
+                final Player decisionPlayer = getBattleboxMonarchDecisionPlayer();
+                if (decisionPlayer == null) {
+                    return;
+                }
+                final SpellAbility choice = new SpellAbility.EmptySa(ApiType.BecomeMonarch, source, decisionPlayer);
+                final String prompt = "Make " + damagingPlayer.getName() + " the monarch?";
+                if (decisionPlayer.getController().confirmAction(choice, PlayerActionConfirmMode.OptionalChoose, prompt, null)) {
+                    becomeMonarch(damagingPlayer, "CN2");
+                }
+                return;
+            }
+        }
+    }
+
+    private Player getBattleboxMonarchDecisionPlayer() {
+        for (final Player player : game.getPlayers()) {
+            if (!player.getController().isAI()) {
+                return player;
+            }
+        }
+        return null;
+    }
+
     public void takeInitiative(final Player p, final String set) {
         final Player previous = game.getHasInitiative();
         if (p == null) {
@@ -2862,6 +2908,7 @@ public class GameAction {
 
         if (isCombat) {
             game.getTriggerHandler().runWaitingTriggers();
+            offerBattleboxMonarchOnFirstCombatDamage(damageMap);
         }
 
         if (!lifeLostAllDamageMap.isEmpty()) { // Run triggers if any player actually lost life
