@@ -47,7 +47,11 @@ public class BuildInfo {
         if (StringUtils.isEmpty(version)) {
             return "GIT";
         }
-        return version;
+        final String localBuildNumber = readOptionalResource("/local-build-number.txt");
+        if (StringUtils.isBlank(localBuildNumber)) {
+            return version;
+        }
+        return version + "." + localBuildNumber;
     }
 
     public static boolean isDevelopmentVersion() {
@@ -93,5 +97,16 @@ public class BuildInfo {
             }
         }
         return resultStringBuilder.toString();
+    }
+
+    private static String readOptionalResource(final String resourcePath) {
+        try (InputStream inputStream = BuildInfo.class.getResourceAsStream(resourcePath)) {
+            if (inputStream == null) {
+                return "";
+            }
+            return readFromInputStream(inputStream).trim();
+        } catch (final IOException e) {
+            return "";
+        }
     }
 }

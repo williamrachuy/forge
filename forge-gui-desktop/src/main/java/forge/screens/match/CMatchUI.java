@@ -229,14 +229,53 @@ public final class CMatchUI
 
     @Override
     public void setGameView(GameView gameView0) {
+        if (gameView0 == null) {
+            clearGameUiState();
+        }
         super.setGameView(gameView0);
         gameView0 = getGameView(); //ensure updated game view used for below logic
-        if (gameView0 == null) { return; }
+        if (gameView0 == null) {
+            cDetailPicture.setGameView(null);
+            return;
+        }
 
         updateLastUltronChatGame(gameView0.getGame());
         cDetailPicture.setGameView(gameView0);
         screen.setTabCaption(gameView0.getTitle());
         refreshAllViews();
+    }
+
+    private void clearGameUiState() {
+        if (openAbilityMenu != null) {
+            openAbilityMenu.setVisible(false);
+            openAbilityMenu = null;
+        }
+        FloatingZone.closeAll();
+
+        // Removing docs can synchronously select/update another old doc. Keep the
+        // previous player/view mapping valid until all old docs are detached.
+        for (final EDocID docId : EDocID.VarDocs) {
+            final IVDoc<? extends ICDoc> doc = docId.getDoc();
+            if (doc != null && doc.getParentCell() != null) {
+                doc.getParentCell().removeDoc(doc);
+            }
+            docId.setDoc(new VEmptyDoc(docId));
+            myDocs.remove(docId);
+        }
+        for (final ZoneType zone : FLOATING_ZONE_TYPES) {
+            final EDocID docId = EDocID.fromZoneType(zone);
+            if (docId != null) {
+                docId.setDoc(null);
+            }
+        }
+
+        sortedPlayers = null;
+        allHands = false;
+        selectedDocBeforeCombat = null;
+        nextNotifiableStackIndex = 0;
+        lastPromptMessage = "";
+        view.setFieldViews(new ArrayList<>());
+        view.setHandViews(new ArrayList<>());
     }
 
     @Override
@@ -274,8 +313,13 @@ public final class CMatchUI
     }
 
     private void refreshAllViews() {
-        if (sortedPlayers != null) {
+        final GameView expectedGameView = getGameView();
+        final FCollectionView<PlayerView> expectedPlayers = sortedPlayers;
+        if (expectedGameView != null && expectedPlayers != null) {
             FThreads.invokeInEdtNowOrLater(() -> {
+                if (getGameView() != expectedGameView || sortedPlayers != expectedPlayers) {
+                    return;
+                }
                 for (final VField f : getFieldViews()) {
                     f.updateDetails();
                     f.updateZones();
@@ -304,6 +348,12 @@ public final class CMatchUI
     }
     CPrompt getCPrompt() {
         return cPrompt;
+    }
+    public boolean selectPrimaryPromptButtonFromShortcut() {
+        return cPrompt.selectPrimaryButtonFromShortcut();
+    }
+    public boolean selectSecondaryPromptButtonFromShortcut() {
+        return cPrompt.selectSecondaryButtonFromShortcut();
     }
     public CStack getCStack() {
         return cStack;
@@ -439,7 +489,8 @@ public final class CMatchUI
     }
     public VField getFieldViewFor(final PlayerView p) {
         final int idx = getPlayerIndex(p);
-        return idx < 0 ? null : getFieldViews().get(idx);
+        final List<VField> fieldViews = getFieldViews();
+        return idx < 0 || fieldViews == null || idx >= fieldViews.size() ? null : fieldViews.get(idx);
     }
 
     public List<VHand> getHandViews() {
@@ -468,7 +519,7 @@ public final class CMatchUI
     }
 
     private int getPlayerIndex(final PlayerView player) {
-        return sortedPlayers.indexOf(player);
+        return sortedPlayers == null || player == null ? -1 : sortedPlayers.indexOf(player);
     }
 
     @Override
@@ -544,6 +595,13 @@ public final class CMatchUI
                     break;
                 case Hand:
                     updateHand = true;
+                    updateZones = true;
+                    FloatingZone.refresh(owner, zone);
+                    break;
+                case Command:
+                    // Monarch is a command-zone rules object, but displayed as a
+                    // decorative battlefield marker for the current monarch.
+                    setupPlayZone = true;
                     updateZones = true;
                     FloatingZone.refresh(owner, zone);
                     break;
@@ -689,8 +747,15 @@ public final class CMatchUI
     public void setSelectables(final Iterable<CardView> cards) {
         super.setSelectables(cards);
         // update zones on tabletop and floating zones - non-selectable cards may be rendered differently
+        final GameView expectedGameView = getGameView();
+        if (expectedGameView == null) {
+            return;
+        }
         FThreads.invokeInEdtNowOrLater(() -> {
-            for (final PlayerView p : getGameView().getPlayers()) {
+            if (getGameView() != expectedGameView) {
+                return;
+            }
+            for (final PlayerView p : expectedGameView.getPlayers()) {
                 if (p.getCards(ZoneType.Battlefield) != null) {
                     updateCards(isNetGame() ? p.getCards(ZoneType.Battlefield).threadSafeIterable() : p.getCards(ZoneType.Battlefield));
                 }
@@ -706,8 +771,15 @@ public final class CMatchUI
     public void clearSelectables() {
         super.clearSelectables();
         // update zones on tabletop and floating zones - non-selectable cards may be rendered differently
+        final GameView expectedGameView = getGameView();
+        if (expectedGameView == null) {
+            return;
+        }
         FThreads.invokeInEdtNowOrLater(() -> {
-            for (final PlayerView p : getGameView().getPlayers()) {
+            if (getGameView() != expectedGameView) {
+                return;
+            }
+            for (final PlayerView p : expectedGameView.getPlayers()) {
                 if (p.getCards(ZoneType.Battlefield) != null) {
                     updateCards(isNetGame() ? p.getCards(ZoneType.Battlefield).threadSafeIterable() : p.getCards(ZoneType.Battlefield));
                 }
@@ -722,8 +794,15 @@ public final class CMatchUI
     @Override
     public void refreshField() {
         super.refreshField();
+        final GameView expectedGameView = getGameView();
+        if (expectedGameView == null) {
+            return;
+        }
         FThreads.invokeInEdtNowOrLater(() -> {
-            for (final PlayerView p : getGameView().getPlayers()) {
+            if (getGameView() != expectedGameView) {
+                return;
+            }
+            for (final PlayerView p : expectedGameView.getPlayers()) {
                 if (p.getCards(ZoneType.Battlefield) != null) {
                     updateCards(isNetGame() ? p.getCards(ZoneType.Battlefield).threadSafeIterable() : p.getCards(ZoneType.Battlefield));
                 }
@@ -1286,6 +1365,7 @@ public final class CMatchUI
 
     @Override
     public void afterGameEnd() {
+        setGameView(null);
         super.afterGameEnd();
         Singletons.getView().getLpnDocument().remove(targetingOverlay.getPanel());
         FThreads.invokeInEdtNowOrLater(() -> {

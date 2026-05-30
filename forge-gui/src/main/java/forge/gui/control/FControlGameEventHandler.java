@@ -27,6 +27,7 @@ import java.util.Map.Entry;
 public class FControlGameEventHandler extends IGameEventVisitor.Base<Void> {
     private final PlayerControllerHuman humanController;
     private final IGuiGame matchController;
+    private final GameView sourceGameView;
     private final Set<CardView> cardsUpdate = new HashSet<>();
     private final Set<CardView> cardsRefreshDetails = new HashSet<>();
     private final Set<PlayerView> livesUpdate = new HashSet<>();
@@ -43,17 +44,23 @@ public class FControlGameEventHandler extends IGameEventVisitor.Base<Void> {
     public FControlGameEventHandler(final PlayerControllerHuman humanController0) {
         humanController = humanController0;
         matchController = humanController.getGui();
+        sourceGameView = matchController.getGameView();
     }
 
     public FControlGameEventHandler(final IGuiGame gui) {
         humanController = null;
         matchController = gui;
+        sourceGameView = matchController.getGameView();
     }
 
     private final Runnable processEvents = new Runnable() {
         @Override
         public void run() {
             processEventsQueued = false;
+            if (!isCurrentGameView()) {
+                clearPendingUpdates();
+                return;
+            }
 
             synchronized (cardsUpdate) {
                 if (!cardsUpdate.isEmpty()) {
@@ -150,8 +157,48 @@ public class FControlGameEventHandler extends IGameEventVisitor.Base<Void> {
 
     @Subscribe
     public void receiveGameEvent(final GameEvent ev) {
+        if (!isCurrentGameView()) {
+            return;
+        }
         ev.visit(this);
         SoundSystem.instance.receiveEvent(ev);
+    }
+
+    private boolean isCurrentGameView() {
+        return sourceGameView == null || matchController.getGameView() == sourceGameView;
+    }
+
+    private void clearPendingUpdates() {
+        synchronized (cardsUpdate) {
+            cardsUpdate.clear();
+        }
+        synchronized (cardsRefreshDetails) {
+            cardsRefreshDetails.clear();
+        }
+        synchronized (livesUpdate) {
+            livesUpdate.clear();
+        }
+        synchronized (shardsUpdate) {
+            shardsUpdate.clear();
+        }
+        synchronized (manaPoolUpdate) {
+            manaPoolUpdate.clear();
+        }
+        synchronized (zonesUpdate) {
+            zonesUpdate.clear();
+        }
+        playersWithValidTargets.clear();
+        needPhaseUpdate = false;
+        needCombatUpdate = false;
+        needStackUpdate = false;
+        needPlayerControlUpdate = false;
+        refreshFieldUpdate = false;
+        showExileUpdate = false;
+        gameOver = false;
+        gameFinished = false;
+        needSaveState = false;
+        turnUpdate = null;
+        activatingPlayer = null;
     }
 
     private Void processEvent() {

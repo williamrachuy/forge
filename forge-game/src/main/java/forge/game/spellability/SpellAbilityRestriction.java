@@ -360,6 +360,9 @@ public class SpellAbilityRestriction extends SpellAbilityVariables {
         }
 
         String validPlayer = this.getActivator();
+        if ("You".equals(validPlayer) && activator.isBattleboxSharedGraveyardCard(c)) {
+            return true;
+        }
         return activator.isValid(validPlayer, c.getController(), c, sa);
     }
 

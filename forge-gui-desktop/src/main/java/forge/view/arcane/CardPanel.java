@@ -119,6 +119,7 @@ public class CardPanel extends SkinnedPanel implements CardContainer, IDisposabl
     private OutlinedLabel damageText;
     private OutlinedLabel cardIdText;
     private boolean displayEnabled = true;
+    private boolean inputEnabled = true;
     private boolean isAnimationPanel;
     private int cardXOffset, cardYOffset, cardWidth, cardHeight;
     private boolean isSelected;
@@ -268,6 +269,13 @@ public class CardPanel extends SkinnedPanel implements CardContainer, IDisposabl
     }
     public final void setDisplayEnabled(final boolean displayEnabled0) {
         displayEnabled = displayEnabled0;
+    }
+
+    public final boolean isInputEnabled() {
+        return inputEnabled;
+    }
+    public final void setInputEnabled(final boolean inputEnabled0) {
+        inputEnabled = inputEnabled0;
     }
 
     public int getGroupCount() {

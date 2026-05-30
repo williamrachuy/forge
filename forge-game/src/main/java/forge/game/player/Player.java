@@ -1742,8 +1742,7 @@ public class Player extends GameEntity implements Comparable<Player> {
 
     public final Card playLand(final Card land, SpellAbility cause) {
         final ZoneType originZone = land.getZone() == null ? null : land.getZone().getZoneType();
-        final boolean battleboxSharedStationLand = game.getRules().hasAppliedVariant(GameType.Battlebox)
-                && isBattleboxSharedLandStationCard(land);
+        final boolean battleboxSharedStationLand = isBattleboxGame() && isBattleboxSharedLandStationCard(land);
         if (battleboxSharedStationLand) {
             claimBattleboxSharedLandStationCard(land);
         }
@@ -1779,6 +1778,7 @@ public class Player extends GameEntity implements Comparable<Player> {
     }
 
     public final boolean canPlayLand(final Card land, final boolean ignoreZoneAndTiming, SpellAbility landSa) {
+        final boolean battleboxSharedStationLand = isBattleboxGame() && isBattleboxSharedLandStationCard(land);
         if (!ignoreZoneAndTiming) {
             // CR 305.3
             if (!game.getPhaseHandler().isPlayerTurn(this)) {
@@ -1788,7 +1788,8 @@ public class Player extends GameEntity implements Comparable<Player> {
                 return false;
             }
 
-            final boolean mayPlay = landSa == null ? !land.mayPlay(this).isEmpty() : landSa.getMayPlay() != null;
+            final boolean mayPlay = battleboxSharedStationLand
+                    || (landSa == null ? !land.mayPlay(this).isEmpty() : landSa.getMayPlay() != null);
             if (land.getOwner() != this && !mayPlay) {
                 return false;
             }
@@ -1798,8 +1799,7 @@ public class Player extends GameEntity implements Comparable<Player> {
                     && (landSa == null || !landSa.isAlternativeCost(AlternativeCost.Mayhem))))) {
                 return false;
             }
-            if (zone != null && zone.is(ZoneType.Command) && game.getRules().hasAppliedVariant(GameType.Battlebox)
-                    && isBattleboxSharedLandStationCard(land) && battleboxCommandLandsPlayedThisTurn >= 1) {
+            if (zone != null && zone.is(ZoneType.Command) && battleboxSharedStationLand && battleboxCommandLandsPlayedThisTurn >= 1) {
                 return false;
             }
         }
@@ -1856,10 +1856,16 @@ public class Player extends GameEntity implements Comparable<Player> {
     }
 
     public final boolean getMaxLandPlaysInfinite() {
-        if (getController().canPlayUnlimitedLands()) {
+        final PlayerController controller = getController();
+        if (controller != null && controller.canPlayUnlimitedLands()) {
             return true;
         }
         return !adjustLandPlaysInfinite.isEmpty();
+    }
+
+    private boolean isBattleboxGame() {
+        return game.getRules().getGameType() == GameType.Battlebox
+                || game.getRules().hasAppliedVariant(GameType.Battlebox);
     }
 
     public final void addMaingameCardMapping(Card subgameCard, Card maingameCard) {
@@ -3111,7 +3117,7 @@ public class Player extends GameEntity implements Comparable<Player> {
             this.addCommander(cmd);
         }
 
-        if (game.getRules().hasAppliedVariant(GameType.Battlebox)) {
+        if (isBattleboxGame()) {
             createBattleboxLandStationEffect();
         }
 
@@ -3579,7 +3585,9 @@ public class Player extends GameEntity implements Comparable<Player> {
             monarchEffect = new Card(game.nextCardId(), null, game);
             monarchEffect.setOwner(this);
             monarchEffect.setGamePieceType(GamePieceType.EFFECT);
-            monarchEffect.setImageKey(StaticData.instance().getOtherImageKey(ImageKeys.MONARCH_IMAGE, set));
+            if (StaticData.instance() != null) {
+                monarchEffect.setImageKey(StaticData.instance().getOtherImageKey(ImageKeys.MONARCH_IMAGE, set));
+            }
             monarchEffect.setSetCode(set);
             monarchEffect.setName("The Monarch");
 
@@ -3604,7 +3612,9 @@ public class Player extends GameEntity implements Comparable<Player> {
                 damageTrigger.setOverridingAbility(AbilityFactory.getAbility(damageEff, monarchEffect));
                 monarchEffect.addTrigger(damageTrigger);
             }
-            monarchEffect.updateStateForView();
+            if (StaticData.instance() != null) {
+                monarchEffect.updateStateForView();
+            }
         }
         com.add(monarchEffect);
 

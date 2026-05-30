@@ -219,7 +219,7 @@ public class PhaseHandler implements java.io.Serializable, IHasForgeLog {
     private boolean isSkippingPhase(final PhaseType phase) {
         switch (phase) {
             case DRAW:
-                return turn == 1 && game.getPlayers().size() == 2;
+                return isSkippingFirstTurnDraw();
 
             case COMBAT_BEGIN:
             case COMBAT_DECLARE_ATTACKERS:
@@ -235,6 +235,24 @@ public class PhaseHandler implements java.io.Serializable, IHasForgeLog {
             default:
                 return false;
         }
+    }
+
+    private boolean isSkippingFirstTurnDraw() {
+        if (!isStartingPlayersFirstTurn()) {
+            return false;
+        }
+        return game.getPlayers().size() >= 2;
+    }
+
+    private boolean isStartingPlayersFirstTurn() {
+        if (playerTurn == null) {
+            return false;
+        }
+        final Player startingPlayer = game.getStartingPlayer();
+        if (startingPlayer != null) {
+            return playerTurn.equals(startingPlayer) && playerTurn.getTurn() == 1;
+        }
+        return turn == 1;
     }
 
     private void onPhaseBegin() {

@@ -290,6 +290,7 @@ public class GameSnapshot {
             toGame.setMonarchBeginTurn(findBy(toGame, fromGame.getMonarchBeginTurn()));
         }
         toGame.setBattleboxMonarchChoiceMade(fromGame.isBattleboxMonarchChoiceMade());
+        toGame.setBattleboxMonarchEnabled(fromGame.isBattleboxMonarchEnabled());
         if (fromGame.getHasInitiative() != null) {
             toGame.setHasInitiative(findBy(toGame, fromGame.getHasInitiative()));
         }

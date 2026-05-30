@@ -58,6 +58,8 @@ import forge.view.arcane.util.CardPanelMouseListener;
 public class PlayArea extends CardPanelContainer implements CardPanelMouseListener {
     private static final long serialVersionUID = 8333013579724492513L;
 
+    private static final String MONARCH_MARKER_NAME = "The Monarch";
+
     private static final int GUTTER_Y = 5;
     private static final int GUTTER_X = 5;
     static final float EXTRA_CARD_SPACING_X = 0.04f;
@@ -98,6 +100,7 @@ public class PlayArea extends CardPanelContainer implements CardPanelMouseListen
     private boolean groupTokensAndCreatures;
     private boolean groupAll;
     private boolean grouping;
+    private CardPanel monarchMarkerPanel;
 
     public PlayArea(final CMatchUI matchUI, final FScrollPane scrollPane, final boolean mirror, final PlayerView player, final ZoneType zone) {
         super(matchUI, scrollPane);
@@ -442,6 +445,7 @@ public class PlayArea extends CardPanelContainer implements CardPanelMouseListen
         final CardStackRow creatures = collectAllCreatures(unsorted);
         final CardStackRow contraptions = collectAllContraptions(unsorted);
         final CardStackRow others = collectAllOthers(unsorted);
+        addMonarchMarkerStack(others);
 
         if (!makeTokenRow) {
             for (CardStack s : tokens) {
@@ -728,7 +732,7 @@ public class PlayArea extends CardPanelContainer implements CardPanelMouseListen
                     }
                     if ((x > panelX) && (x < (panelX + panelWidth))) {
                         if ((y > panelY) && (y < (panelY + panelHeight))) {
-                            if (!panel.isDisplayEnabled()) {
+                            if (!panel.isDisplayEnabled() || !panel.isInputEnabled()) {
                                 return null;
                             }
                             return panel;
@@ -968,6 +972,7 @@ public class PlayArea extends CardPanelContainer implements CardPanelMouseListen
                 modelCopy = Lists.newArrayList();
             }
         }
+        final CardView monarchMarker = findMonarchMarker(model);
 
         final List<CardView> oldCards = Lists.newArrayList();
         for (final CardPanel cpa : getCardPanels()) {
@@ -993,6 +998,8 @@ public class PlayArea extends CardPanelContainer implements CardPanelMouseListen
             }
         }
 
+        final boolean markerChanged = syncMonarchMarker(monarchMarker);
+
         final List<CardView> toAdd = new ArrayList<>(modelCopy);
         toAdd.removeAll(oldCards);
 
@@ -1005,7 +1012,7 @@ public class PlayArea extends CardPanelContainer implements CardPanelMouseListen
             newPanels.add(placeholder);
         }
 
-        boolean needLayoutRefresh = !newPanels.isEmpty() || !toDelete.isEmpty();
+        boolean needLayoutRefresh = markerChanged || !newPanels.isEmpty() || !toDelete.isEmpty();
         for (final CardView card : modelCopy) {
             if (doUpdateCard(card, true)) {
                 needLayoutRefresh = true;
@@ -1026,6 +1033,69 @@ public class PlayArea extends CardPanelContainer implements CardPanelMouseListen
             }
         }
         repaint();
+    }
+
+    private static CardView findMonarchMarker(final PlayerView model) {
+        synchronized (model) {
+            final Iterable<CardView> commandCards = model.getCards(ZoneType.Command);
+            if (commandCards == null) {
+                return null;
+            }
+            for (final CardView card : commandCards) {
+                if (isMonarchMarker(card)) {
+                    return card;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static boolean isMonarchMarker(final CardView card) {
+        return card != null && card.isImmutable() && MONARCH_MARKER_NAME.equals(card.getName());
+    }
+
+    private boolean syncMonarchMarker(final CardView markerCard) {
+        if (markerCard == null) {
+            if (monarchMarkerPanel == null) {
+                return false;
+            }
+            remove(monarchMarkerPanel);
+            monarchMarkerPanel.dispose();
+            monarchMarkerPanel = null;
+            return true;
+        }
+
+        if (monarchMarkerPanel != null && monarchMarkerPanel.getCard() != null
+                && monarchMarkerPanel.getCard().getId() == markerCard.getId()) {
+            monarchMarkerPanel.setCard(markerCard);
+            monarchMarkerPanel.setDisplayEnabled(true);
+            monarchMarkerPanel.setInputEnabled(false);
+            if (monarchMarkerPanel.getParent() != this) {
+                add(monarchMarkerPanel);
+                return true;
+            }
+            return false;
+        }
+
+        if (monarchMarkerPanel != null) {
+            remove(monarchMarkerPanel);
+            monarchMarkerPanel.dispose();
+        }
+        monarchMarkerPanel = new CardPanel(getMatchUI(), markerCard);
+        monarchMarkerPanel.setDisplayEnabled(true);
+        monarchMarkerPanel.setInputEnabled(false);
+        add(monarchMarkerPanel);
+        return true;
+    }
+
+    private void addMonarchMarkerStack(final CardStackRow others) {
+        if (monarchMarkerPanel == null || monarchMarkerPanel.getParent() != this) {
+            return;
+        }
+        final CardStack monarchStack = new CardStack();
+        monarchStack.alignRight = true;
+        monarchStack.add(monarchMarkerPanel);
+        others.add(monarchStack);
     }
 
     public boolean updateCard(final CardView card, boolean fromRefresh) {

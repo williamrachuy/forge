@@ -93,6 +93,7 @@ public class Game {
     private final ReplacementHandler replacementHandler = new ReplacementHandler(this);
     private final EventBus events = new EventBus("game events");
     private final GameLog gameLog = new GameLog();
+    private final GameStateTraceLogger stateTraceLogger;
 
     private final Zone stackZone = new Zone(ZoneType.Stack, this);
     public int AI_TIMEOUT = 5;
@@ -124,6 +125,7 @@ public class Game {
     private Player monarch;
     private Player monarchBeginTurn;
     private boolean battleboxMonarchChoiceMade;
+    private boolean battleboxMonarchEnabled;
     private Player startingPlayer;
 
     private Direction turnOrder = Direction.getDefaultDirection();
@@ -177,6 +179,23 @@ public class Game {
     }
     public void setBattleboxMonarchChoiceMade(final boolean battleboxMonarchChoiceMade) {
         this.battleboxMonarchChoiceMade = battleboxMonarchChoiceMade;
+    }
+    public boolean isBattleboxMonarchEnabled() {
+        return battleboxMonarchEnabled;
+    }
+    public void setBattleboxMonarchEnabled(final boolean battleboxMonarchEnabled) {
+        this.battleboxMonarchEnabled = battleboxMonarchEnabled;
+    }
+
+    public void setBattleboxMonarchChoice(final boolean enabled) {
+        setBattleboxMonarchChoiceMade(true);
+        setBattleboxMonarchEnabled(enabled);
+    }
+
+    public void traceState(final String message) {
+        if (stateTraceLogger != null) {
+            stateTraceLogger.trace(message);
+        }
     }
 
     public Player getHasInitiative() {
@@ -388,6 +407,7 @@ public class Game {
         action = new GameAction(this);
         stack = new MagicStack(this);
         phaseHandler = new PhaseHandler(this);
+        stateTraceLogger = GameStateTraceLogger.create(this);
 
         untap = new Untap(this);
         upkeep = new Phase(PhaseType.UPKEEP);
@@ -924,6 +944,9 @@ public class Game {
         // TODO free any mindslaves
 
         for (Card c : cards) {
+            if (isBattleboxSharedZoneCard(c)) {
+                continue;
+            }
             // CR 800.4d if card is controlled by opponent, LTB should trigger
             if (c.getOwner().equals(p) && c.getController().equals(p)) {
                 getTriggerHandler().clearActiveTriggers(c, null);
@@ -943,6 +966,10 @@ public class Game {
 
         for (Card c : cards) {
             if (isMultiplayer) {
+                if (isBattleboxSharedZoneCard(c)) {
+                    preserveBattleboxSharedZoneCardAfterPlayerLost(c, p);
+                    continue;
+                }
                 // unattach all "Enchant Player"
                 c.removeAttachedTo(p);
                 if (c.getOwner().equals(p)) {
@@ -1051,11 +1078,54 @@ public class Game {
         getTriggerHandler().onPlayerLost(p);
     }
 
+    private boolean isBattleboxSharedZoneCard(final Card card) {
+        if (card == null || !isBattleboxGame()) {
+            return false;
+        }
+        final Zone zone = card.getZone();
+        if (!(zone instanceof PlayerZone)) {
+            return false;
+        }
+        final PlayerZone playerZone = (PlayerZone) zone;
+        for (final Player player : getPlayers()) {
+            final PlayerZone commandZone = player.getZone(ZoneType.Command);
+            final boolean sharedCommandZone = playerZone.is(ZoneType.Command)
+                    && player.getPersonalCommandZone() != commandZone && commandZone == playerZone;
+            if (player.isSharedLibraryZone(playerZone) || player.isSharedGraveyardZone(playerZone) || sharedCommandZone) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void preserveBattleboxSharedZoneCardAfterPlayerLost(final Card card, final Player lostPlayer) {
+        if (!lostPlayer.equals(card.getOwner()) && !lostPlayer.equals(card.getController())) {
+            return;
+        }
+        final Player newOwner = getNextPlayerAfter(lostPlayer);
+        if (newOwner == null || newOwner.equals(lostPlayer)) {
+            return;
+        }
+        card.clearControllers();
+        if (lostPlayer.equals(card.getOwner())) {
+            card.setOwner(newOwner);
+        }
+        traceState("battlebox-player-lost preserved shared-zone card=" + card + " lostPlayer=" + lostPlayer
+                + " newOwner=" + newOwner + " zone=" + card.getZone());
+    }
+
+    private boolean isBattleboxGame() {
+        return rules.getGameType() == GameType.Battlebox || rules.hasAppliedVariant(GameType.Battlebox);
+    }
+
     /**
      * Fire only the events after they became real for gamestate and won't get replaced.<br>
      * The events are sent to UI, log and sound system. Network listeners are under development.
      */
     public void fireEvent(final Event event) {
+        if (stateTraceLogger != null) {
+            stateTraceLogger.event(event);
+        }
         events.post(event);
     }
     public void subscribeToEvents(final Object subscriber) {

@@ -11,6 +11,7 @@ import forge.StaticData;
 import forge.ai.AiProfileUtil;
 import forge.game.*;
 import forge.game.event.GameEvent;
+import forge.game.event.GameEventAddLog;
 import forge.game.event.GameEventSubgameEnd;
 import forge.game.event.GameEventSubgameStart;
 import forge.game.event.GameEventTurnPhase;
@@ -63,6 +64,7 @@ public class HostedMatch {
     private final MatchUiEventVisitor visitor = new MatchUiEventVisitor();
     private final Map<PlayerControllerHuman, NextGameDecision> nextGameDecisions = Maps.newHashMap();
     private boolean isMatchOver = false;
+    private IGuiGame spectatorGui = null;
     public int subGameCount = 0;
 
     public HostedMatch() {}
@@ -152,17 +154,23 @@ public class HostedMatch {
         this.match.subscribeToEvents(HapticEngine.instance);
         this.match.subscribeToEvents(visitor);
         this.matchPlaylist = playlist;
+        this.isMatchOver = false;
+        this.subGameCount = 0;
         startGame();
     }
 
     public void continueMatch() {
-        endCurrentGame();
+        endCurrentGame(false);
         startGame();
     }
 
     public void restartMatch() {
-        endCurrentGame();
-        startMatch(match.getRules(), null, match.getPlayers(), this.guis, this.matchPlaylist);
+        final GameRules rules = match.getRules();
+        final List<RegisteredPlayer> players = Lists.newArrayList(match.getPlayers());
+        final Map<RegisteredPlayer, IGuiGame> restartGuis = this.guis;
+        final MusicPlaylist playlist = this.matchPlaylist;
+        endCurrentGame(false);
+        startMatch(rules, null, players, restartGuis, playlist);
     }
 
     public void startGame() {
@@ -203,6 +211,10 @@ public class HostedMatch {
         final GameView gameView = getGameView();
 
         humanCount = 0;
+        final Set<IGuiGame> initializedGuis = Collections.newSetFromMap(new IdentityHashMap<>());
+        for (final IGuiGame gui : guis.values()) {
+            prepareGuiForGame(gui, gameView, initializedGuis);
+        }
         final Multimap<IGuiGame, PlayerView> playersPerGui = MultimapBuilder.hashKeys().arrayListValues().build();
         for (int iPlayer = 0; iPlayer < players.size(); iPlayer++) {
             final RegisteredPlayer rp = match.getPlayers().get(iPlayer);
@@ -230,8 +242,6 @@ public class HostedMatch {
             if (p.getController() instanceof PlayerControllerHuman humanController) {
                 final IGuiGame gui = guis.get(p.getRegisteredPlayer());
                 humanController.setGui(gui);
-                gui.setGameView(null); //clear out game view first so we don't copy into old game view
-                gui.setGameView(gameView);
                 gui.setOriginalGameController(p.getView(), humanController);
 
                 if (gui instanceof forge.gamemodes.net.server.RemoteClientGuiGame ngg) {
@@ -272,9 +282,8 @@ public class HostedMatch {
         }
 
         if (humanCount == 0) { //watch game but do not participate
-            final IGuiGame gui = GuiBase.getInterface().getNewGuiGame();
-            gui.setGameView(null); //clear the view so when the game restarts again, it updates correctly
-            gui.setGameView(gameView);
+            final IGuiGame gui = spectatorGui == null ? GuiBase.getInterface().getNewGuiGame() : spectatorGui;
+            prepareGuiForGame(gui, gameView, initializedGuis);
             registerSpectator(gui, new WatchLocalGame(game, new LobbyPlayerHuman("Spectator"), gui));
         }
 
@@ -296,6 +305,7 @@ public class HostedMatch {
                 playbackControl = new FControlGamePlayback(humanControllers.get(0));
                 playbackControl.setGame(game);
                 game.subscribeToEvents(playbackControl);
+                chooseBattleboxMonarchForAllAiSpectatorIfNeeded();
             }
             // Actually start the game!
             match.startGame(game, startGameHook);
@@ -337,6 +347,15 @@ public class HostedMatch {
         });
     }
 
+    private void prepareGuiForGame(final IGuiGame gui, final GameView gameView, final Set<IGuiGame> initializedGuis) {
+        if (gui == null || !initializedGuis.add(gui)) {
+            return;
+        }
+        gui.resetGameControllers();
+        gui.setGameView(null); //clear out game view first so we don't copy into old game view
+        gui.setGameView(gameView);
+    }
+
     private LobbySlot getLobbySlot(LobbyPlayer lobbyPlayer) {
         for (LobbySlot key: gameControllers.keySet()) {
             IGameController value = gameControllers.get(key);
@@ -354,6 +373,7 @@ public class HostedMatch {
         registerSpectator(gui, humanController);
     }
     public void registerSpectator(final IGuiGame gui, final PlayerControllerHuman humanController) {
+        spectatorGui = gui;
         gui.setSpectator(humanController);
         gui.openView(null);
         game.subscribeToEvents(new FControlGameEventHandler(humanController));
@@ -363,6 +383,29 @@ public class HostedMatch {
     public Game getGame() {
         return game;
     }
+
+    private void chooseBattleboxMonarchForAllAiSpectatorIfNeeded() {
+        if (!isBattleboxGame() || game.isBattleboxMonarchChoiceMade() || humanControllers.isEmpty()) {
+            return;
+        }
+        final IGuiGame gui = humanControllers.get(0).getGui();
+        if (gui == null) {
+            return;
+        }
+
+        final String prompt = "Play with monarch?\n\nIf yes, the first player to deal combat damage to an opponent becomes the monarch.";
+        final boolean enabled = gui.showConfirmDialog(prompt, "Battlebox Monarch", "Yes", "No", true);
+        game.setBattleboxMonarchChoice(enabled);
+        game.traceState("battlebox-monarch setup spectator enabled=" + enabled);
+        game.fireEvent(new GameEventAddLog(GameLogEntryType.INFORMATION,
+                "Battlebox monarch " + (enabled ? "enabled." : "disabled.")));
+    }
+
+    private boolean isBattleboxGame() {
+        return game != null && (game.getRules().getGameType() == GameType.Battlebox
+                || game.getRules().hasAppliedVariant(GameType.Battlebox));
+    }
+
     public Match getMatch() {
         return match;
     }
@@ -371,13 +414,18 @@ public class HostedMatch {
     }
 
     public void endCurrentGame() {
+        endCurrentGame(true);
+    }
+
+    private void endCurrentGame(final boolean closeGameUi) {
         if (game == null) { return; }
         boolean isMatchOver = game.getView().isMatchOver();
 
         game = null;
 
         for (final PlayerControllerHuman humanController : humanControllers) {
-            if (humanController.getGui() instanceof forge.gamemodes.net.server.RemoteClientGuiGame ngg) {
+            final IGuiGame gui = humanController.getGui();
+            if (gui instanceof forge.gamemodes.net.server.RemoteClientGuiGame ngg) {
                 forge.gui.control.GameEventForwarder fwd = ngg.getForwarder();
                 if (fwd != null) {
                     for (PlayerControllerHuman allHc : humanControllers) {
@@ -386,16 +434,25 @@ public class HostedMatch {
                 }
                 ngg.shutdownForwarder();
             }
-            humanController.getGui().setGameSpeed(PlaybackSpeed.NORMAL);
+            if (gui == null) {
+                continue;
+            }
+            gui.setGameSpeed(PlaybackSpeed.NORMAL);
             humanController.getYieldController().clearAutoYields();
 
-            if (humanCount > 0) //conceded
-                humanController.getGui().afterGameEnd();
-            else if (!GuiBase.getInterface().isLibgdxPort()||!isMatchOver)
-                humanController.getGui().afterGameEnd();
-            humanController.getGui().updateDayTime(null);
+            if (closeGameUi) {
+                if (humanCount > 0) //conceded
+                    gui.afterGameEnd();
+                else if (!GuiBase.getInterface().isLibgdxPort()||!isMatchOver)
+                    gui.afterGameEnd();
+            }
+            gui.updateDayTime(null);
         }
         humanControllers.clear();
+        playbackControl = null;
+        if (closeGameUi) {
+            spectatorGui = null;
+        }
     }
 
     public void pause() {

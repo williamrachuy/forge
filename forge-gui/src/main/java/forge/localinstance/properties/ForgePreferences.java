@@ -322,6 +322,8 @@ public class ForgePreferences extends PreferencesStore<ForgePreferences.FPref> {
         SHORTCUT_SHOWHOTKEYS("72"),
         SHORTCUT_PANELTABS("17 84"),
         SHORTCUT_CARDOVERLAYS("17 79"),
+        MOUSE_SHORTCUT_PROMPT_PRIMARY("9"),
+        MOUSE_SHORTCUT_PROMPT_SECONDARY("8"),
 
         LAST_IMPORTED_CUBE_ID("");
 

@@ -61,6 +61,9 @@ public interface IGuiGame {
 
     void setSpectator(IGameController spectator);
 
+    default void resetGameControllers() {
+    }
+
     void openView(TrackableCollection<PlayerView> myPlayers);
 
     void afterGameEnd();

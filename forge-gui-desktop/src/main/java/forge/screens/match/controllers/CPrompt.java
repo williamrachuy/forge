@@ -146,6 +146,22 @@ public class CPrompt implements ICDoc {
         matchUI.getGameController().selectButtonCancel();
     }
 
+    public boolean selectPrimaryButtonFromShortcut() {
+        if (!view.getBtnOK().isEnabled()) {
+            return false;
+        }
+        selectButtonOk();
+        return true;
+    }
+
+    public boolean selectSecondaryButtonFromShortcut() {
+        if (!view.getBtnCancel().isEnabled()) {
+            return false;
+        }
+        selectButtonCancel();
+        return true;
+    }
+
     public void setMessage(final String header) {
         view.getTarMessage().setText(FSkin.encodeSymbols(header, false));
         view.setCardView(null);

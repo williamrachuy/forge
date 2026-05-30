@@ -206,7 +206,7 @@ public class CardLists {
                 if (tr.isSameController()) {
                     boolean found = false;
                     for (final Card card2 : result) {
-                        if (card != card2 && card.getController() == card2.getController()) {
+                        if (card != card2 && tr.isSameControllerTargetingCompatible(card, card2)) {
                             found = true;
                             break;
                         }

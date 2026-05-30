@@ -227,18 +227,13 @@ public final class InputSelectTargets extends InputSyncronizedBase {
             }
         }
 
-        // If all cards must have same controllers
+        // "Same controller" also represents "single graveyard" for many card scripts.
         if (tgt.isSameController()) {
-            final List<Player> targetedControllers = new ArrayList<>();
             for (final GameObject o : targets) {
-                if (o instanceof Card) {
-                    final Player p = ((Card) o).getController();
-                    targetedControllers.add(p);
+                if (o instanceof Card && !tgt.isSameControllerTargetingCompatible((Card) o, card)) {
+                    showMessage(sa.getHostCard() + " - Cannot target this card (must have same controller)");
+                    return false;
                 }
-            }
-            if (!targetedControllers.isEmpty() && !targetedControllers.contains(card.getController())) {
-                showMessage(sa.getHostCard() + " - Cannot target this card (must have same controller)");
-                return false;
             }
         }
 

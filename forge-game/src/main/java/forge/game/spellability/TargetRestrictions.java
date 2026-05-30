@@ -30,6 +30,7 @@ import forge.game.GameEntity;
 import forge.game.ability.AbilityUtils;
 import forge.game.card.Card;
 import forge.game.player.Player;
+import forge.game.zone.Zone;
 import forge.game.zone.ZoneType;
 import forge.util.Lang;
 import forge.util.TextUtil;
@@ -733,6 +734,24 @@ public class TargetRestrictions {
      */
     public final boolean isSameController() {
         return this.sameController;
+    }
+
+    public final boolean isSameControllerTargetingCompatible(final Card selected, final Card candidate) {
+        if (selected.getController().equals(candidate.getController())) {
+            return true;
+        }
+        if (!tgtZone.contains(ZoneType.Graveyard)) {
+            return false;
+        }
+
+        final Zone selectedZone = selected.getZone();
+        if (selectedZone == null || selectedZone != candidate.getZone() || !selectedZone.is(ZoneType.Graveyard)) {
+            return false;
+        }
+
+        final Player selectedOwner = selected.getOwner();
+        return selectedOwner != null && selectedOwner.isBattleboxSharedGraveyardCard(selected)
+                && selectedOwner.isBattleboxSharedGraveyardCard(candidate);
     }
 
     /**

@@ -1,8 +1,17 @@
 package forge.control;
 
+import java.awt.AWTEvent;
+import java.awt.Component;
+import java.awt.Container;
+import java.awt.Dialog;
+import java.awt.Toolkit;
+import java.awt.Window;
+import java.awt.event.AWTEventListener;
 import java.awt.event.ActionEvent;
 import java.awt.event.InputEvent;
 import java.awt.event.KeyEvent;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -11,11 +20,14 @@ import javax.swing.AbstractAction;
 import javax.swing.Action;
 import javax.swing.ActionMap;
 import javax.swing.InputMap;
+import javax.swing.JButton;
 import javax.swing.JComponent;
+import javax.swing.JRootPane;
 import javax.swing.KeyStroke;
 import javax.swing.SwingUtilities;
 
 import org.apache.commons.lang3.StringUtils;
+import org.tinylog.Logger;
 
 import forge.Singletons;
 import forge.game.spellability.StackItemView;
@@ -40,6 +52,11 @@ import forge.view.KeyboardShortcutsDialog;
  */
 public class KeyboardShortcuts {
     private static List<Shortcut> cachedShortcuts;
+    private static final MouseShortcutHandler MOUSE_SHORTCUT_HANDLER = new MouseShortcutHandler();
+
+    static {
+        System.setProperty("sun.awt.enableExtraMouseButtons", "true");
+    }
 
     public static List<Shortcut> getKeyboardShortcuts() {
         return attachKeyboardShortcuts(null);
@@ -57,7 +74,10 @@ public class KeyboardShortcuts {
      */
     @SuppressWarnings("serial")
     public static List<Shortcut> attachKeyboardShortcuts(final CMatchUI matchUI) {
+        MOUSE_SHORTCUT_HANDLER.attach(matchUI);
+
         final JComponent c = Singletons.getView().getFrame().getLayeredPane();
+        MOUSE_SHORTCUT_HANDLER.attachToComponent(c);
         final InputMap im = c.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW);
         final ActionMap am = c.getActionMap();
 
@@ -435,5 +455,259 @@ public class KeyboardShortcuts {
         }
 
         ksf.setCodeString(StringUtils.join(existingCodes, ' '));
+    }
+
+    private static final class MouseShortcutHandler implements AWTEventListener {
+        private static final int BROWSER_MOUSE_BUTTON_BACK = 8;
+        private static final int BROWSER_MOUSE_BUTTON_FORWARD = 9;
+        private static final long DUPLICATE_MOUSE_EVENT_WINDOW_MS = 250L;
+
+        private CMatchUI matchUI;
+        private boolean attached;
+        private Component componentListenerTarget;
+        private int lastShortcutButton = MouseEvent.NOBUTTON;
+        private long lastShortcutWhen = Long.MIN_VALUE;
+        private final MouseAdapter componentMouseListener = new MouseAdapter() {
+            @Override
+            public void mousePressed(final MouseEvent event) {
+                handleMouseEvent(event);
+            }
+
+            @Override
+            public void mouseReleased(final MouseEvent event) {
+                handleMouseEvent(event);
+            }
+        };
+
+        private void attach(final CMatchUI matchUI0) {
+            if (matchUI0 != null) {
+                matchUI = matchUI0;
+            }
+            if (!attached) {
+                Toolkit.getDefaultToolkit().addAWTEventListener(this, AWTEvent.MOUSE_EVENT_MASK);
+                attached = true;
+                Logger.info("Mouse prompt shortcuts attached: button {} -> primary/OK, button {} -> secondary/right prompt, extraMouseButtonsEnabled={}",
+                        BROWSER_MOUSE_BUTTON_FORWARD, BROWSER_MOUSE_BUTTON_BACK, Toolkit.getDefaultToolkit().areExtraMouseButtonsEnabled());
+            }
+        }
+
+        private void attachToComponent(final Component component) {
+            if (component == null || component == componentListenerTarget) {
+                return;
+            }
+            if (componentListenerTarget != null) {
+                componentListenerTarget.removeMouseListener(componentMouseListener);
+            }
+            component.addMouseListener(componentMouseListener);
+            componentListenerTarget = component;
+            Logger.info("Mouse prompt shortcut component listener attached to {}", component.getClass().getName());
+        }
+
+        @Override
+        public void eventDispatched(final AWTEvent event) {
+            if (!(event instanceof MouseEvent)) {
+                return;
+            }
+            handleMouseEvent((MouseEvent) event);
+        }
+
+        private void handleMouseEvent(final MouseEvent mouseEvent) {
+            if (mouseEvent.getID() != MouseEvent.MOUSE_PRESSED && mouseEvent.getID() != MouseEvent.MOUSE_RELEASED) {
+                return;
+            }
+
+            final int button = mouseEvent.getButton();
+            traceMouseEvent(mouseEvent, "seen");
+            final Boolean primary = getPromptMouseShortcut(button);
+            if (primary == null) {
+                return;
+            }
+
+            if (isDuplicateShortcutEvent(button, mouseEvent.getWhen())) {
+                traceMouseEvent(mouseEvent, "duplicate");
+                mouseEvent.consume();
+                return;
+            }
+
+            if (handleMouseShortcut(primary, mouseEvent)) {
+                lastShortcutButton = button;
+                lastShortcutWhen = mouseEvent.getWhen();
+                mouseEvent.consume();
+            }
+        }
+
+        private boolean isDuplicateShortcutEvent(final int button, final long when) {
+            return button == lastShortcutButton && when >= lastShortcutWhen
+                    && when - lastShortcutWhen < DUPLICATE_MOUSE_EVENT_WINDOW_MS;
+        }
+
+        private boolean handleMouseShortcut(final boolean primary, final MouseEvent mouseEvent) {
+            final String target = primary ? "primary/OK" : "secondary/right";
+            try {
+                if (clickActiveDialogButton(primary)) {
+                    Logger.info("Mouse prompt shortcut handled by active dialog: button {} -> {}", mouseEvent.getButton(), target);
+                    return true;
+                }
+                if (matchUI == null) {
+                    Logger.info("Mouse prompt shortcut ignored: button {} -> {}, no match UI attached", mouseEvent.getButton(), target);
+                    return false;
+                }
+                if (!Singletons.getControl().getCurrentScreen().isMatchScreen()) {
+                    Logger.info("Mouse prompt shortcut ignored: button {} -> {}, current screen is not match", mouseEvent.getButton(), target);
+                    return false;
+                }
+                final boolean handled = primary
+                        ? matchUI.selectPrimaryPromptButtonFromShortcut()
+                        : matchUI.selectSecondaryPromptButtonFromShortcut();
+                Logger.info("Mouse prompt shortcut {} by match prompt: button {} -> {}", handled ? "handled" : "not handled",
+                        mouseEvent.getButton(), target);
+                return handled;
+            } catch (final RuntimeException ex) {
+                Logger.error(ex, "Mouse prompt shortcut failed: button {} -> {}", mouseEvent.getButton(), target);
+                return true;
+            }
+        }
+
+        private static void traceMouseEvent(final MouseEvent mouseEvent, final String state) {
+            final int button = mouseEvent.getButton();
+            if (button != BROWSER_MOUSE_BUTTON_BACK && button != BROWSER_MOUSE_BUTTON_FORWARD) {
+                return;
+            }
+            final Object source = mouseEvent.getSource();
+            Logger.info("Mouse prompt shortcut event {}: {} button={} when={} consumed={} source={}",
+                    state, getMouseEventName(mouseEvent.getID()), button, mouseEvent.getWhen(), mouseEvent.isConsumed(),
+                    source == null ? "null" : source.getClass().getName());
+        }
+
+        private static String getMouseEventName(final int eventId) {
+            if (eventId == MouseEvent.MOUSE_PRESSED) {
+                return "MOUSE_PRESSED";
+            }
+            if (eventId == MouseEvent.MOUSE_RELEASED) {
+                return "MOUSE_RELEASED";
+            }
+            return Integer.toString(eventId);
+        }
+
+        private static Boolean getPromptMouseShortcut(final int button) {
+            if (button == BROWSER_MOUSE_BUTTON_FORWARD) {
+                return true;
+            }
+            if (button == BROWSER_MOUSE_BUTTON_BACK) {
+                return false;
+            }
+            if (isConfiguredMouseButton(button, FPref.MOUSE_SHORTCUT_PROMPT_PRIMARY)) {
+                return true;
+            }
+            if (isConfiguredMouseButton(button, FPref.MOUSE_SHORTCUT_PROMPT_SECONDARY)) {
+                return false;
+            }
+            return null;
+        }
+
+        private static boolean isConfiguredMouseButton(final int button, final FPref pref) {
+            final String value = FModel.getPreferences().getPref(pref).trim();
+            if (value.isEmpty()) {
+                return false;
+            }
+            if (isBrowserMouseButtonFallback(button, pref, value)) {
+                return true;
+            }
+            for (final String token : value.split("[,;\\s]+")) {
+                try {
+                    if (button == Integer.parseInt(token)) {
+                        return true;
+                    }
+                } catch (final NumberFormatException ex) {
+                    // Ignore malformed preference tokens so one typo does not disable all shortcuts.
+                }
+            }
+            return false;
+        }
+
+        private static boolean isBrowserMouseButtonFallback(final int button, final FPref pref, final String value) {
+            // Earlier builds saved 5/4, but browser forward/back are 9/8 on this Linux setup.
+            return (pref == FPref.MOUSE_SHORTCUT_PROMPT_PRIMARY && button == BROWSER_MOUSE_BUTTON_FORWARD && "5".equals(value))
+                    || (pref == FPref.MOUSE_SHORTCUT_PROMPT_SECONDARY && button == BROWSER_MOUSE_BUTTON_BACK && "4".equals(value));
+        }
+
+        private static boolean clickActiveDialogButton(final boolean primary) {
+            final Dialog dialog = getActiveDialog();
+            if (dialog == null) {
+                return false;
+            }
+
+            final List<JButton> buttons = new ArrayList<>();
+            collectButtons(dialog, buttons);
+            if (buttons.isEmpty()) {
+                return false;
+            }
+
+            final JButton button = primary ? findPrimaryDialogButton(dialog, buttons) : findSecondaryDialogButton(buttons);
+            if (button == null) {
+                return false;
+            }
+            button.doClick();
+            return true;
+        }
+
+        private static Dialog getActiveDialog() {
+            for (final Window window : Window.getWindows()) {
+                if (window instanceof Dialog && window.isShowing() && (window.isActive() || window.isFocused())) {
+                    return (Dialog) window;
+                }
+            }
+            return null;
+        }
+
+        private static void collectButtons(final Component component, final List<JButton> buttons) {
+            if (component instanceof JButton) {
+                final JButton button = (JButton) component;
+                if (button.isShowing() && button.isEnabled()) {
+                    buttons.add(button);
+                }
+            }
+            if (component instanceof Container) {
+                for (final Component child : ((Container) component).getComponents()) {
+                    collectButtons(child, buttons);
+                }
+            }
+        }
+
+        private static JButton findPrimaryDialogButton(final Dialog dialog, final List<JButton> buttons) {
+            final JButton okButton = findButtonWithText(buttons, Localizer.getInstance().getMessage("lblOK"), "OK", "Yes");
+            if (okButton != null) {
+                return okButton;
+            }
+            final JRootPane rootPane = SwingUtilities.getRootPane(dialog);
+            final JButton defaultButton = rootPane == null ? null : rootPane.getDefaultButton();
+            if (defaultButton != null && defaultButton.isShowing() && defaultButton.isEnabled()) {
+                return defaultButton;
+            }
+            return buttons.get(0);
+        }
+
+        private static JButton findSecondaryDialogButton(final List<JButton> buttons) {
+            final JButton cancelButton = findButtonWithText(buttons, Localizer.getInstance().getMessage("lblCancel"), "Cancel", "No");
+            if (cancelButton != null) {
+                return cancelButton;
+            }
+            return buttons.get(buttons.size() - 1);
+        }
+
+        private static JButton findButtonWithText(final List<JButton> buttons, final String... labels) {
+            for (final JButton button : buttons) {
+                final String text = button.getText();
+                if (text == null) {
+                    continue;
+                }
+                for (final String label : labels) {
+                    if (text.equalsIgnoreCase(label)) {
+                        return button;
+                    }
+                }
+            }
+            return null;
+        }
     }
 }

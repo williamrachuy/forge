@@ -250,6 +250,43 @@ try {
                             </source>
                         </configuration>
                     </execution>
+                    <execution>
+                        <id>increment-local-build-number</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>execute</goal>
+                        </goals>
+                        <configuration>
+                            <source>
+<![CDATA[
+def buildDir = new File(project.build.directory)
+def classesDir = new File(buildDir, "classes")
+def counterFile = new File(buildDir, "local-build-counter.properties")
+def buildNumberFile = new File(classesDir, "local-build-number.txt")
+def buildDate = project.properties['month.date'] ?: new java.text.SimpleDateFormat("MM.dd").format(new Date())
+def props = new Properties()
+
+if (counterFile.isFile()) {
+    counterFile.withInputStream { props.load(it) }
+}
+
+def nextBuild = 1
+if (props.getProperty("date") == buildDate) {
+    nextBuild = (props.getProperty("number", "0") as int) + 1
+}
+
+props.setProperty("date", buildDate)
+props.setProperty("number", nextBuild.toString())
+counterFile.parentFile.mkdirs()
+counterFile.withOutputStream { props.store(it, "Local desktop build counter") }
+
+classesDir.mkdirs()
+buildNumberFile.text = nextBuild.toString() + System.lineSeparator()
+println "Local desktop build suffix: ${buildDate}.${nextBuild}"
+]]>
+                            </source>
+                        </configuration>
+                    </execution>
                 </executions>
             </plugin>
 

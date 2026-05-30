@@ -239,6 +239,7 @@ public class Match {
         sharedLibrary.setCards(createCardsForZone(host, config.getSharedLibrary(battleboxSource.getDeck(), players.size()),
                 battleboxSource.useRandomFoil()));
         sharedLibrary.shuffle();
+        refreshBattleboxSharedZone(players, ZoneType.Library);
     }
 
     private static void prepareBattleboxSharedCommand(final FCollectionView<Player> players, final List<RegisteredPlayer> playersConditions) {
@@ -256,7 +257,7 @@ public class Match {
         final BattleboxConfig config = BattleboxConfig.fromDeck(battleboxSource.getDeck());
         final CardPool landStation = config.getLandStation(battleboxSource.getDeck(), players.size());
         if (landStation == null) {
-            host.getGame().fireEvent(new GameEventZone(ZoneType.Command, host, EventValueChangeType.ComplexUpdate, null));
+            refreshBattleboxSharedZone(players, ZoneType.Command);
             return;
         }
         for (final PaperCard pc : landStation.toFlatList()) {
@@ -265,7 +266,7 @@ public class Match {
             stationLand.setStartsGameInPlay(true);
             sharedCommand.add(stationLand);
         }
-        host.getGame().fireEvent(new GameEventZone(ZoneType.Command, host, EventValueChangeType.ComplexUpdate, null));
+        refreshBattleboxSharedZone(players, ZoneType.Command);
     }
 
     private static void prepareBattleboxSharedGraveyard(final FCollectionView<Player> players) {
@@ -278,8 +279,14 @@ public class Match {
             sharedGraveyard.addPlayer(player);
             player.setSharedGraveyardZone(sharedGraveyard);
         }
-        // An empty new shared graveyard otherwise produces no zone-change event, leaving stale UI contents visible.
-        host.getGame().fireEvent(new GameEventZone(ZoneType.Graveyard, host, EventValueChangeType.ComplexUpdate, null));
+        refreshBattleboxSharedZone(players, ZoneType.Graveyard);
+    }
+
+    private static void refreshBattleboxSharedZone(final FCollectionView<Player> players, final ZoneType zoneType) {
+        for (final Player player : players) {
+            player.updateZoneForView(player.getZone(zoneType));
+            player.getGame().fireEvent(new GameEventZone(zoneType, player, EventValueChangeType.ComplexUpdate, null));
+        }
     }
 
     private void prepareAllZones(final Game game) {

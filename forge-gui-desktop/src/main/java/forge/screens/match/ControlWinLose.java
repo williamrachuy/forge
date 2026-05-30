@@ -1,5 +1,7 @@
 package forge.screens.match;
 
+import java.util.ArrayList;
+
 import javax.swing.JButton;
 
 import forge.Singletons;
@@ -60,8 +62,22 @@ public class ControlWinLose {
     private void nextGameAction(final NextGameDecision decision) {
         SOverlayUtils.hideOverlay();
         saveOptions();
-        for (final IGameController controller : matchUI.getOriginalGameControllers()) {
+        boolean sentDecision = false;
+        for (final IGameController controller : new ArrayList<>(matchUI.getOriginalGameControllers())) {
             controller.nextGameDecision(decision);
+            sentDecision = true;
+        }
+
+        if (!sentDecision) {
+            final IGameController spectatorController = matchUI.getGameController(null);
+            if (spectatorController != null) {
+                spectatorController.nextGameDecision(decision);
+                sentDecision = true;
+            }
+        }
+
+        if (!sentDecision && decision == NextGameDecision.QUIT) {
+            matchUI.afterGameEnd();
         }
     }
 

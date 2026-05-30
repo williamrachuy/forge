@@ -2430,6 +2430,7 @@ public class GameAction {
         startGame(lastGameOutcome, null);
     }
     public void startGame(GameOutcome lastGameOutcome, Runnable startGameHook) {
+        chooseBattleboxMonarchOption();
         Player first = determineFirstTurnPlayer(lastGameOutcome);
 
         GameType gameType = game.getRules().getGameType();
@@ -2646,6 +2647,7 @@ public class GameAction {
     public void becomeMonarch(final Player p, final String set) {
         final Player previous = game.getMonarch();
         if (p == null || p.equals(previous)) {
+            game.traceState("become-monarch skipped target=" + p + " previous=" + previous);
             return;
         }
 
@@ -2654,25 +2656,56 @@ public class GameAction {
 
         // by Monarch losing, its a way to make the game lose the monarch
         if (!p.canBecomeMonarch()) {
+            game.traceState("become-monarch blocked target=" + p);
             return;
         }
 
         p.createMonarchEffect(set);
         game.setMonarch(p);
+        game.traceState("become-monarch previous=" + previous + " current=" + p + " set=" + set);
 
         final Map<AbilityKey, Object> runParams = AbilityKey.mapFromPlayer(p);
         game.getTriggerHandler().runTrigger(TriggerType.BecomeMonarch, runParams, false);
     }
 
-    private void offerBattleboxMonarchOnFirstCombatDamage(final CardDamageMap damageMap) {
-        if (!game.getRules().hasAppliedVariant(GameType.Battlebox) || game.isBattleboxMonarchChoiceMade()) {
+    private void chooseBattleboxMonarchOption() {
+        if (!isBattleboxGame() || game.isBattleboxMonarchChoiceMade()) {
             return;
         }
 
+        final Player decisionPlayer = getBattleboxMonarchDecisionPlayer();
+        if (decisionPlayer == null) {
+            game.traceState("battlebox-monarch setup skipped: no human decision player");
+            return;
+        }
+
+        game.setBattleboxMonarchChoiceMade(true);
+        final Card source = new Card(game.nextCardId(), null, game);
+        source.setName("The Monarch");
+        source.setOwner(decisionPlayer);
+        source.setController(decisionPlayer, game.getNextTimestamp());
+        source.setGamePieceType(GamePieceType.EFFECT);
+        final SpellAbility choice = new SpellAbility.EmptySa(ApiType.BecomeMonarch, source, decisionPlayer);
+        final String prompt = "Play with monarch?\n\nIf yes, the first player to deal combat damage to an opponent becomes the monarch.";
+        final boolean enabled = decisionPlayer.getController().confirmAction(choice, PlayerActionConfirmMode.OptionalChoose, prompt, null);
+        game.setBattleboxMonarchEnabled(enabled);
+        game.traceState("battlebox-monarch setup player=" + decisionPlayer + " enabled=" + enabled);
+        game.fireEvent(new GameEventAddLog(GameLogEntryType.INFORMATION,
+                "Battlebox monarch " + (enabled ? "enabled." : "disabled.")));
+    }
+
+    private void assignBattleboxMonarchOnFirstCombatDamage(final CardDamageMap damageMap) {
+        if (!isBattleboxGame() || !game.isBattleboxMonarchChoiceMade()
+                || !game.isBattleboxMonarchEnabled() || game.getMonarch() != null) {
+            return;
+        }
+
+        game.traceState("battlebox-monarch checking first combat damage map=" + damageMap);
         for (final Map.Entry<Card, Map<GameEntity, Integer>> sourceDamage : damageMap.rowMap().entrySet()) {
             final Card source = sourceDamage.getKey();
             final Player damagingPlayer = source.getController();
             if (damagingPlayer == null) {
+                game.traceState("battlebox-monarch skipped damage source without controller source=" + source);
                 continue;
             }
             for (final Map.Entry<GameEntity, Integer> targetDamage : sourceDamage.getValue().entrySet()) {
@@ -2681,24 +2714,18 @@ public class GameAction {
                     continue;
                 }
 
-                game.setBattleboxMonarchChoiceMade(true);
-                // An existing monarch has already established normal monarch transfer rules.
-                if (game.getMonarch() != null) {
-                    return;
-                }
-
-                final Player decisionPlayer = getBattleboxMonarchDecisionPlayer();
-                if (decisionPlayer == null) {
-                    return;
-                }
-                final SpellAbility choice = new SpellAbility.EmptySa(ApiType.BecomeMonarch, source, decisionPlayer);
-                final String prompt = "Make " + damagingPlayer.getName() + " the monarch?";
-                if (decisionPlayer.getController().confirmAction(choice, PlayerActionConfirmMode.OptionalChoose, prompt, null)) {
-                    becomeMonarch(damagingPlayer, "CN2");
-                }
+                game.traceState("battlebox-monarch first combat damage source=" + source + " controller=" + damagingPlayer
+                        + " damagedPlayer=" + damagedPlayer + " amount=" + targetDamage.getValue());
+                becomeMonarch(damagingPlayer, "CN2");
                 return;
             }
         }
+        game.traceState("battlebox-monarch no qualifying combat damage found");
+    }
+
+    private boolean isBattleboxGame() {
+        return game.getRules().getGameType() == GameType.Battlebox
+                || game.getRules().hasAppliedVariant(GameType.Battlebox);
     }
 
     private Player getBattleboxMonarchDecisionPlayer() {
@@ -2907,8 +2934,8 @@ public class GameAction {
         }
 
         if (isCombat) {
+            assignBattleboxMonarchOnFirstCombatDamage(damageMap);
             game.getTriggerHandler().runWaitingTriggers();
-            offerBattleboxMonarchOnFirstCombatDamage(damageMap);
         }
 
         if (!lifeLostAllDamageMap.isEmpty()) { // Run triggers if any player actually lost life

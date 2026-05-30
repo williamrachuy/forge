@@ -33,6 +33,9 @@ public final class Main {
      * Main entry point for Forge
      */
     public static void main(final String[] args) {
+        // Ensure Linux/X11 browser back/forward buttons are exposed as AWT mouse buttons 8/9.
+        System.setProperty("sun.awt.enableExtraMouseButtons", "true");
+
         Sentry.init(options -> {
             options.setEnableExternalConfiguration(true);
             options.setRelease(BuildInfo.getVersionString());

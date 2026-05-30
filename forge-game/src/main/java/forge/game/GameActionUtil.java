@@ -320,6 +320,10 @@ public final class GameActionUtil {
     public static List<SpellAbility> getMayPlaySpellOptions(final SpellAbility sa, final Card source, final Player activator, boolean altCostOnly) {
         final List<SpellAbility> alternatives = Lists.newArrayList();
 
+        if (sa.isLandAbility() && activator.isBattleboxSharedLandStationCard(source)) {
+            return alternatives;
+        }
+
         if (sa.isSpell() && source.isInPlay()) {
             return alternatives;
         }

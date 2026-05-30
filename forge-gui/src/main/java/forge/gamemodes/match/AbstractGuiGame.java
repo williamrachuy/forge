@@ -116,6 +116,9 @@ public abstract class AbstractGuiGame implements IGuiGame, IMayViewCards {
 
     @Override
     public void setGameView(final GameView gameView0) {
+        if (gameView0 == null) {
+            localEventHandler = null;
+        }
         if (gameView == null || gameView0 == null) {
             if (gameView0 != null) {
                 gameView0.updateObjLookup();
@@ -186,6 +189,22 @@ public abstract class AbstractGuiGame implements IGuiGame, IMayViewCards {
     @Override
     public void setSpectator(final IGameController spectator) {
         this.spectator = spectator;
+    }
+
+    @Override
+    public void resetGameControllers() {
+        clearInputTimers();
+        localEventHandler = null;
+        currentPlayer = null;
+        spectator = null;
+        gameControllers.clear();
+        originalGameControllers.clear();
+        highlighted.clear();
+        clearSelectables();
+        gamePause = false;
+        playbackSpeed = PlaybackSpeed.NORMAL;
+        daytime = null;
+        updateCurrentPlayer(null);
     }
 
     @Override
@@ -346,7 +365,7 @@ public abstract class AbstractGuiGame implements IGuiGame, IMayViewCards {
      * Concede game, bring up WinLose UI.
      */
     public boolean concede() {
-        if (gameView.isGameOver()) {
+        if (gameView == null || gameView.isGameOver()) {
             return true;
         }
         if (hasLocalPlayers()) {
@@ -605,6 +624,15 @@ public abstract class AbstractGuiGame implements IGuiGame, IMayViewCards {
         cancelWaitingTimer();
     }
 
+    private void clearInputTimers() {
+        if (awaitNextInputTimer != null) {
+            awaitNextInputTimer.cancel();
+            awaitNextInputTimer = null;
+        }
+        awaitNextInputTask = null;
+        cancelWaitingTimer();
+    }
+
     @Override
     public final void updateAutoPassPrompt() {
         String message = currentYieldMessage();
@@ -841,10 +869,7 @@ public abstract class AbstractGuiGame implements IGuiGame, IMayViewCards {
 
     @Override
     public void afterGameEnd() {
-        if (awaitNextInputTimer != null) {
-            awaitNextInputTimer.cancel();
-            awaitNextInputTimer = null;
-        }
+        clearInputTimers();
         daytime = null;
     }
 

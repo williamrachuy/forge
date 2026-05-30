@@ -1505,11 +1505,11 @@ public abstract class SpellAbility extends CardTraitBase implements ISpellAbilit
             }
 
             if (tr.isSameController() && entity instanceof Card) {
-                Player newController;
-                newController = ((Card) entity).getController();
+                final Card candidate = (Card) entity;
                 for (final Card c : getTargets().getTargetCards()) {
-                    if (entity != c && !c.getController().equals(newController))
+                    if (entity != c && !tr.isSameControllerTargetingCompatible(c, candidate)) {
                         return false;
+                    }
                 }
             }
 
