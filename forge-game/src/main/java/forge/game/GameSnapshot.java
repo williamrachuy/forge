@@ -230,14 +230,8 @@ public class GameSnapshot {
             SpellAbilityStackInstance instance = stackIds.getOrDefault(id, null);
 
             if (instance != null) {
-                if (!restore) {
-                    System.out.println("Might need to alter " + origEntry.getSpellAbility() + " on stack");
-                }
-
                 continue;
             }
-
-            System.out.println("Adding " + origEntry.getSpellAbility() + " to stack");
 
             SpellAbility origSa = origEntry.getSpellAbility();
             Card origHostCard = origSa.getHostCard();
@@ -264,8 +258,6 @@ public class GameSnapshot {
                             newSa.getTargets().add(findBy(toGame, (Card) o));
                         } else if (o instanceof Player) {
                             newSa.getTargets().add(findBy(toGame, (Player) o));
-                        } else {
-                            System.out.println("Failed to restore target " + o + " for " + origSa);
                         }
                     }
                 }

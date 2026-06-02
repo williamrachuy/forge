@@ -22,12 +22,12 @@ import org.apache.commons.lang3.tuple.Pair;
 
 import java.io.*;
 import java.net.URL;
+import java.net.URLConnection;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
-import java.util.concurrent.Callable;
 import java.util.regex.Pattern;
 
 /**
@@ -39,6 +39,7 @@ import java.util.regex.Pattern;
  * @version $Id$
  */
 public final class FileUtil {
+    private static final int URL_READ_TIMEOUT_MS = 5000;
 
     private FileUtil() {
         throw new AssertionError();
@@ -301,15 +302,19 @@ public final class FileUtil {
 
     public static List<String> readFile(final URL url) {
         final List<String> lines = new ArrayList<>();
-        ThreadUtil.executeWithTimeout((Callable<Void>) () -> {
-            try (BufferedReader in = new BufferedReader(new InputStreamReader(url.openStream()))) {
+        try {
+            final URLConnection connection = url.openConnection();
+            connection.setConnectTimeout(URL_READ_TIMEOUT_MS);
+            connection.setReadTimeout(URL_READ_TIMEOUT_MS);
+            try (BufferedReader in = new BufferedReader(new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
                 String line;
                 while ((line = in.readLine()) != null) {
                     lines.add(line);
                 }
             }
-            return null;
-        }, 5000); //abort reading file if it takes longer than 5 seconds
+        } catch (final IOException ignored) {
+            // Remote reads are optional in startup/update/import paths; callers handle empty content.
+        }
         return lines;
     }
 

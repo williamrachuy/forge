@@ -93,7 +93,7 @@ public class Game {
     private final ReplacementHandler replacementHandler = new ReplacementHandler(this);
     private final EventBus events = new EventBus("game events");
     private final GameLog gameLog = new GameLog();
-    private final GameStateTraceLogger stateTraceLogger;
+    private GameStateTraceLogger stateTraceLogger;
 
     private final Zone stackZone = new Zone(ZoneType.Stack, this);
     public int AI_TIMEOUT = 5;
@@ -195,6 +195,12 @@ public class Game {
     public void traceState(final String message) {
         if (stateTraceLogger != null) {
             stateTraceLogger.trace(message);
+        }
+    }
+
+    void startStateTrace() {
+        if (stateTraceLogger == null) {
+            stateTraceLogger = GameStateTraceLogger.create(this);
         }
     }
 
@@ -407,8 +413,6 @@ public class Game {
         action = new GameAction(this);
         stack = new MagicStack(this);
         phaseHandler = new PhaseHandler(this);
-        stateTraceLogger = GameStateTraceLogger.create(this);
-
         untap = new Untap(this);
         upkeep = new Phase(PhaseType.UPKEEP);
         beginOfCombat = new Phase(PhaseType.COMBAT_BEGIN);

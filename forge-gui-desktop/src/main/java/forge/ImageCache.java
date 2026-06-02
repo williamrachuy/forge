@@ -402,6 +402,7 @@ public class ImageCache {
             int destHeight = (int)(original.getHeight() * bestFitScale);
 
             ResampleOp resampler = new ResampleOp(destWidth, destHeight);
+            resampler.setNumberOfThreads(1);
             result = resampler.filter(original, null);
         }
 

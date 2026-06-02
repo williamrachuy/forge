@@ -92,6 +92,7 @@ public class Match {
             game.fireEvent(GameEventAnteCardsSelected.fromCards(list));
         }
 
+        game.startStateTrace();
         game.getAction().startGame(this.lastOutcome, startGameHook);
 
         // Typically ante, but also tearing up a blacker lotus
