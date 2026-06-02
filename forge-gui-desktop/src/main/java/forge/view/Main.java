@@ -22,8 +22,14 @@ import forge.Singletons;
 import forge.error.ExceptionHandler;
 import forge.gui.GuiBase;
 import forge.gui.card.CardReaderExperiments;
+import forge.gui.framework.EDocID;
+import forge.gui.framework.FScreen;
+import forge.screens.home.CHomeUI;
+import forge.screens.home.sanctioned.VSubmenuConstructed;
 import forge.util.BuildInfo;
 import io.sentry.Sentry;
+
+import javax.swing.SwingUtilities;
 
 /**
  * Main class for Forge's swing application view.
@@ -72,6 +78,20 @@ public final class Main {
             return;
         }
 
+        if ("--battlebox-test".equalsIgnoreCase(args[0])) {
+            final int playerCount = getBattleboxTestPlayerCount(args);
+            System.setProperty("forge.battleboxTest", "true");
+            System.setProperty("forge.battleboxTestPlayerCount", Integer.toString(playerCount));
+            Singletons.initializeOnce(true);
+            Singletons.getControl().initialize();
+            SwingUtilities.invokeLater(() -> {
+                Singletons.getControl().setCurrentScreen(FScreen.HOME_SCREEN);
+                CHomeUI.SINGLETON_INSTANCE.itemClick(EDocID.HOME_CONSTRUCTED);
+                VSubmenuConstructed.SINGLETON_INSTANCE.configureBattleboxTest(playerCount);
+            });
+            return;
+        }
+
         // command line startup here
         String mode = args[0].toLowerCase();
 
@@ -94,6 +114,18 @@ public final class Main {
         }
 
         System.exit(0);
+    }
+
+    private static int getBattleboxTestPlayerCount(final String[] args) {
+        if (args.length < 2) {
+            return 4;
+        }
+        try {
+            return Integer.parseInt(args[1]);
+        } catch (final NumberFormatException e) {
+            System.out.println("Invalid --battlebox-test player count '" + args[1] + "', defaulting to 4.");
+            return 4;
+        }
     }
 
     @SuppressWarnings("deprecation")

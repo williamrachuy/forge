@@ -284,6 +284,7 @@ public class HostedMatch {
         if (humanCount == 0) { //watch game but do not participate
             final IGuiGame gui = spectatorGui == null ? GuiBase.getInterface().getNewGuiGame() : spectatorGui;
             prepareGuiForGame(gui, gameView, initializedGuis);
+            chooseBattleboxMonarchForAllAiSpectatorIfNeeded(gui);
             registerSpectator(gui, new WatchLocalGame(game, new LobbyPlayerHuman("Spectator"), gui));
         }
 
@@ -305,7 +306,6 @@ public class HostedMatch {
                 playbackControl = new FControlGamePlayback(humanControllers.get(0));
                 playbackControl.setGame(game);
                 game.subscribeToEvents(playbackControl);
-                chooseBattleboxMonarchForAllAiSpectatorIfNeeded();
             }
             // Actually start the game!
             match.startGame(game, startGameHook);
@@ -384,12 +384,8 @@ public class HostedMatch {
         return game;
     }
 
-    private void chooseBattleboxMonarchForAllAiSpectatorIfNeeded() {
-        if (!isBattleboxGame() || game.isBattleboxMonarchChoiceMade() || humanControllers.isEmpty()) {
-            return;
-        }
-        final IGuiGame gui = humanControllers.get(0).getGui();
-        if (gui == null) {
+    private void chooseBattleboxMonarchForAllAiSpectatorIfNeeded(final IGuiGame gui) {
+        if (!isBattleboxGame() || game.isBattleboxMonarchChoiceMade() || gui == null) {
             return;
         }
 

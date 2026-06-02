@@ -1743,6 +1743,7 @@ public class Player extends GameEntity implements Comparable<Player> {
     public final Card playLand(final Card land, SpellAbility cause) {
         final ZoneType originZone = land.getZone() == null ? null : land.getZone().getZoneType();
         final boolean battleboxSharedStationLand = isBattleboxGame() && isBattleboxSharedLandStationCard(land);
+        final PlayerZone battleboxSharedStationZone = battleboxSharedStationLand ? sharedCommandZone : null;
         if (battleboxSharedStationLand) {
             claimBattleboxSharedLandStationCard(land);
         }
@@ -1759,6 +1760,10 @@ public class Player extends GameEntity implements Comparable<Player> {
 
         game.copyLastState();
         final Card c = game.getAction().moveTo(getZone(ZoneType.Battlefield), land, cause);
+        if (battleboxSharedStationLand && c != null && c.isInZone(ZoneType.Battlefield)
+                && battleboxSharedStationZone != null && battleboxSharedStationZone.contains(land)) {
+            battleboxSharedStationZone.remove(land);
+        }
         game.updateLastStateForCard(c);
 
         // Run triggers

@@ -499,6 +499,7 @@ public final class SLayoutIO {
         Attribute attribute;
         EDocID selectedId = null;
         double x0 = 0, y0 = 0, w0 = 0, h0 = 0;
+        int handDocIndex = 0;
 
         ListMultimap<LayoutInfo, EDocID> model = MultimapBuilder.hashKeys().arrayListValues().build();
         
@@ -525,7 +526,14 @@ public final class SLayoutIO {
                 }
                 else if (element.getName().getLocalPart().equals(Property.doc)) {
                     event = reader.nextEvent();
-                    model.put(currentKey, EDocID.valueOf(event.asCharacters().getData()));
+                    EDocID docId = EDocID.valueOf(event.asCharacters().getData());
+                    if (docId == EDocID.ZONE_HAND && handDocIndex < EDocID.Hands.length) {
+                        docId = EDocID.Hands[handDocIndex++];
+                        if (currentKey != null && currentKey.selectedId() == EDocID.ZONE_HAND) {
+                            currentKey = new LayoutInfo(currentKey.bounds(), docId);
+                        }
+                    }
+                    model.put(currentKey, docId);
                 }
             }
         }

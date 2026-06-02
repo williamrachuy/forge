@@ -1,6 +1,8 @@
 package forge.game;
 
 import forge.LobbyPlayer;
+import forge.card.CardRarity;
+import forge.card.CardRules;
 import forge.deck.Deck;
 import forge.game.ability.AbilityFactory;
 import forge.game.card.Card;
@@ -13,6 +15,7 @@ import forge.game.phase.PhaseType;
 import forge.game.spellability.SpellAbility;
 import forge.game.zone.SharedPlayerZone;
 import forge.game.zone.ZoneType;
+import forge.item.PaperCard;
 import forge.util.Lang;
 import forge.util.Localizer;
 import forge.util.collect.FCollectionView;
@@ -21,6 +24,8 @@ import org.testng.annotations.Test;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Arrays;
 
 public class MatchBattleboxSharedZoneTest {
@@ -88,6 +93,20 @@ public class MatchBattleboxSharedZoneTest {
         Assert.assertTrue(activePlayer.isBattleboxSharedLandStationCard(stationLand));
         Assert.assertTrue(stationLand.mayPlay(activePlayer).isEmpty());
         Assert.assertTrue(activePlayer.canPlayLand(stationLand, false, null));
+    }
+
+    @Test
+    public void battleboxSharedLandStationLandLeavesStationWhenPlayed() throws Exception {
+        final Game game = createMatch(4, true).createGame();
+        final Player activePlayer = game.getPlayers().get(0);
+        final Card stationLand = addSharedStationLand(game, game.getPlayers().get(1));
+
+        activePlayer.playLand(stationLand, null);
+
+        Assert.assertTrue(activePlayer.getZone(ZoneType.Battlefield).contains(stationLand));
+        Assert.assertFalse(activePlayer.getZone(ZoneType.Command).contains(stationLand));
+        Assert.assertSame(stationLand.getOwner(), activePlayer);
+        Assert.assertSame(stationLand.getController(), activePlayer);
     }
 
     @Test
@@ -179,12 +198,14 @@ public class MatchBattleboxSharedZoneTest {
             setSharedCommandZone(player, sharedCommand);
         }
 
-        final Card stationLand = new Card(30_000, game);
+        final Card stationLand = new Card(30_000,
+                new PaperCard(CardRules.getUnsupportedCardNamed("Shared Station Land"), "TST", CardRarity.Common),
+                game);
         stationLand.setName("Shared Station Land");
-        stationLand.addType("Land");
         stationLand.setOwner(owner);
         stationLand.setController(owner, game.getNextTimestamp());
-        stationLand.setZone(sharedCommand);
+        sharedCommand.add(stationLand);
+        stationLand.addType("Land");
         return stationLand;
     }
 
@@ -250,7 +271,7 @@ public class MatchBattleboxSharedZoneTest {
     }
 
     private static Match createMatch(final int players, final boolean battlebox, final boolean battleboxBaseGameType) {
-        Localizer.getInstance().initialize("en-US", "forge-gui/res/languages");
+        Localizer.getInstance().initialize("en-US", languageDirectory());
         Lang.createInstance("en-US");
 
         final RegisteredPlayer[] registeredPlayers = new RegisteredPlayer[players];
@@ -262,6 +283,11 @@ public class MatchBattleboxSharedZoneTest {
             rules.addAppliedVariant(GameType.Battlebox);
         }
         return new Match(rules, Arrays.asList(registeredPlayers), battlebox ? "Battlebox" : "Constructed");
+    }
+
+    private static String languageDirectory() {
+        final Path rootRelative = Path.of("forge-gui/res/languages");
+        return Files.isDirectory(rootRelative) ? rootRelative.toString() : "../forge-gui/res/languages";
     }
 
     private static void prepareBattleboxSharedGraveyard(final FCollectionView<Player> players) throws Exception {

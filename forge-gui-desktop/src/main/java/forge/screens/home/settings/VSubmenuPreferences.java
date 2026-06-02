@@ -95,6 +95,7 @@ public enum VSubmenuPreferences implements IVSubmenu<CSubmenuPreferences> {
     private final JCheckBox cbSmallDeckViewer = new OptionsCheckBox(localizer.getMessage("cbSmallDeckViewer"));
     private final JCheckBox cbDisplayFoil = new OptionsCheckBox(localizer.getMessage("cbDisplayFoil"));
     private final JCheckBox cbRandomFoil= new OptionsCheckBox(localizer.getMessage("cbRandomFoil"));
+    private final JCheckBox cbReduceCardMotion = new OptionsCheckBox(localizer.getMessageorUseDefault("cbReduceCardMotion", "Reduce Card Motion"));
     private final JCheckBox cbRandomArtInPools = new OptionsCheckBox(localizer.getMessage("cbRandomArtInPools"));
     private final JCheckBox cbEnableSounds = new OptionsCheckBox(localizer.getMessage("cbEnableSounds"));
     private final JCheckBox cbEnableMusic = new OptionsCheckBox(localizer.getMessage("cbEnableMusic"));
@@ -149,6 +150,7 @@ public enum VSubmenuPreferences implements IVSubmenu<CSubmenuPreferences> {
     private final FComboBoxPanel<String> cbpAiProfiles = new FComboBoxPanel<>(localizer.getMessage("cbpAiProfiles")+":");
     private final FComboBoxPanel<String> cbpAiSideboardingMode = new FComboBoxPanel<>(localizer.getMessage("cbpAiSideboardingMode")+":");
     private final FComboBoxPanel<String> cbpAiTimeout = new FComboBoxPanel<>(localizer.getMessage("cbAITimeout")+":");
+    private final FComboBoxPanel<String> cbpPlaybackFastSpeed = new FComboBoxPanel<>(localizer.getMessageorUseDefault("cbpPlaybackFastSpeed", "AI Playback Fast Speed")+":");
     private final FComboBoxPanel<String> cbpUltronDeepSeekModel = new FComboBoxPanel<>(localizer.getMessage("cbpUltronDeepSeekModel")+":");
     private final FComboBoxPanel<String> cbpUltronReasoningEffort = new FComboBoxPanel<>(localizer.getMessage("cbpUltronReasoningEffort")+":");
     private final FComboBoxPanel<String> cbpStackAdditions = new FComboBoxPanel<>(localizer.getMessage("cbpStackAdditions")+":");
@@ -239,6 +241,9 @@ public enum VSubmenuPreferences implements IVSubmenu<CSubmenuPreferences> {
 
         pnlPrefs.add(cbEnableAICheats, titleConstraints);
         pnlPrefs.add(new NoteLabel(localizer.getMessage("nlEnableAICheats")), descriptionConstraints);
+
+        pnlPrefs.add(cbpPlaybackFastSpeed, comboBoxConstraints);
+        pnlPrefs.add(new NoteLabel(localizer.getMessageorUseDefault("nlPlaybackFastSpeed", "Controls the fast speed button used while watching AI turns. Full throttle removes playback delays.")), descriptionConstraints);
 
         pnlPrefs.add(cbManaBurn, titleConstraints);
         pnlPrefs.add(new NoteLabel(localizer.getMessage("nlManaBurn")), descriptionConstraints);
@@ -413,6 +418,9 @@ public enum VSubmenuPreferences implements IVSubmenu<CSubmenuPreferences> {
 
         pnlPrefs.add(cbRandomFoil, titleConstraints);
         pnlPrefs.add(new NoteLabel(localizer.getMessage("nlRandomFoil")), descriptionConstraints);
+
+        pnlPrefs.add(cbReduceCardMotion, titleConstraints);
+        pnlPrefs.add(new NoteLabel(localizer.getMessageorUseDefault("nlReduceCardMotion", "Skips card movement animations during matches. Takes effect immediately.")), descriptionConstraints);
 
         pnlPrefs.add(cbScaleLarger, titleConstraints);
         pnlPrefs.add(new NoteLabel(localizer.getMessage("nlScaleLarger")), descriptionConstraints);
@@ -783,6 +791,11 @@ public enum VSubmenuPreferences implements IVSubmenu<CSubmenuPreferences> {
     }
 
     /** @return {@link javax.swing.JCheckBox} */
+    public JCheckBox getCbReduceCardMotion() {
+        return cbReduceCardMotion;
+    }
+
+    /** @return {@link javax.swing.JCheckBox} */
     public JCheckBox getCbAnte() {
         return cbAnte;
     }
@@ -872,6 +885,10 @@ public enum VSubmenuPreferences implements IVSubmenu<CSubmenuPreferences> {
 
     public FComboBoxPanel<String> getAiTimeoutComboBox() {
         return cbpAiTimeout;
+    }
+
+    public FComboBoxPanel<String> getPlaybackFastSpeedComboBox() {
+        return cbpPlaybackFastSpeed;
     }
 
     public FComboBoxPanel<String> getUltronDeepSeekModelComboBox() {

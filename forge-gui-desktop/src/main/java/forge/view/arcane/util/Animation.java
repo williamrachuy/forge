@@ -24,6 +24,8 @@ import java.util.TimerTask;
 
 import javax.swing.JLayeredPane;
 
+import forge.localinstance.properties.ForgePreferences.FPref;
+import forge.model.FModel;
 import forge.view.arcane.CardPanel;
 
 /**
@@ -242,6 +244,22 @@ public abstract class Animation {
             final int endY, final int endWidth, final CardPanel animationPanel, final CardPanel placeholder,
             final JLayeredPane layeredPane, final int speed) {
         Animation.invokeLater(() -> {
+            if (FModel.getPreferences().getPrefBoolean(FPref.UI_REDUCE_CARD_MOTION)) {
+                if (placeholder != null) {
+                    placeholder.setDisplayEnabled(true);
+                    placeholder.setCard(placeholder.getCard());
+                }
+                animationPanel.setVisible(false);
+                animationPanel.repaint();
+                if (animationPanel.getParent() == layeredPane) {
+                    layeredPane.remove(animationPanel);
+                }
+                if (animationPanel != CardPanel.getDragAnimationPanel()) {
+                    animationPanel.dispose();
+                }
+                return;
+            }
+
             final int startHeight = Math.round(startWidth * CardPanel.ASPECT_RATIO);
             final int endHeight = Math.round(endWidth * CardPanel.ASPECT_RATIO);
 

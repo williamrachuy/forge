@@ -42,6 +42,10 @@ public enum VSubmenuConstructed implements IVSubmenu<CSubmenuConstructed> {
         return vLobby;
     }
 
+    public void configureBattleboxTest(final int playerCount) {
+        vLobby.configureBattleboxTest(playerCount);
+    }
+
     /////////////////////////////////////
     //========== Overridden from IVDoc
 

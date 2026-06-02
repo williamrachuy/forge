@@ -5,6 +5,7 @@ import java.awt.event.ActionListener;
 import java.awt.event.ItemEvent;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -209,6 +210,38 @@ public class VLobby implements ILobbyView {
 
     public void focusOnAvatar() {
         getPlayerPanelWithFocus().focusOnAvatar();
+    }
+
+    public void configureBattleboxTest(final int requestedPlayerCount) {
+        final int playerCount = Math.max(2, Math.min(MAX_PLAYERS, requestedPlayerCount));
+        final String[] fixedNames = {"Will", "Karn", "Elspeth", "Gideon"};
+
+        lobby.clearVariants();
+        lobby.applyVariant(GameType.Battlebox);
+
+        while (lobby.getNumberOfSlots() < playerCount) {
+            lobby.addSlot();
+        }
+        while (lobby.getNumberOfSlots() > playerCount) {
+            lobby.removeSlot(lobby.getNumberOfSlots() - 1);
+        }
+
+        for (int i = 0; i < playerCount; i++) {
+            final LobbySlot slot = lobby.getSlot(i);
+            final String name = i < fixedNames.length ? fixedNames[i] : slot.getName();
+            lobby.applyToSlot(i, UpdateLobbyPlayerEvent.create(
+                    LobbySlotType.AI,
+                    name,
+                    slot.getAvatarIndex(),
+                    slot.getSleeveIndex(),
+                    i,
+                    false,
+                    false,
+                    Collections.emptySet(),
+                    "Default"));
+        }
+
+        update(true);
     }
 
     private PlayerPanel getPlayerPanel(int slot) {

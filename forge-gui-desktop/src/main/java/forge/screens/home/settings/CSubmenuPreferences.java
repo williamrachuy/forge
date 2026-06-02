@@ -132,6 +132,7 @@ public enum CSubmenuPreferences implements ICDoc {
         lstControls.add(Pair.of(view.getCbDisableCardImages(), FPref.UI_DISABLE_CARD_IMAGES));
         lstControls.add(Pair.of(view.getCbDisplayFoil(), FPref.UI_OVERLAY_FOIL_EFFECT));
         lstControls.add(Pair.of(view.getCbRandomFoil(), FPref.UI_RANDOM_FOIL));
+        lstControls.add(Pair.of(view.getCbReduceCardMotion(), FPref.UI_REDUCE_CARD_MOTION));
         lstControls.add(Pair.of(view.getCbEnableSounds(), FPref.UI_ENABLE_SOUNDS));
         lstControls.add(Pair.of(view.getCbAltSoundSystem(), FPref.UI_ALT_SOUND_SYSTEM));
         lstControls.add(Pair.of(view.getCbSROptimize(), FPref.UI_SR_OPTIMIZE));
@@ -215,6 +216,7 @@ public enum CSubmenuPreferences implements ICDoc {
         initializeAiProfilesComboBox();
         initializeAiSideboardingModeComboBox();
         initializeAiTimeoutComboBox();
+        initializePlaybackFastSpeedComboBox();
         initializeUltronDeepSeekModelComboBox();
         initializeUltronReasoningEffortComboBox();
         initializeSoundSetsComboBox();
@@ -467,6 +469,14 @@ public enum CSubmenuPreferences implements ICDoc {
         final FPref userSetting = FPref.MATCH_AI_TIMEOUT;
         final FComboBoxPanel<String> panel = this.view.getAiTimeoutComboBox();
         final FComboBox<String> comboBox = createComboBox(new String[] {"5", "10", "60", "120", "240", "300", "600"}, userSetting);
+        final String selectedItem = this.prefs.getPref(userSetting);
+        panel.setComboBox(comboBox, selectedItem);
+    }
+
+    private void initializePlaybackFastSpeedComboBox() {
+        final FPref userSetting = FPref.MATCH_PLAYBACK_FAST_SPEED;
+        final FComboBoxPanel<String> panel = this.view.getPlaybackFastSpeedComboBox();
+        final FComboBox<String> comboBox = createComboBox(new String[] {"Full throttle", "100", "50", "20", "10", "5", "2"}, userSetting);
         final String selectedItem = this.prefs.getPref(userSetting);
         panel.setComboBox(comboBox, selectedItem);
     }

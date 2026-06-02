@@ -323,7 +323,11 @@ public class FloatingZone extends FloatingCardArea {
             if (cell != null) {
                 cell.removeDoc(vZone);
                 if (cell.getDocs().isEmpty()) {
-                    SRearrangingUtil.fillGap(cell);
+                    try {
+                        SRearrangingUtil.fillGap(cell);
+                    } catch (final UnsupportedOperationException e) {
+                        System.err.println("Unable to fill gap while closing docked zone " + vZone.getDocumentID() + ": " + e.getMessage());
+                    }
                     FView.SINGLETON_INSTANCE.removeDragCell(cell);
                 }
             }

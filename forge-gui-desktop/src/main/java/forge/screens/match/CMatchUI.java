@@ -21,6 +21,7 @@ import java.awt.*;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseEvent;
 import java.awt.image.BufferedImage;
+import java.io.File;
 import java.util.*;
 import java.util.List;
 import java.util.Map.Entry;
@@ -413,7 +414,7 @@ public final class CMatchUI
 
     private void initMatch(final FCollectionView<PlayerView> sortedPlayers, final Collection<PlayerView> myPlayers) {
         this.sortedPlayers = sortedPlayers;
-        allHands = sortedPlayers.size() == getLocalPlayerCount();
+        allHands = getLocalPlayerCount() == 0 || sortedPlayers.size() == getLocalPlayerCount();
 
         if (isNetGame()) {
             netLog.debug("sortedPlayers count={}", sortedPlayers.size());
@@ -993,8 +994,8 @@ public final class CMatchUI
     @Override
     public void updatePlayerControl() {
         initHandViews();
-        FloatingZone.registerZoneDocs(this, getLocalPlayers());
-        SLayoutIO.loadLayout(null);
+        FloatingZone.registerZoneDocs(this, getPlayersForLayoutZoneDocs());
+        SLayoutIO.loadLayout(getBattleboxTestLayoutFile());
         FloatingZone.pruneUnparentedDocks();
         view.populate();
         final PlayerZoneUpdates zones = new PlayerZoneUpdates();
@@ -1002,6 +1003,34 @@ public final class CMatchUI
         	zones.add(new PlayerZoneUpdate(p, ZoneType.Hand));
         }
         updateZones(zones);
+    }
+
+    private Iterable<PlayerView> getPlayersForLayoutZoneDocs() {
+        if (getLocalPlayerCount() == 0 && sortedPlayers != null) {
+            return sortedPlayers;
+        }
+        return getLocalPlayers();
+    }
+
+    private File getBattleboxTestLayoutFile() {
+        if (!Boolean.getBoolean("forge.battleboxTest")) {
+            return null;
+        }
+
+        final int playerCount = Integer.getInteger("forge.battleboxTestPlayerCount", 4);
+        final File layout = new File(ForgeConstants.USER_PREFS_DIR, "battlebox-sim-" + playerCount + "p.xml");
+        if (layout.exists()) {
+            return layout;
+        }
+
+        if (playerCount == 4) {
+            final File defaultLayout = new File(ForgeConstants.USER_PREFS_DIR, "battlebox-sim-4p.xml");
+            if (defaultLayout.exists()) {
+                return defaultLayout;
+            }
+        }
+
+        return null;
     }
 
     @Override

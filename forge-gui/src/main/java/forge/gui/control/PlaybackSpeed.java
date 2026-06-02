@@ -1,5 +1,8 @@
 package forge.gui.control;
 
+import forge.localinstance.properties.ForgePreferences.FPref;
+import forge.model.FModel;
+
 public enum PlaybackSpeed {
     SLOW(3),
     NORMAL(1),
@@ -12,13 +15,20 @@ public enum PlaybackSpeed {
     }
 
     public long applyModifier(long milliseconds) {
+        if (this == FAST) {
+            final double multiplier = getFastMultiplier();
+            if (multiplier <= 0) {
+                return 0;
+            }
+            return (long) (milliseconds / multiplier);
+        }
         return (long) (this.modifier * milliseconds);
     }
 
     public String nextSpeedText() {
         switch(this) {
             case NORMAL:
-                return "10x speed";
+                return getFastSpeedText();
             case FAST:
                 return "1/3x speed";
             default:
@@ -35,5 +45,32 @@ public enum PlaybackSpeed {
             default:
                 return PlaybackSpeed.NORMAL;
         }
+    }
+
+    private static String getFastSpeedText() {
+        final double multiplier = getFastMultiplier();
+        if (multiplier <= 0) {
+            return "Full throttle";
+        }
+        return formatMultiplier(multiplier) + "x speed";
+    }
+
+    private static double getFastMultiplier() {
+        try {
+            final String value = FModel.getPreferences().getPref(FPref.MATCH_PLAYBACK_FAST_SPEED).trim();
+            if ("Full throttle".equalsIgnoreCase(value)) {
+                return 0;
+            }
+            return Math.max(0, Double.parseDouble(value));
+        } catch (final Exception e) {
+            return 10;
+        }
+    }
+
+    private static String formatMultiplier(final double multiplier) {
+        if (multiplier == Math.rint(multiplier)) {
+            return Long.toString((long) multiplier);
+        }
+        return Double.toString(multiplier);
     }
 }
