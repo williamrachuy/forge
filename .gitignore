@@ -95,5 +95,8 @@ forge-gui/tools/PerSetTrackingResults
 __pycache__
 *.pyc
 
+# Ignore generated simulation statistics output
+simstats/out/
+
 # Ignore Claude configuration
 .claude

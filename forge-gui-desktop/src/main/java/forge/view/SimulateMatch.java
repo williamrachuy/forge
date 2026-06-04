@@ -338,7 +338,7 @@ public class SimulateMatch {
         return null;
     }
 
-    private static Deck deckFromCommandLineParameter(String deckname, GameType type) {
+    static Deck deckFromCommandLineParameter(String deckname, GameType type) {
         int dotpos = deckname.lastIndexOf('.');
         if (dotpos > 0 && dotpos == deckname.length() - 4) {
             File directFile = new File(deckname);
@@ -372,7 +372,7 @@ public class SimulateMatch {
         return deckStore.get(deckname);
     }
 
-    private static RegisteredPlayer registeredPlayerForDeck(final Deck deck, final GameType type) {
+    static RegisteredPlayer registeredPlayerForDeck(final Deck deck, final GameType type) {
         final RegisteredPlayer rp = type.equals(GameType.Commander)
                 ? RegisteredPlayer.forCommander(deck)
                 : new RegisteredPlayer(deck);

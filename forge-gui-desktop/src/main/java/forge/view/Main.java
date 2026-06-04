@@ -100,6 +100,10 @@ public final class Main {
                 SimulateMatch.simulate(args);
                 break;
 
+            case "simstats":
+                SimulateStats.simulate(args);
+                break;
+
             case "parse":
                 CardReaderExperiments.parseAllCards(args);
                 break;
