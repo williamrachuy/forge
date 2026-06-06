@@ -88,8 +88,9 @@ public class PlaySpellAbility {
         if (sa.isLandAbility()) {
             if (sa.canPlay()) {
                 sa.resolve();
+                return true;
             }
-            return true;
+            return false;
         }
 
         boolean castFaceDown = sa.isCastFaceDown();

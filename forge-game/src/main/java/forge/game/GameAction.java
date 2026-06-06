@@ -2843,10 +2843,13 @@ public class GameAction {
     public CardCollection mill(final PlayerCollection millers, final int numCards, final ZoneType destination, final SpellAbility sa, final Map<AbilityKey, Object> moveParams) {
         final boolean reveal = sa != null && !sa.hasParam("NoReveal");
         final boolean showRevealDialog = sa != null && sa.hasParam("ShowMilledCards");
+        final PlayerCollection orderedMillers = isBattleboxGame()
+                ? orderPlayersByPriority(millers)
+                : millers;
 
         final CardCollection milled = new CardCollection();
 
-        for (final Player p : millers) {
+        for (final Player p : orderedMillers) {
             if (!p.isInGame()) {
                 continue;
             }
@@ -2876,6 +2879,16 @@ public class GameAction {
         }
 
         return milled;
+    }
+
+    private PlayerCollection orderPlayersByPriority(final PlayerCollection players) {
+        final PlayerCollection ordered = new PlayerCollection(players);
+        final PlayerCollection priorityOrder = game.getPlayersInPriorityOrder();
+        ordered.sort(Comparator.comparingInt(p -> {
+            final int index = priorityOrder.indexOf(p);
+            return index < 0 ? Integer.MAX_VALUE : index;
+        }));
+        return ordered;
     }
 
     public void dealDamage(final boolean isCombat, final CardDamageMap damageMap, final CardDamageMap preventMap,

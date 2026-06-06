@@ -7519,9 +7519,13 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
     public List<SpellAbility> getAllPossibleAbilities(final Player player, final boolean removeUnplayable, final Multimap<SpellAbility, SpellAbility> unhiddenAltCost) {
         CardState oState = getState(CardStateName.Original);
         final List<SpellAbility> abilities = Lists.newArrayList();
+        final boolean battleboxSharedLandStation = player != null && player.isBattleboxSharedLandStationCard(this);
         for (SpellAbility sa : getSpellAbilities()) {
             if (sa.isAdventure() && isOnAdventure()) {
                 continue; // skip since it's already on adventure
+            }
+            if (battleboxSharedLandStation && sa.isLandAbility()) {
+                sa = sa.copy(player);
             }
             abilities.add(sa);
             //add alternative costs as additional spell abilities
@@ -7550,6 +7554,9 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
             for (SpellAbility sa : getState(CardStateName.Backside).getSpellAbilities()) {
                 // only add Spells there
                 if (sa.isSpell() || sa.isLandAbility()) {
+                    if (battleboxSharedLandStation && sa.isLandAbility()) {
+                        sa = sa.copy(player);
+                    }
                     abilities.add(sa);
                     List<SpellAbility> altCost = GameActionUtil.getAlternativeCosts(sa, player, false);
                     abilities.addAll(altCost);

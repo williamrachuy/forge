@@ -1,11 +1,13 @@
 package forge.game.ability.effects;
 
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 
 import com.google.common.collect.Sets;
 
+import forge.game.Game;
 import forge.game.ability.AbilityKey;
 import forge.game.ability.AbilityUtils;
 import forge.game.ability.SpellAbilityEffect;
@@ -64,6 +66,7 @@ public class DrawEffect extends SpellAbilityEffect {
         moveParams.put(AbilityKey.LastStateGraveyard, sa.getLastStateGraveyard());
 
         final List<Player> tgts = getTargetPlayersWithDuplicates(true, "Defined", sa);
+        orderBattleboxSharedLibraryDraws(sa.getHostCard().getGame(), tgts);
 
         for (final Player p : Sets.newLinkedHashSet(tgts)) {
             if (!p.isInGame()) {
@@ -99,5 +102,17 @@ public class DrawEffect extends SpellAbilityEffect {
                 source.addRemembered(drawn);
             }
         }
+    }
+
+    private static void orderBattleboxSharedLibraryDraws(final Game game, final List<Player> players) {
+        if (!game.isBattleboxGame() || players.size() < 2) {
+            return;
+        }
+
+        final List<Player> priorityOrder = game.getPlayersInPriorityOrder();
+        players.sort(Comparator.comparingInt(p -> {
+            final int index = priorityOrder.indexOf(p);
+            return index < 0 ? Integer.MAX_VALUE : index;
+        }));
     }
 }

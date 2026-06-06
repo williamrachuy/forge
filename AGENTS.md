@@ -125,6 +125,68 @@ Prior user preference for Battlebox work:
 - Invalid Battlebox setup should fail in the lobby with a clear error, not during match startup.
 - If changing random sampling or deck-size semantics, preserve multiplicity from `[Main]` unless explicitly told otherwise.
 
+## Battlebox SimStats Runbook
+
+Use this when William asks for many headless Battlebox sims, monarch vs no-monarch comparisons, library-depletion analysis, or statistical profiles. Do not commit generated `simstats/out/**` data.
+
+Primary files:
+
+- Configs: `configs/simstats/battlebox_monarch_4p.ini` and `configs/simstats/battlebox_no_monarch_4p.ini`.
+- Runner: `tools/simstats/run_simstats.sh`.
+- Reporter: `tools/simstats/report_simstats.py`.
+- Comparator: `tools/simstats/compare_reports.py`.
+- Raw output: `simstats/out/<run>/games.jsonl`.
+- Reports: `simstats/out/<run>/report.md` and `simstats/out/<run>/report.json`.
+- Docs: `docs/Development/SimStats.md`.
+
+Typical flow:
+
+```bash
+mvn -pl forge-gui-desktop -am -DskipTests package
+tools/simstats/run_simstats.sh configs/simstats/battlebox_monarch_4p.ini
+tools/simstats/report_simstats.py simstats/out/battlebox_monarch_4p/games.jsonl
+tools/simstats/compare_reports.py \
+  simstats/out/battlebox_no_monarch_4p/report.json \
+  simstats/out/battlebox_monarch_4p/report.json
+```
+
+Useful INI knobs:
+
+- `run.games`: number of games.
+- `run.seed`: deterministic seed; paired comparisons should use the same seed.
+- `run.timeoutSeconds=0`: no timeout; let every game run to completion.
+- `run.outputDir`: keep each run in its own directory.
+- `game.players`: `2`, `3`, or `4`.
+- `game.deck=BattleBox.dck`: William's Battlebox deck lives under `.forge/decks/battlebox`.
+- `game.battleboxMonarch=true|false`: explicit monarch flag for profiling.
+- `stats.enabled=true`: required for `games.jsonl`.
+- `stats.turnSnapshots=true`: needed for turn-slice questions like lands by turn 40.
+
+Deep game traces:
+
+```bash
+FORGE_DEEP_GAME_TRACE=true \
+FORGE_DEEP_GAME_TRACE_DIR=simstats/out/<run>/traces \
+tools/simstats/run_simstats.sh configs/simstats/battlebox_monarch_4p.ini
+```
+
+Equivalent JVM property form:
+
+```bash
+JAVA_TOOL_OPTIONS="-Dforge.deepGameTrace=true -Dforge.deepGameTraceDir=simstats/out/<run>/traces" \
+tools/simstats/run_simstats.sh configs/simstats/battlebox_monarch_4p.ini
+```
+
+Trace logs are large; enable them for small diagnostic runs unless William explicitly wants full trace collection.
+
+Reporting expectations:
+
+- Prefer distributions over only averages: mean, standard deviation, median, p90, p95, min, max, and sample size.
+- `totalPlayerTurns` is table-wide. A representative player's average turns is roughly `totalPlayerTurns / playerCount`.
+- For monarch comparisons, report `hasMonarchConfigured`, `monarchObserved`, `monarchChangeCount`, winner-seat distribution, card-flow counters, and turn/runtime distributions.
+- Library-zero analysis in Battlebox must account for the shared physical library. A zero count on all seats usually means the shared library depleted, not four independent libraries depleted.
+- Current stats collector does not yet attribute exact causal card names for every graveyard/library depletion; use deep traces or add named counters before making strong causal claims.
+
 ## Build And Test Commands
 
 - Fast compile for game/gui seams: `mvn -pl forge-game,forge-gui -am -DskipTests compile`.

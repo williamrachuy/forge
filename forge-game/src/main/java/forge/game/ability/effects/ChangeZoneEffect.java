@@ -671,7 +671,7 @@ public class ChangeZoneEffect extends SpellAbilityEffect {
 
                 final Player controller = sa.hasParam("GainControl")
                         ? gameCard.getController()
-                        : getBattleboxBattlefieldController(game, gameCard, activator, originZone);
+                        : getBattleboxBattlefieldController(game, gameCard, activator, originZone, sa);
                 movedCard = game.getAction().moveTo(controller.getZone(destination), gameCard, sa, moveParams);
                 // below stuff only if it changed zones
                 if (movedCard.getZone().equals(originZone)) {
@@ -1410,7 +1410,7 @@ public class ChangeZoneEffect extends SpellAbilityEffect {
                     }
                     final Player controller = sa.hasParam("GainControl")
                             ? c.getController()
-                            : getBattleboxBattlefieldController(game, c, player, originZone);
+                            : getBattleboxBattlefieldController(game, c, player, originZone, sa);
                     movedCard = game.getAction().moveToPlay(c, controller, sa, moveParams);
 
                     if (sa.hasParam("AttachAfter") && movedCard.isAttachment() && movedCard.isInPlay()) {
@@ -1593,7 +1593,7 @@ public class ChangeZoneEffect extends SpellAbilityEffect {
     }
 
     private static Player getBattleboxBattlefieldController(final Game game, final Card card,
-            final Player destinationController, final Zone originZone) {
+            final Player destinationController, final Zone originZone, final SpellAbility sa) {
         if (destinationController != null
                 && originZone != null
                 && game.getRules().hasAppliedVariant(GameType.Battlebox)) {
@@ -1602,6 +1602,11 @@ public class ChangeZoneEffect extends SpellAbilityEffect {
                 return destinationController;
             }
             if (originZone.is(ZoneType.Graveyard) && destinationController.isBattleboxSharedGraveyardCard(card)) {
+                final Player triggeredOwner = getBattleboxTriggeredReturnOwner(card, sa);
+                if (triggeredOwner != null) {
+                    triggeredOwner.claimBattleboxSharedGraveyardCard(card);
+                    return triggeredOwner;
+                }
                 if (card.getOwner() != destinationController) {
                     destinationController.claimBattleboxSharedGraveyardCard(card);
                 } else if (card.getController() != destinationController) {
@@ -1611,6 +1616,26 @@ public class ChangeZoneEffect extends SpellAbilityEffect {
             }
         }
         return card.getController();
+    }
+
+    private static Player getBattleboxTriggeredReturnOwner(final Card card, final SpellAbility sa) {
+        if (sa == null || !sa.hasTriggeringObject(AbilityKey.NewCard) || !sa.hasTriggeringObject(AbilityKey.Card)) {
+            return null;
+        }
+
+        final Object newCard = sa.getTriggeringObject(AbilityKey.NewCard);
+        if (!(newCard instanceof Card triggeredNewCard)) {
+            return null;
+        }
+        if (triggeredNewCard != card && !triggeredNewCard.equalsWithGameTimestamp(card)) {
+            return null;
+        }
+
+        final Object lki = sa.getTriggeringObject(AbilityKey.Card);
+        if (lki instanceof Card lkiCard && lkiCard.getOwner() != null) {
+            return lkiCard.getOwner();
+        }
+        return null;
     }
 
     private static Card moveToBattleboxSharedOriginExile(final Game game, final Player player, final Card card,

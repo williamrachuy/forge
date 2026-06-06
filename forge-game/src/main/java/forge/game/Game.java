@@ -461,9 +461,21 @@ public class Game {
     public final PlayerCollection getPlayersInTurnOrder(Player p) {
         final PlayerCollection players = new PlayerCollection(getPlayersInTurnOrder());
 
+        if (p == null || !players.contains(p)) {
+            return players;
+        }
+
         int i = players.indexOf(p);
         Collections.rotate(players, -i);
         return players;
+    }
+
+    public final PlayerCollection getPlayersInPriorityOrder() {
+        Player starter = getPhaseHandler().getPriorityPlayer();
+        if (starter == null || !getPlayers().contains(starter)) {
+            starter = getPhaseHandler().getPlayerTurn();
+        }
+        return getPlayersInTurnOrder(starter);
     }
 
     /**
@@ -1051,9 +1063,14 @@ public class Game {
         }
 
         if (p.isMonarch()) {
+            if (isBattleboxGame()) {
+                p.removeMonarchEffect();
+                setMonarch(null);
+                traceState("battlebox-monarch reset after monarch lost player=" + p);
+            }
             // CR 724.4 if the player who lost was the Monarch, someone else will be the monarch
             // TODO need to check rules if it should try the next player if able
-            if (p.equals(getPhaseHandler().getPlayerTurn())) {
+            else if (p.equals(getPhaseHandler().getPlayerTurn())) {
                 getAction().becomeMonarch(getNextPlayerAfter(p), p.getMonarchSet());
             } else {
                 getAction().becomeMonarch(getPhaseHandler().getPlayerTurn(), p.getMonarchSet());
@@ -1118,7 +1135,7 @@ public class Game {
                 + " newOwner=" + newOwner + " zone=" + card.getZone());
     }
 
-    private boolean isBattleboxGame() {
+    public final boolean isBattleboxGame() {
         return rules.getGameType() == GameType.Battlebox || rules.hasAppliedVariant(GameType.Battlebox);
     }
 
