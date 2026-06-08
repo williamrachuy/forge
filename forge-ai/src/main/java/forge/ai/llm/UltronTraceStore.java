@@ -62,6 +62,19 @@ final class UltronTraceStore {
         appendChatTranscript(entry);
     }
 
+    void recordStrategicPlan(Game game, Player advisor, List<SpellAbility> candidates, AiCardMemory memory,
+            String clientDescription, String prompt, DeepSeekClient.CompletionResult completion,
+            UltronStrategicPlan plan) {
+        if (!isEnabled()) {
+            return;
+        }
+
+        String entry = buildStrategicPlanEntry(game, advisor, candidates, memory, clientDescription, prompt,
+                completion, plan);
+        writeLatest(entry);
+        appendTranscript(entry);
+    }
+
     private String buildEntry(Game game, Player advisor, List<SpellAbility> candidates, AiCardMemory memory,
             String clientDescription, String prompt, List<UltronAdvisor.ResearchTrace> researchTrace,
             DeepSeekClient.CompletionResult completion, UltronAdvisor.Decision decision) {
@@ -91,6 +104,62 @@ final class UltronTraceStore {
                 appendResearchTrace(sb, trace);
             }
         }
+
+        sb.append("\n## DeepSeek Reasoning Content\n\n");
+        if (isBlank(completion.reasoningContent())) {
+            appendMissingReasoningMessage(sb, completion);
+        } else {
+            sb.append(completion.reasoningContent()).append('\n');
+        }
+
+        sb.append("\n## DeepSeek Final Content\n\n");
+        if (isBlank(completion.content())) {
+            appendMissingContentMessage(sb, completion);
+        } else {
+            fenced(sb, "json", completion.content());
+        }
+
+        if (includePrompt()) {
+            sb.append("\n## Prompt Sent To DeepSeek\n\n");
+            fenced(sb, "text", prompt);
+        }
+
+        if (includeRawResponse()) {
+            sb.append("\n## Raw DeepSeek Response\n\n");
+            if (isBlank(completion.rawResponse())) {
+                sb.append("No raw response body was captured.\n");
+            } else {
+                fenced(sb, "json", completion.rawResponse());
+            }
+        }
+
+        sb.append("\n---\n\n");
+        return truncate(sb.toString(), parsePositiveInt(System.getenv("ULTRON_TRACE_MAX_ENTRY_CHARS"), DEFAULT_MAX_ENTRY_CHARS));
+    }
+
+    private String buildStrategicPlanEntry(Game game, Player advisor, List<SpellAbility> candidates, AiCardMemory memory,
+            String clientDescription, String prompt, DeepSeekClient.CompletionResult completion,
+            UltronStrategicPlan plan) {
+        StringBuilder sb = new StringBuilder(32768);
+        sb.append("# Ultron DeepSeek Trace\n\n");
+        sb.append("- timestamp: ").append(Instant.now()).append('\n');
+        sb.append("- mode: strategic_plan\n");
+        sb.append("- advisor: ").append(advisor.getName()).append('\n');
+        sb.append("- turn: ").append(game.getPhaseHandler().getTurn()).append('\n');
+        sb.append("- phase: ").append(game.getPhaseHandler().getPhase()).append('\n');
+        sb.append("- activePlayer: ").append(game.getPhaseHandler().getPlayerTurn().getName()).append('\n');
+        sb.append("- client: ").append(clientDescription).append('\n');
+        sb.append("- httpStatus: ").append(completion.statusCode()).append('\n');
+        sb.append("- success: ").append(completion.success()).append('\n');
+        appendCompletionMetadata(sb, completion);
+        if (completion.error() != null) {
+            sb.append("- error: ").append(completion.error()).append('\n');
+        }
+        sb.append("- parsedPlan: ").append(plan == null ? "none" : plan.summary()).append('\n');
+        sb.append('\n');
+
+        sb.append("## Current Legal Candidates\n\n");
+        appendCandidates(sb, advisor, candidates, memory);
 
         sb.append("\n## DeepSeek Reasoning Content\n\n");
         if (isBlank(completion.reasoningContent())) {

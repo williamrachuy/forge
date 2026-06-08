@@ -1063,18 +1063,15 @@ public class Game {
         }
 
         if (p.isMonarch()) {
-            if (isBattleboxGame()) {
-                p.removeMonarchEffect();
-                setMonarch(null);
-                traceState("battlebox-monarch reset after monarch lost player=" + p);
-            }
+            final String monarchSet = p.getMonarchSet();
+            p.removeMonarchEffect();
+            setMonarch(null);
+            traceState((isBattleboxGame() ? "battlebox-" : "") + "monarch cleared after monarch lost player=" + p);
+
             // CR 724.4 if the player who lost was the Monarch, someone else will be the monarch
-            // TODO need to check rules if it should try the next player if able
-            else if (p.equals(getPhaseHandler().getPlayerTurn())) {
-                getAction().becomeMonarch(getNextPlayerAfter(p), p.getMonarchSet());
-            } else {
-                getAction().becomeMonarch(getPhaseHandler().getPlayerTurn(), p.getMonarchSet());
-            }
+            // If the active player is leaving the game or there is no active player, the next player in turn order becomes the monarch.
+            final Player replacementMonarch = getReplacementMonarchAfterPlayerLost(p);
+            getAction().becomeMonarch(replacementMonarch, monarchSet);
         }
 
         if (p.hasInitiative()) {
@@ -1137,6 +1134,17 @@ public class Game {
 
     public final boolean isBattleboxGame() {
         return rules.getGameType() == GameType.Battlebox || rules.hasAppliedVariant(GameType.Battlebox);
+    }
+
+    Player getReplacementMonarchAfterPlayerLost(final Player lostMonarch) {
+        if (lostMonarch == null) {
+            return null;
+        }
+        final Player activePlayer = getPhaseHandler().getPlayerTurn();
+        if (activePlayer == null || lostMonarch.equals(activePlayer)) {
+            return getNextPlayerAfter(lostMonarch);
+        }
+        return activePlayer;
     }
 
     /**

@@ -356,6 +356,9 @@ public final class CMatchUI
     public boolean selectSecondaryPromptButtonFromShortcut() {
         return cPrompt.selectSecondaryButtonFromShortcut();
     }
+    public boolean selectSecondaryPromptButtonFromEscapeLikeShortcut() {
+        return cPrompt.selectSecondaryButtonFromEscapeLikeShortcut();
+    }
     public CStack getCStack() {
         return cStack;
     }

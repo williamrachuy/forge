@@ -493,6 +493,15 @@ public class FControlGameEventHandler extends IGameEventVisitor.Base<Void> {
 
     public Void visit(final GameEventLandPlayed event) {
         processPlayer(event.player(), livesUpdate);
+        final GameView gameView = matchController.getGameView();
+        if (gameView != null && gameView.getGame() != null
+                && gameView.getGame().getRules().hasAppliedVariant(GameType.Battlebox)
+                && gameView.getPlayers() != null) {
+            for (final PlayerView player : gameView.getPlayers()) {
+                updateZone(player, ZoneType.Command);
+                updateZone(player, ZoneType.Flashback);
+            }
+        }
         matchController.handleLandPlayed(event.land());
         return processCard(event.land(), cardsRefreshDetails);
     }

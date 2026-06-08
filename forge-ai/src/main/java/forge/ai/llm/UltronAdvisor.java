@@ -3,6 +3,7 @@ package forge.ai.llm;
 import forge.ai.AiCardMemory;
 import forge.ai.LobbyPlayerAi;
 import forge.game.Game;
+import forge.game.combat.Combat;
 import forge.game.player.Player;
 import forge.game.spellability.SpellAbility;
 import org.tinylog.Logger;
@@ -28,6 +29,8 @@ public final class UltronAdvisor {
     private static final int DEFAULT_TABLE_TALK_WAIT_MS = 8000;
     private static final int DEFAULT_CHAT_REPLY_MAX_CHARS = 600;
     private static final int DEFAULT_RESEARCH_MAX_ROUNDS = 2;
+    private static final int DEFAULT_STRATEGIC_PLAN_WAIT_MS = 300000;
+    private static final int DEFAULT_STRATEGIC_PLAN_MAX_TOKENS = 32768;
     private static final Pattern CHOICE_PATTERN = Pattern.compile("\"choice\"\\s*:\\s*(-?\\d+)");
     private static final Pattern RATIONALE_PATTERN = Pattern.compile("\"rationale\"\\s*:\\s*\"");
     private static final UltronAdvisor INSTANCE = new UltronAdvisor();
@@ -35,12 +38,15 @@ public final class UltronAdvisor {
     private static final String CHAT_SYSTEM_PROMPT = UltronPrompts.chatSystemPrompt();
 
     private DeepSeekClient client;
+    private DeepSeekClient strategicPlanClient;
     private DeepSeekClient chatClient;
     private DeepSeekClient tableTalkClient;
     private boolean clientChecked;
+    private boolean strategicPlanClientChecked;
     private boolean chatClientChecked;
     private boolean tableTalkClientChecked;
     private final Map<Game, Map<Player, UltronGameContext>> contexts = Collections.synchronizedMap(new WeakHashMap<>());
+    private final Map<Game, Map<Player, UltronStrategicPlan>> strategicPlans = Collections.synchronizedMap(new WeakHashMap<>());
     private final List<Consumer<String>> tableTalkListeners = new CopyOnWriteArrayList<>();
     private final List<Consumer<StatusEvent>> statusListeners = new CopyOnWriteArrayList<>();
 
@@ -136,6 +142,68 @@ public final class UltronAdvisor {
             return decision;
         } finally {
             publishStatus(new StatusEvent(game, player, "advisor", false, ""));
+        }
+    }
+
+    public Decision chooseFromStrategicPlan(Game game, Player player, List<SpellAbility> candidates, AiCardMemory memory,
+            UltronStrategicPlan.GameState gameState) {
+        DeepSeekClient activeClient = getStrategicPlanClient();
+        if (activeClient == null || candidates == null || candidates.isEmpty()) {
+            return Decision.noAdvice();
+        }
+
+        UltronGameContext context = getContext(game, player);
+        if (context.shouldBuildStrategicPlan()) {
+            buildStrategicPlan(activeClient, game, player, candidates, memory, context);
+        }
+
+        UltronStrategicPlan plan = getStrategicPlan(game, player);
+        return plan == null ? Decision.noAdvice() : plan.choose(gameState, candidates, player, memory);
+    }
+
+    public void analyzeOpeningHand(Game game, Player player, AiCardMemory memory) {
+        DeepSeekClient activeClient = getStrategicPlanClient();
+        if (activeClient == null || game == null || player == null || !isEnabledFor(player)) {
+            return;
+        }
+        UltronGameContext context = getContext(game, player);
+        buildStrategicPlan(activeClient, game, player, Collections.emptyList(), memory, context);
+    }
+
+    public void filterPlannedAttackers(Game game, Player player, Combat combat) {
+        if (game == null || player == null || combat == null || !isEnabledFor(player)) {
+            return;
+        }
+        UltronStrategicPlan plan = getStrategicPlan(game, player);
+        if (plan != null) {
+            plan.filterAttackers(combat);
+        }
+    }
+
+    private void buildStrategicPlan(DeepSeekClient activeClient, Game game, Player player, List<SpellAbility> candidates,
+            AiCardMemory memory, UltronGameContext context) {
+        List<SpellAbility> limitedCandidates = candidates == null ? Collections.emptyList()
+                : candidates.subList(0, Math.min(candidates.size(), getCandidateLimit()));
+        String visibleState = UltronGameStateSerializer.serialize(game, player, limitedCandidates, memory);
+        String longTermMemory = UltronLearningStore.get().loadRelevantMemories(game, player, limitedCandidates, memory);
+        String prompt = context.buildStrategicPlanPrompt(visibleState, longTermMemory);
+        publishStatus(new StatusEvent(game, player, "strategic_plan", true, "Ultron planning turn..."));
+        DeepSeekClient.CompletionResult response = null;
+        UltronStrategicPlan plan = UltronStrategicPlan.empty();
+        try {
+            response = activeClient.completeJson(SYSTEM_PROMPT, prompt, getStrategicPlanWaitMs(game));
+            if (response.success()) {
+                plan = UltronStrategicPlan.parse(response.content());
+            }
+            putStrategicPlan(game, player, plan);
+            context.recordStrategicPlan(plan, response == null || response.content() == null ? null : summarizeAdvice(response.content()));
+            UltronTraceStore.get().recordStrategicPlan(game, player, limitedCandidates, memory,
+                    activeClient.describeForTrace(), prompt, response, plan);
+            if (isDebugEnabled()) {
+                Logger.info("Ultron strategic plan: {}", response == null ? "no response" : response.content());
+            }
+        } finally {
+            publishStatus(new StatusEvent(game, player, "strategic_plan", false, ""));
         }
     }
 
@@ -311,10 +379,20 @@ public final class UltronAdvisor {
         return client;
     }
 
+    private synchronized DeepSeekClient getStrategicPlanClient() {
+        if (!strategicPlanClientChecked) {
+            strategicPlanClient = DeepSeekClient.fromEnvironmentWithPrefix("ULTRON_STRATEGIC_PLAN",
+                    "deepseek-v4-pro", "enabled", "high", DEFAULT_STRATEGIC_PLAN_WAIT_MS,
+                    DEFAULT_STRATEGIC_PLAN_MAX_TOKENS).orElse(null);
+            strategicPlanClientChecked = true;
+        }
+        return strategicPlanClient;
+    }
+
     private synchronized DeepSeekClient getChatClient() {
         if (!chatClientChecked) {
             chatClient = DeepSeekClient.fromEnvironmentWithPrefix("ULTRON_CHAT",
-                    "deepseek-v4-flash", "enabled", "low", 30000, 512).orElse(null);
+                    "deepseek-v4-flash", "disabled", "low", 30000, 512).orElse(null);
             chatClientChecked = true;
         }
         return chatClient;
@@ -331,11 +409,15 @@ public final class UltronAdvisor {
 
     public synchronized void reloadClient() {
         client = DeepSeekClient.fromEnvironment().orElse(null);
+        strategicPlanClient = DeepSeekClient.fromEnvironmentWithPrefix("ULTRON_STRATEGIC_PLAN",
+                "deepseek-v4-pro", "enabled", "high", DEFAULT_STRATEGIC_PLAN_WAIT_MS,
+                DEFAULT_STRATEGIC_PLAN_MAX_TOKENS).orElse(null);
         chatClient = DeepSeekClient.fromEnvironmentWithPrefix("ULTRON_CHAT",
-                "deepseek-v4-flash", "enabled", "low", 30000, 512).orElse(null);
+                "deepseek-v4-flash", "disabled", "low", 30000, 512).orElse(null);
         tableTalkClient = DeepSeekClient.fromEnvironmentWithPrefix("ULTRON_TABLE_TALK",
                 "deepseek-v4-flash", "disabled", "low", 10000, 128).orElse(null);
         clientChecked = true;
+        strategicPlanClientChecked = true;
         chatClientChecked = true;
         tableTalkClientChecked = true;
     }
@@ -353,12 +435,33 @@ public final class UltronAdvisor {
         }
     }
 
+    private UltronStrategicPlan getStrategicPlan(Game game, Player player) {
+        synchronized (strategicPlans) {
+            Map<Player, UltronStrategicPlan> gamePlans = strategicPlans.get(game);
+            return gamePlans == null ? null : gamePlans.get(player);
+        }
+    }
+
+    private void putStrategicPlan(Game game, Player player, UltronStrategicPlan plan) {
+        synchronized (strategicPlans) {
+            strategicPlans.computeIfAbsent(game, ignored -> new HashMap<>()).put(player, plan);
+        }
+    }
+
     private static int getRequestWaitMs(Game game) {
         String override = System.getenv("ULTRON_DEEPSEEK_WAIT_MS");
         if (override != null && !override.isBlank()) {
             return parsePositiveInt(override, DEFAULT_REQUEST_WAIT_MS);
         }
         return Math.max(DEFAULT_REQUEST_WAIT_MS, (game.getAITimeout() * 1000) - 500);
+    }
+
+    private static int getStrategicPlanWaitMs(Game game) {
+        String override = System.getenv("ULTRON_STRATEGIC_PLAN_WAIT_MS");
+        if (override != null && !override.isBlank()) {
+            return parsePositiveInt(override, DEFAULT_STRATEGIC_PLAN_WAIT_MS);
+        }
+        return DEFAULT_STRATEGIC_PLAN_WAIT_MS;
     }
 
     private static int getChatWaitMs() {

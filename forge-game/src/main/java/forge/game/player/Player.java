@@ -1372,6 +1372,10 @@ public class Player extends GameEntity implements Comparable<Player> {
         return sharedGraveyardZone != null && sharedGraveyardZone == zone;
     }
 
+    public boolean isSharedCommandZone(final PlayerZone zone) {
+        return sharedCommandZone != null && sharedCommandZone == zone;
+    }
+
     public boolean isBattleboxSharedGraveyardCard(final Card card) {
         return card != null && sharedGraveyardZone != null && card.getZone() == sharedGraveyardZone;
     }

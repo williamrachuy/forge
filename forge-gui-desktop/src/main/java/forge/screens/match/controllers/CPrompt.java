@@ -37,10 +37,12 @@ import forge.gui.FThreads;
 import forge.gui.framework.ICDoc;
 import forge.gui.framework.SDisplayUtil;
 import forge.localinstance.properties.ForgePreferences;
+import forge.localinstance.properties.ForgePreferences.FPref;
 import forge.model.FModel;
 import forge.screens.match.CMatchUI;
 import forge.screens.match.views.VPrompt;
 import forge.toolbox.FSkin;
+import forge.util.Localizer;
 
 /**
  * Controls the prompt panel in the match UI.
@@ -156,6 +158,18 @@ public class CPrompt implements ICDoc {
 
     public boolean selectSecondaryButtonFromShortcut() {
         if (!view.getBtnCancel().isEnabled()) {
+            return false;
+        }
+        selectButtonCancel();
+        return true;
+    }
+
+    public boolean selectSecondaryButtonFromEscapeLikeShortcut() {
+        if (!view.getBtnCancel().isEnabled()) {
+            return false;
+        }
+        if (!FModel.getPreferences().getPrefBoolean(FPref.UI_ALLOW_ESC_TO_END_TURN)
+                && view.getBtnCancel().getText().equals(Localizer.getInstance().getMessage("lblEndTurn"))) {
             return false;
         }
         selectButtonCancel();

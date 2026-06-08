@@ -24,6 +24,7 @@ import forge.ai.AiCardMemory.MemorySet;
 import forge.ai.ability.ChangeZoneAi;
 import forge.ai.ability.LearnAi;
 import forge.ai.llm.UltronAdvisor;
+import forge.ai.llm.UltronStrategicPlan;
 import forge.ai.simulation.GameStateEvaluator;
 import forge.ai.simulation.SpellAbilityPicker;
 import forge.card.CardStateName;
@@ -1307,6 +1308,7 @@ public class AiController {
         lastAttackAggression = aiAtk.declareAttackers(combat);
 
         aiAtk.reinforceWithBanding(combat);
+        UltronAdvisor.get().filterPlannedAttackers(game, player, combat);
 
         // Per CR 508.1d, the decision to pay attack costs (e.g. Propaganda)
         // is made at declaration time. Remove attackers the AI can't pay for.
@@ -1383,15 +1385,11 @@ public class AiController {
                 if (UltronAdvisor.get().isEnabledFor(player)) {
                     List<SpellAbility> landAbilities = getLandAbilitiesToPlay(landsWannaPlay);
                     if (!landAbilities.isEmpty()) {
-                        UltronAdvisor.Decision decision = UltronAdvisor.get().chooseSpellAbility(game, player, landAbilities, memory);
+                        UltronAdvisor.Decision decision = UltronAdvisor.get().chooseFromStrategicPlan(game, player,
+                                landAbilities, memory, ultronGameState());
                         if (decision.hasAdvice()) {
                             if (decision.getSpellAbility() != null) {
                                 return singleSpellAbilityList(decision.getSpellAbility());
-                            }
-                        } else {
-                            SpellAbility fallbackLand = chooseDefaultLandAbility(landsWannaPlay);
-                            if (fallbackLand != null) {
-                                return singleSpellAbilityList(fallbackLand);
                             }
                         }
                     }
@@ -1726,7 +1724,8 @@ public class AiController {
             }
 
             if (ultronCandidates != null && !ultronCandidates.isEmpty()) {
-                UltronAdvisor.Decision decision = ultronAdvisor.chooseSpellAbility(game, player, ultronCandidates, memory);
+                UltronAdvisor.Decision decision = ultronAdvisor.chooseFromStrategicPlan(game, player,
+                        ultronCandidates, memory, ultronGameState());
                 if (decision.hasAdvice()) {
                     return decision.getSpellAbility();
                 }
@@ -1753,6 +1752,15 @@ public class AiController {
             }
             return null;
         }
+    }
+
+    private UltronStrategicPlan.GameState ultronGameState() {
+        if (!game.getStack().isEmpty()) {
+            return UltronStrategicPlan.GameState.RESPONDING;
+        }
+        return (game.getPhaseHandler().is(PhaseType.MAIN1) || game.getPhaseHandler().is(PhaseType.MAIN2))
+                ? UltronStrategicPlan.GameState.MAIN_PHASE
+                : UltronStrategicPlan.GameState.OTHER;
     }
 
     public CardCollection chooseCardsToDelve(int genericCost, CardCollection grave) {
@@ -1846,6 +1854,10 @@ public class AiController {
     }
 
     public List<SpellAbility> chooseSaToActivateFromOpeningHand(List<SpellAbility> usableFromOpeningHand) {
+        if (UltronAdvisor.get().isEnabledFor(player)) {
+            UltronAdvisor.get().analyzeOpeningHand(game, player, memory);
+        }
+
         // AI would play everything. But limits to one copy of (Leyline of Singularity) and (Gemstone Caverns)
 
         List<SpellAbility> result = Lists.newArrayList();

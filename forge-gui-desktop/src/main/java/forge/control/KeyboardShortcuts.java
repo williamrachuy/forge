@@ -13,8 +13,10 @@ import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 import javax.swing.AbstractAction;
 import javax.swing.Action;
@@ -210,6 +212,26 @@ public class KeyboardShortcuts {
             }
         };
 
+        /** Select primary prompt button. */
+        final Action actPromptPrimary = new AbstractAction() {
+            @Override
+            public void actionPerformed(final ActionEvent e) {
+                if (!Singletons.getControl().getCurrentScreen().isMatchScreen()) { return; }
+                if (matchUI == null) { return; }
+                matchUI.selectPrimaryPromptButtonFromShortcut();
+            }
+        };
+
+        /** Select secondary prompt button. */
+        final Action actPromptSecondary = new AbstractAction() {
+            @Override
+            public void actionPerformed(final ActionEvent e) {
+                if (!Singletons.getControl().getCurrentScreen().isMatchScreen()) { return; }
+                if (matchUI == null) { return; }
+                matchUI.selectSecondaryPromptButtonFromEscapeLikeShortcut();
+            }
+        };
+
         final Action actMacroRecord = new AbstractAction() {
             @Override
             public void actionPerformed(ActionEvent e) {
@@ -293,6 +315,12 @@ public class KeyboardShortcuts {
         list.add(new Shortcut(FPref.SHORTCUT_SHOWTARGETING, localizer.getMessage("lblSHORTCUT_SHOWTARGETING"), actTgtOverlay, am, im));
         list.add(new Shortcut(FPref.SHORTCUT_AUTOYIELD_ALWAYS_YES, localizer.getMessage("lblSHORTCUT_AUTOYIELD_ALWAYS_YES"), actAutoYieldAndYes, am, im));
         list.add(new Shortcut(FPref.SHORTCUT_AUTOYIELD_ALWAYS_NO, localizer.getMessage("lblSHORTCUT_AUTOYIELD_ALWAYS_NO"), actAutoYieldAndNo, am, im));
+        list.add(new Shortcut(FPref.SHORTCUT_PROMPT_PRIMARY,
+                localizer.getMessageorUseDefault("lblSHORTCUT_PROMPT_PRIMARY", "Match: select OK or left prompt button"),
+                actPromptPrimary, am, im));
+        list.add(new Shortcut(FPref.SHORTCUT_PROMPT_SECONDARY,
+                localizer.getMessageorUseDefault("lblSHORTCUT_PROMPT_SECONDARY", "Match: select Cancel or right prompt button"),
+                actPromptSecondary, am, im));
         list.add(new Shortcut(FPref.SHORTCUT_MACRO_RECORD, localizer.getMessage("lblSHORTCUT_MACRO_RECORD"), actMacroRecord, am, im));
         list.add(new Shortcut(FPref.SHORTCUT_MACRO_NEXT_ACTION, localizer.getMessage("lblSHORTCUT_MACRO_NEXT_ACTION"), actMacroNextAction, am, im));
         list.add(new Shortcut(FPref.SHORTCUT_CARD_ZOOM, localizer.getMessage("lblSHORTCUT_CARD_ZOOM"), actZoomCard, am, im));
@@ -321,9 +349,9 @@ public class KeyboardShortcuts {
         /** */
         private final InputMap inputMap;
         /** */
-        private KeyStroke key;
+        private final List<KeyStroke> keys = new ArrayList<>();
         /** */
-        private String str;
+        private final List<String> keyStrings = new ArrayList<>();
 
         /**
          * 
@@ -363,22 +391,30 @@ public class KeyboardShortcuts {
         /** */
         public void attach() {
             detach();
-            str = FModel.getPreferences().getPref(prefkeys);
-            if (!str.isEmpty()) {
-                key = assembleKeystrokes(str.split(" "));
-    
-                // Attach key stroke to input map...
-                inputMap.put(key, str);
-                
-                // ...then attach actionListener to action map
-                actionMap.put(str, handler);
+            final String prefValue = FModel.getPreferences().getPref(prefkeys);
+            for (final String binding : getBindingStrings(prefValue)) {
+                final KeyStroke key = assembleKeystroke(binding);
+                if (key == null) {
+                    continue;
+                }
+
+                keys.add(key);
+                keyStrings.add(binding);
+                inputMap.put(key, binding);
+                actionMap.put(binding, handler);
             }
         }
 
         /** */
         public void detach() {
-            inputMap.remove(key);
-            actionMap.remove(str);
+            for (final KeyStroke key : keys) {
+                inputMap.remove(key);
+            }
+            for (final String keyString : keyStrings) {
+                actionMap.remove(keyString);
+            }
+            keys.clear();
+            keyStrings.clear();
         }
     } // End class Shortcut
 
@@ -387,11 +423,15 @@ public class KeyboardShortcuts {
      * or {@code null} if the preference is empty.
      */
     public static KeyStroke getKeyStrokeForPref(final FPref pref) {
-        final String str = FModel.getPreferences().getPref(pref);
-        if (str == null || str.isEmpty()) {
+        final List<String> bindings = getBindingStrings(FModel.getPreferences().getPref(pref));
+        return bindings.isEmpty() ? null : assembleKeystroke(bindings.get(0));
+    }
+
+    private static KeyStroke assembleKeystroke(final String binding) {
+        if (binding == null || binding.isBlank()) {
             return null;
         }
-        return assembleKeystrokes(str.split(" "));
+        return assembleKeystrokes(binding.trim().split(" "));
     }
 
     private static KeyStroke assembleKeystrokes(final String[] keys0) {
@@ -427,34 +467,86 @@ public class KeyboardShortcuts {
         return KeyStroke.getKeyStroke(keyEvent, modifier);
     }
 
+    public static List<String> getBindingStrings(final String value) {
+        if (value == null || value.isBlank()) {
+            return Collections.emptyList();
+        }
+        final List<String> bindings = new ArrayList<>();
+        for (final String token : value.split("\\s*,\\s*")) {
+            final String binding = token.trim();
+            if (!binding.isEmpty()) {
+                bindings.add(binding);
+            }
+        }
+        return bindings;
+    }
+
+    public static String formatBinding(final String binding) {
+        if (binding == null || binding.isBlank()) {
+            return "";
+        }
+        final List<String> displayText = new ArrayList<>();
+        for (final String keyCode : binding.trim().split(" ")) {
+            if (!keyCode.isEmpty()) {
+                displayText.add(KeyEvent.getKeyText(Integer.parseInt(keyCode)));
+            }
+        }
+        return StringUtils.join(displayText, '+');
+    }
+
+    public static String formatBindings(final String value) {
+        final List<String> displayBindings = new ArrayList<>();
+        for (final String binding : getBindingStrings(value)) {
+            final String formatted = formatBinding(binding);
+            if (!formatted.isEmpty()) {
+                displayBindings.add(formatted);
+            }
+        }
+        return StringUtils.join(displayBindings, ", ");
+    }
+
+    public static String buildPreferenceBinding(final KeyEvent e) {
+        final int keyCode = e.getKeyCode();
+        if (keyCode == KeyEvent.VK_SHIFT || keyCode == KeyEvent.VK_CONTROL || keyCode == KeyEvent.VK_ALT
+                || keyCode == KeyEvent.VK_ALT_GRAPH || keyCode == KeyEvent.VK_META) {
+            return "";
+        }
+
+        final List<String> parts = new ArrayList<>(3);
+        if ((e.getModifiersEx() & InputEvent.SHIFT_DOWN_MASK) != 0) {
+            parts.add(Integer.toString(KeyEvent.VK_SHIFT));
+        }
+        if ((e.getModifiersEx() & InputEvent.CTRL_DOWN_MASK) != 0) {
+            parts.add(Integer.toString(KeyEvent.VK_CONTROL));
+        }
+        parts.add(Integer.toString(keyCode));
+        return StringUtils.join(parts, ' ');
+    }
+
     /**
-     * - Adds keycode to list stored in name of a text field.
-     * - Code is not added if already in list.
-     * - Backspace removes last code in list.
-     * - Sets text of text field with character equivalent of keycodes.
+     * Adds a complete binding to the field's stored shortcut list.
+     * Backspace/Delete removes the last binding.
      * 
      * @param e &emsp; KeyEvent
      */
     public static void addKeyCode(final KeyEvent e) {
         final KeyboardShortcutField ksf = (KeyboardShortcutField) e.getSource();
-        final String newCode = Integer.toString(e.getKeyCode());
-        final String codestring = ksf.getCodeString();
-        List<String> existingCodes;
+        final Set<String> bindings = new LinkedHashSet<>(getBindingStrings(ksf.getCodeString()));
 
-        if (codestring != null) {
-            existingCodes = new ArrayList<>(Arrays.asList(codestring.split(" ")));
-        } else {
-            existingCodes = new ArrayList<>();
+        if (e.getKeyCode() == KeyEvent.VK_BACK_SPACE || e.getKeyCode() == KeyEvent.VK_DELETE) {
+            if (!bindings.isEmpty()) {
+                final List<String> orderedBindings = new ArrayList<>(bindings);
+                orderedBindings.remove(orderedBindings.size() - 1);
+                ksf.setCodeString(StringUtils.join(orderedBindings, ", "));
+            }
+            return;
         }
 
-        // Backspace (8) will remove last code from list.
-        if (e.getKeyCode() == 8) {
-            existingCodes.remove(existingCodes.size() - 1);
-        } else if (!existingCodes.contains(newCode)) {
-            existingCodes.add(newCode);
+        final String binding = buildPreferenceBinding(e);
+        if (!binding.isEmpty()) {
+            bindings.add(binding);
+            ksf.setCodeString(StringUtils.join(bindings, ", "));
         }
-
-        ksf.setCodeString(StringUtils.join(existingCodes, ' '));
     }
 
     private static final class MouseShortcutHandler implements AWTEventListener {

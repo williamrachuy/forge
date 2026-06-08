@@ -101,13 +101,17 @@ public class MatchBattleboxSharedZoneTest {
         final Player activePlayer = game.getPlayers().get(0);
         final Card stationLand = addSharedStationLand(game, game.getPlayers().get(1));
 
+        Assert.assertTrue(activePlayer.getView().getCommand().stream().anyMatch(card -> card.getId() == stationLand.getId()));
+
         activePlayer.playLand(stationLand, null);
 
         Assert.assertTrue(activePlayer.getZone(ZoneType.Battlefield).contains(stationLand));
         Assert.assertFalse(activePlayer.getZone(ZoneType.Command).contains(stationLand));
+        Assert.assertFalse(activePlayer.getView().getCommand().stream().anyMatch(card -> card.getId() == stationLand.getId()));
         Assert.assertSame(stationLand.getOwner(), activePlayer);
         Assert.assertSame(stationLand.getController(), activePlayer);
     }
+
 
     @Test
     public void battleboxSharedGraveyardAbilityCanBeActivatedByNonController() throws Exception {
@@ -142,6 +146,26 @@ public class MatchBattleboxSharedZoneTest {
         assignBattleboxMonarchOnFirstCombatDamage(game, damageMap);
 
         Assert.assertSame(game.getMonarch(), damagingPlayer);
+    }
+
+    @Test
+    public void battleboxMonarchPassesToActivePlayerWhenNonActiveMonarchLoses() {
+        final Game game = createMatch(3, true).createGame();
+        final Player activePlayer = game.getPlayers().get(0);
+        final Player monarchPlayer = game.getPlayers().get(1);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, activePlayer, false, 1);
+        Assert.assertSame(game.getReplacementMonarchAfterPlayerLost(monarchPlayer), activePlayer);
+    }
+
+    @Test
+    public void battleboxMonarchPassesToNextPlayerWhenActiveMonarchLoses() {
+        final Game game = createMatch(3, true).createGame();
+        final Player activeMonarch = game.getPlayers().get(0);
+        final Player nextPlayer = game.getPlayers().get(1);
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, activeMonarch, false, 1);
+        Assert.assertSame(game.getReplacementMonarchAfterPlayerLost(activeMonarch), nextPlayer);
     }
 
     @Test
@@ -208,6 +232,7 @@ public class MatchBattleboxSharedZoneTest {
         stationLand.addType("Land");
         return stationLand;
     }
+
 
     private static Card addSharedGraveyardCard(final Game game, final Player owner) {
         final Card card = new Card(40_000, game);

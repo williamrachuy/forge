@@ -26,6 +26,7 @@ import forge.game.event.GameEventSpellResolved;
 import forge.game.event.GameEventSpellAbilityCast;
 import forge.game.event.GameEventTurnPhase;
 import forge.game.phase.PhaseHandler;
+import forge.game.phase.PhaseType;
 import forge.game.player.Player;
 import forge.game.player.PlayerView;
 import forge.game.player.RegisteredPlayer;
@@ -72,6 +73,8 @@ final class UltronGameContext {
     private boolean fullInitialContextSent;
     private boolean outcomeRecorded;
     private String lastAssessmentEvents = "";
+    private int strategicPlanTurn = -1;
+    private boolean strategicPlanDirty = true;
 
     UltronGameContext(Game game, Player advisor) {
         this.game = game;
@@ -121,6 +124,75 @@ final class UltronGameContext {
         sb.append(currentVisibleState);
         sb.append("\n</current_visible_state>\n");
         return sb.toString();
+    }
+
+    synchronized String buildStrategicPlanPrompt(String currentVisibleState, String longTermMemory) {
+        boolean includeFullContext = !fullInitialContextSent;
+        String setupContext = includeFullContext ? fullInitialContext : recurringContext;
+        fullInitialContextSent = true;
+
+        String recentEventText = drainRecentEventsForPrompt();
+        StringBuilder sb = new StringBuilder(setupContext.length() + currentVisibleState.length()
+                + timelineChars + recentEventText.length() + (longTermMemory == null ? 0 : longTermMemory.length()) + 2048);
+        sb.append("Create a turn-level strategic action plan for Forge's built-in AI to execute.\n");
+        sb.append("Do not choose targets or invent illegal actions. Forge will still filter legal actions and pay costs.\n");
+        sb.append("Rank cards/actions by strategic sequence for this turn, identify attackers/defenders at card-name level, ");
+        sb.append("and identify instant-speed interaction to hold for high-value responses.\n\n");
+        sb.append("<initial_game_context>\n");
+        sb.append(setupContext);
+        sb.append("\n</initial_game_context>\n\n");
+        sb.append("<long_term_learning>\n");
+        if (longTermMemory == null || longTermMemory.isBlank()) {
+            sb.append("No stored cross-game memories retrieved.\n");
+        } else {
+            sb.append(longTermMemory);
+        }
+        sb.append("</long_term_learning>\n\n");
+        appendReferenceCacheIfPresent(sb);
+        appendChatHistoryIfPresent(sb);
+        sb.append("<recent_visible_events_since_last_plan>\n");
+        sb.append(recentEventText);
+        sb.append("</recent_visible_events_since_last_plan>\n\n");
+        sb.append("<prior_visible_progression>\n");
+        if (timeline.isEmpty()) {
+            sb.append("No prior Ultron advisor checkpoints.\n");
+        } else {
+            for (String entry : timeline) {
+                sb.append(entry).append('\n');
+            }
+        }
+        sb.append("</prior_visible_progression>\n\n");
+        sb.append("<current_visible_state>\n");
+        sb.append(currentVisibleState);
+        sb.append("\n</current_visible_state>\n\n");
+        sb.append("Return only valid JSON with this shape:\n");
+        sb.append("{\"plan\":[{\"card\":\"card name\",\"api\":\"optional Forge API name\",\"timing\":\"main|combat|response|hold\"}],");
+        sb.append("\"attackers\":[\"card name\"],\"defenders\":[\"card name\"],\"holdInteraction\":[\"card name\"],");
+        sb.append("\"rationale\":\"short reason\"}\n");
+        return sb.toString();
+    }
+
+    synchronized boolean shouldBuildStrategicPlan() {
+        PhaseHandler phase = game.getPhaseHandler();
+        if (!advisor.equals(phase.getPlayerTurn())) {
+            return false;
+        }
+        int turn = phase.getTurn();
+        if (strategicPlanTurn != turn && phase.is(PhaseType.MAIN1)) {
+            return true;
+        }
+        return strategicPlanTurn == turn && strategicPlanDirty;
+    }
+
+    synchronized void recordStrategicPlan(UltronStrategicPlan plan, String rationale) {
+        strategicPlanTurn = game.getPhaseHandler().getTurn();
+        strategicPlanDirty = false;
+        String summary = "strategic_plan turn=" + strategicPlanTurn
+                + " empty=" + (plan == null || plan.isEmpty());
+        if (!isBlank(rationale)) {
+            summary += " rationale=" + oneLine(truncate(rationale, 500));
+        }
+        appendTimeline(summary);
     }
 
     synchronized String buildResearchPrompt(String basePrompt, String researchTranscript, int round, int maxRounds) {
@@ -276,6 +348,7 @@ final class UltronGameContext {
     @Subscribe
     public void receive(GameEventSpellAbilityCast event) {
         appendVisibleEvent("cast", eventSummary(event));
+        markStrategicPlanDirtyIfOpponentActedOnAdvisorTurn(event == null || event.si() == null ? null : event.si().getActivatingPlayer());
         if (!UltronAdvisor.isTableTalkEnabled() || event == null || event.si() == null) {
             return;
         }
@@ -301,6 +374,7 @@ final class UltronGameContext {
     @Subscribe
     public synchronized void receive(GameEventLandPlayed event) {
         appendVisibleEvent("land", eventSummary(event));
+        markStrategicPlanDirtyIfOpponentActedOnAdvisorTurn(event == null ? null : event.player());
     }
 
     @Subscribe
@@ -381,6 +455,16 @@ final class UltronGameContext {
         tableTalkCount++;
         lastTableTalkMillis = now;
         return true;
+    }
+
+    private synchronized void markStrategicPlanDirtyIfOpponentActedOnAdvisorTurn(PlayerView actingPlayerView) {
+        if (actingPlayerView == null || !advisor.equals(game.getPhaseHandler().getPlayerTurn())) {
+            return;
+        }
+        Player actingPlayer = game.getPlayer(actingPlayerView);
+        if (actingPlayer != null && !actingPlayer.equals(advisor)) {
+            strategicPlanDirty = true;
+        }
     }
 
     private void appendTimeline(String entry) {

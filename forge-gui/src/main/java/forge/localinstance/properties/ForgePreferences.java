@@ -318,6 +318,8 @@ public class ForgePreferences extends PreferencesStore<ForgePreferences.FPref> {
         SHORTCUT_SHOWTARGETING ("84"),
         SHORTCUT_AUTOYIELD_ALWAYS_YES ("89"),
         SHORTCUT_AUTOYIELD_ALWAYS_NO ("78"),
+        SHORTCUT_PROMPT_PRIMARY (""),
+        SHORTCUT_PROMPT_SECONDARY (""),
         SHORTCUT_MACRO_RECORD ("16 82"),
         SHORTCUT_MACRO_NEXT_ACTION ("16 50"),
         SHORTCUT_CARD_ZOOM("90"),

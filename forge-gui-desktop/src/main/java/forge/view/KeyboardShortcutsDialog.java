@@ -48,13 +48,6 @@ public class KeyboardShortcutsDialog extends FDialog {
 
             final KeyboardShortcutField field = new KeyboardShortcutField(shortcut);
             field.setFont(FSkin.getRelativeFont(11));
-            // Clear existing binding on click so a new key press replaces it.
-            field.addMouseListener(new java.awt.event.MouseAdapter() {
-                @Override
-                public void mousePressed(final java.awt.event.MouseEvent e) {
-                    field.setCodeString("");
-                }
-            });
             // Transfer focus away once a non-modifier key completes the binding.
             field.addKeyListener(new KeyAdapter() {
                 @Override

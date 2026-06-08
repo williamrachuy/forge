@@ -18,7 +18,6 @@ import forge.toolbox.FSkin.SkinnedLabel;
 import forge.toolbox.FSkin.SkinnedTextField;
 import forge.util.Localizer;
 import net.miginfocom.swing.MigLayout;
-import org.apache.commons.lang3.StringUtils;
 
 import javax.swing.*;
 import javax.swing.Timer;
@@ -621,6 +620,8 @@ public enum VSubmenuPreferences implements IVSubmenu<CSubmenuPreferences> {
             super();
             this.setEditable(false);
             this.setFont(FSkin.getRelativeFont(14));
+            this.setToolTipText(Localizer.getInstance().getMessageorUseDefault("ttShortcutField",
+                    "Focus this field and press a shortcut to add it. Press Backspace or Delete to remove the last shortcut."));
             final FPref prefKey = shortcut0.getPrefKey();
             reload(prefKey);
 
@@ -673,17 +674,7 @@ public enum VSubmenuPreferences implements IVSubmenu<CSubmenuPreferences> {
             }
 
             this.codeString = str0.trim();
-
-            final List<String> codes = new ArrayList<>(Arrays.asList(this.codeString.split(" ")));
-            final List<String> displayText = new ArrayList<>();
-
-            for (final String s : codes) {
-                if (!s.isEmpty()) {
-                    displayText.add(KeyEvent.getKeyText(Integer.parseInt(s)));
-                }
-            }
-
-            this.setText(StringUtils.join(displayText, '+'));
+            this.setText(KeyboardShortcuts.formatBindings(this.codeString));
         }
     }
 
