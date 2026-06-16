@@ -61,6 +61,37 @@ public final class UltronAdvisor {
         return isUltronProfile(player) && isEnvEnabled() && getClient() != null;
     }
 
+    // -----------------------------------------------------------------------
+    // New profile/enablement methods for runtime vs. LLM separation (Phase 2)
+    // -----------------------------------------------------------------------
+
+    /** True if this player's profile is Ultron (does NOT require an API key). */
+    public boolean isUltronRuntimeProfile(Player player) {
+        return isUltronProfile(player);
+    }
+
+    /** True if LLM advisor is explicitly enabled AND a DeepSeek client exists. */
+    public boolean isLlmAdvisorEnabledFor(Player player) {
+        return isUltronProfile(player) && UltronConfig.enabledForLlmAdvisor() && getClient() != null;
+    }
+
+    /** True if LLM strategic planning is explicitly enabled AND a strategic-plan client exists. */
+    public boolean isLlmStrategicPlanEnabledFor(Player player) {
+        return isUltronProfile(player) && UltronConfig.enabledForStrategicPlanLlm()
+                && getStrategicPlanClient() != null;
+    }
+
+    /** True if chat is enabled AND a chat client exists. */
+    public boolean isChatEnabledFor(Player player) {
+        return isUltronProfile(player) && UltronConfig.enabledForChat() && getChatClient() != null;
+    }
+
+    /** True if table-talk is enabled AND a table-talk client exists. */
+    public boolean isTableTalkEnabledFor(Player player) {
+        return isUltronProfile(player) && UltronConfig.enabledForTableTalk()
+                && getTableTalkClient() != null;
+    }
+
     public boolean hasUltronPlayer(Game game) {
         return findUltronPlayer(game).isPresent();
     }
@@ -94,6 +125,10 @@ public final class UltronAdvisor {
     }
 
     public Decision chooseSpellAbility(Game game, Player player, List<SpellAbility> candidates, AiCardMemory memory) {
+        // Phase 17: guard — do not call LLM unless explicitly enabled
+        if (!UltronConfig.enabledForLlmAdvisor()) {
+            return Decision.noAdvice();
+        }
         DeepSeekClient activeClient = getClient();
         if (activeClient == null || candidates == null || candidates.isEmpty()) {
             return Decision.noAdvice();
