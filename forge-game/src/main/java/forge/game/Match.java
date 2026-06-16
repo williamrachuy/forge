@@ -268,8 +268,8 @@ public class Match {
             }
         }
 
-        // Add Commanders if enabled
-        if (game != null && game.isBattleboxCommandersEnabled()) {
+        // Add Commanders if enabled (check GameRules, not game, since flags are set after game creation)
+        if (game != null && game.getRules().isBattleboxCommandersEnabled()) {
             final CardPool commanders = BattleboxConfig.getCommanders(battleboxSource.getDeck());
             if (commanders != null) {
                 for (final PaperCard pc : commanders.toFlatList()) {
