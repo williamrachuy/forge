@@ -255,31 +255,56 @@ public class Match {
         }
 
         final RegisteredPlayer battleboxSource = playersConditions.get(0);
-        final BattleboxConfig config = BattleboxConfig.fromDeck(battleboxSource.getDeck());
+        final Deck battleboxDeck = battleboxSource.getDeck();
+        game.traceState("=== prepareBattleboxSharedCommand START ===");
+        game.traceState("Deck name: " + (battleboxDeck == null ? "null" : battleboxDeck.getName()));
+        game.traceState("Deck has LandStation: " + (battleboxDeck != null && battleboxDeck.has(forge.deck.DeckSection.LandStation)));
+        game.traceState("Deck has Commander: " + (battleboxDeck != null && battleboxDeck.has(forge.deck.DeckSection.Commander)));
+
+        final BattleboxConfig config = BattleboxConfig.fromDeck(battleboxDeck);
 
         // Add Land Station
-        final CardPool landStation = config.getLandStation(battleboxSource.getDeck(), players.size());
+        final CardPool landStation = config.getLandStation(battleboxDeck, players.size());
+        game.traceState("LandStation pool: " + (landStation == null ? "null" : landStation.countAll() + " cards"));
         if (landStation != null) {
             for (final PaperCard pc : landStation.toFlatList()) {
                 final Card stationLand = Card.fromPaperCard(pc, host);
                 stationLand.setCollectible(true);
                 stationLand.setStartsGameInPlay(true);
                 sharedCommand.add(stationLand);
+                game.traceState("  Added land: " + pc.getName());
             }
         }
 
-        // Add Commanders if enabled (check GameRules, not game, since flags are set after game creation)
-        if (game != null && game.getRules().isBattleboxCommandersEnabled()) {
-            final CardPool commanders = BattleboxConfig.getCommanders(battleboxSource.getDeck());
+        // Add Commanders if enabled
+        final boolean commandersEnabled = game != null && game.getRules().isBattleboxCommandersEnabled();
+        game.traceState("Commanders enabled in GameRules: " + commandersEnabled);
+
+        if (commandersEnabled) {
+            final CardPool commanders = BattleboxConfig.getCommanders(battleboxDeck);
+            game.traceState("Commanders pool from BattleboxConfig: " + (commanders == null ? "null" : commanders.countAll() + " cards"));
+
             if (commanders != null) {
                 for (final PaperCard pc : commanders.toFlatList()) {
                     final Card commanderCard = Card.fromPaperCard(pc, host);
                     commanderCard.setCollectible(true);
                     commanderCard.setStartsGameInPlay(true);
                     sharedCommand.add(commanderCard);
+                    game.traceState("  Added commander: " + pc.getName());
                 }
+                game.traceState("Total commanders added: " + commanders.countAll());
+            } else {
+                game.traceState("WARNING: BattleboxConfig.getCommanders() returned null!");
+                game.traceState("Deck sections present: " +
+                    (battleboxDeck == null ? "null deck" :
+                     "[Main: " + battleboxDeck.has(forge.deck.DeckSection.Main) +
+                     " | Commander: " + battleboxDeck.has(forge.deck.DeckSection.Commander) +
+                     " | LandStation: " + battleboxDeck.has(forge.deck.DeckSection.LandStation) + "]"));
             }
         }
+
+        game.traceState("Final shared command zone size: " + sharedCommand.size());
+        game.traceState("=== prepareBattleboxSharedCommand END ===");
 
         refreshBattleboxSharedZone(players, ZoneType.Command);
     }

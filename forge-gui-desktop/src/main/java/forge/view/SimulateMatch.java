@@ -90,6 +90,12 @@ public class SimulateMatch {
         GameRules rules = new GameRules(type);
         rules.setAppliedVariants(EnumSet.of(type));
 
+        // Enable Battlebox commanders by default for Battlebox games
+        if (type == GameType.Battlebox) {
+            rules.setBattleboxCommandersEnabled(true);
+            rules.setBattleboxMonarchEnabled(true);
+        }
+
         if (matchSize != 0) {
             rules.setGamesPerMatch(matchSize);
         }

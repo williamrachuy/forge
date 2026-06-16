@@ -81,6 +81,10 @@ public enum DeckSection {
                 return v;
             }
         }
+        // Handle "Commanders" as an alias for "Commander"
+        if ("commanders".equalsIgnoreCase(valToCompare)) {
+            return Commander;
+        }
         return null;
     }
 

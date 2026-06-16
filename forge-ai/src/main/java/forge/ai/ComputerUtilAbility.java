@@ -75,6 +75,9 @@ public class ComputerUtilAbility {
             }
         }
         all.addAll(game.getCardsIn(ZoneType.Command));
+        for (Card c : game.getCardsIn(ZoneType.Command)) {
+            System.out.println("DEBUG: getAvailableCards - Command zone has: " + c.getName());
+        }
         all.addAll(game.getCardsIn(ZoneType.Exile));
         all.addAll(game.getCardsIn(ZoneType.Battlefield));
         return all;

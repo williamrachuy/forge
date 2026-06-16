@@ -1679,6 +1679,11 @@ public class AiController {
                     break;
                 }
 
+                Card hostCard = sa.getHostCard();
+                if (hostCard != null && hostCard.isInZone(ZoneType.Command)) {
+                    System.out.println("DEBUG: Evaluating spell from command zone: " + hostCard.getName() + " (" + sa + ")");
+                }
+
                 if (sa.getHostCard().hasKeyword(Keyword.STORM)
                         && sa.getApi() != ApiType.Counter // AI would suck at trying to deliberately proc a Storm counterspell
                         && player.getZone(ZoneType.Hand).contains(
@@ -1753,6 +1758,10 @@ public class AiController {
                     continue;
                 }
 
+                Card saHost = sa.getHostCard();
+                if (saHost != null && saHost.isInZone(ZoneType.Command)) {
+                    System.out.println("DEBUG: AI CASTING COMMANDER: " + saHost.getName() + " (" + sa + ")");
+                }
                 return sa;
             }
 

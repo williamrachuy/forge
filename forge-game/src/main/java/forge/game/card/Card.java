@@ -7520,11 +7520,17 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
         CardState oState = getState(CardStateName.Original);
         final List<SpellAbility> abilities = Lists.newArrayList();
         final boolean battleboxSharedLandStation = player != null && player.isBattleboxSharedLandStationCard(this);
-        for (SpellAbility sa : getSpellAbilities()) {
+        final boolean battleboxSharedCommander = player != null && player.isBattleboxSharedCommandCard(this);
+
+        FCollectionView<SpellAbility> baseAbilities = getSpellAbilities();
+        for (SpellAbility sa : baseAbilities) {
             if (sa.isAdventure() && isOnAdventure()) {
                 continue; // skip since it's already on adventure
             }
             if (battleboxSharedLandStation && sa.isLandAbility()) {
+                sa = sa.copy(player);
+            }
+            if (battleboxSharedCommander && sa.isSpell()) {
                 sa = sa.copy(player);
             }
             abilities.add(sa);
@@ -7555,6 +7561,9 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
                 // only add Spells there
                 if (sa.isSpell() || sa.isLandAbility()) {
                     if (battleboxSharedLandStation && sa.isLandAbility()) {
+                        sa = sa.copy(player);
+                    }
+                    if (battleboxSharedCommander && sa.isSpell()) {
                         sa = sa.copy(player);
                     }
                     abilities.add(sa);
@@ -7591,7 +7600,8 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
             sa.setActivatingPlayer(player);
             // fix things like retrace
             // check only if SA can't be cast normally
-            if (!sa.canPlay(true) && (removeUnplayable || !sa.isPossible())) {
+            // Don't remove spell abilities for shared commanders - they have special casting rules
+            if (!battleboxSharedCommander && !sa.canPlay(true) && (removeUnplayable || !sa.isPossible())) {
                 toRemove.add(sa);
             }
         }

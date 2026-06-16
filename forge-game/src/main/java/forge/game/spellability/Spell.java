@@ -71,14 +71,6 @@ public abstract class Spell extends SpellAbility implements java.io.Serializable
 
     public Card canPlayFromHost() {
         Card card = this.getHostCard();
-        if (card.isInPlay()) {
-            return null;
-        }
-
-        // CR 118.6 cost is unpayable
-        if (!isCastFromPlayEffect() && getPayCosts().hasManaCost() && getPayCosts().getCostMana().getMana().isNoCost()) {
-            return null;
-        }
 
         Player activator = this.getActivatingPlayer();
         if (activator == null) {
@@ -86,6 +78,19 @@ public abstract class Spell extends SpellAbility implements java.io.Serializable
             if (activator == null) {
             	return null;
             }
+        }
+
+        final boolean isBattleboxSharedCommander = activator.isBattleboxSharedCommandCard(card);
+        if (isBattleboxSharedCommander) {
+            System.out.println("DEBUG: canPlayFromHost - " + card.getName() + " is a shared commander");
+        }
+        if (card.isInPlay() && !isBattleboxSharedCommander) {
+            return null;
+        }
+
+        // CR 118.6 cost is unpayable
+        if (!isCastFromPlayEffect() && getPayCosts().hasManaCost() && getPayCosts().getCostMana().getMana().isNoCost()) {
+            return null;
         }
 
         final Game game = activator.getGame();
@@ -102,7 +107,7 @@ public abstract class Spell extends SpellAbility implements java.io.Serializable
 
         card = Objects.requireNonNullElse(getAlternateHost(card), card);
 
-        if (!this.getRestrictions().canPlay(card, this)) {
+        if (!isBattleboxSharedCommander && !this.getRestrictions().canPlay(card, this)) {
             return null;
         }
 

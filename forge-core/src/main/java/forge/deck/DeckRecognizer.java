@@ -166,7 +166,7 @@ public class DeckRecognizer {
                 matchedSection = DeckSection.Main;
             else if (sectionName.equals("avatar"))
                 matchedSection = DeckSection.Avatar;
-            else if (sectionName.equals("commander"))
+            else if (sectionName.equals("commander") || sectionName.equals("commanders"))
                 matchedSection = DeckSection.Commander;
             else if (sectionName.equals("schemes"))
                 matchedSection = DeckSection.Schemes;
@@ -486,7 +486,7 @@ public class DeckRecognizer {
     private static final CharSequence[] DECK_SECTION_NAMES = {
             "side", "sideboard", "sb",
             "main", "card", "mainboard",
-            "avatar", "commander", "schemes",
+            "avatar", "commander", "commanders", "schemes",
             "conspiracy", "planes", "deck", "dungeon",
             "attractions", "contraptions"};
 

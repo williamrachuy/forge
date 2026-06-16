@@ -202,7 +202,8 @@ public class PlayerControllerHuman extends PlayerController implements IGameCont
                                          final ITriggerEvent triggerEvent) {
         // make sure another human player can't choose opponents cards just because he might see them
         final boolean battleboxSharedAccessible = player.isBattleboxSharedGraveyardCard(hostCard)
-                || player.isBattleboxSharedLandStationCard(hostCard);
+                || player.isBattleboxSharedLandStationCard(hostCard)
+                || player.isBattleboxSharedCommandCard(hostCard);
         if (triggerEvent != null && !hostCard.isInPlay() && !battleboxSharedAccessible && !hostCard.getOwner().equals(player) &&
                 !hostCard.getController().equals(player) &&
                 // If player cast Shaman's Trance, they can play spells from any Graveyard (if other effects allow it to be cast)

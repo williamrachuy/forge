@@ -135,10 +135,22 @@ public final class BattleboxConfig {
     }
 
     public static CardPool getCommanders(final Deck deck) {
-        if (deck == null || !deck.has(DeckSection.Commander)) {
+        if (deck == null) {
+            System.out.println("DEBUG: BattleboxConfig.getCommanders - deck is null");
             return null;
         }
-        return deck.get(DeckSection.Commander);
+        final boolean hasCommander = deck.has(DeckSection.Commander);
+        System.out.println("DEBUG: BattleboxConfig.getCommanders - deck has Commander section: " + hasCommander);
+        if (!hasCommander) {
+            System.out.println("DEBUG: Available sections: Main=" + deck.has(DeckSection.Main) +
+                " LandStation=" + deck.has(DeckSection.LandStation) +
+                " Sideboard=" + deck.has(DeckSection.Sideboard));
+            return null;
+        }
+        final CardPool result = deck.get(DeckSection.Commander);
+        System.out.println("DEBUG: BattleboxConfig.getCommanders - returning " +
+            (result == null ? "null" : result.countAll() + " cards"));
+        return result;
     }
 
     public static Set<String> getLandNamesInMain(final Deck deck) {

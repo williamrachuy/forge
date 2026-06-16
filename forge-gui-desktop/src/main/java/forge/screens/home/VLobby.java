@@ -115,7 +115,7 @@ public class VLobby implements ILobbyView {
     private final Deck[] decks = new Deck[MAX_PLAYERS];
 
     // Battlebox options
-    private final FPanel battleboxOptionsPanel = new FPanel(new MigLayout("insets 10, gapx 10"));
+    private final FPanel battleboxOptionsPanel = new FPanel(new MigLayout("insets 10, gapx 10, gapy 5"));
     private final FCheckBox cbBattleboxMonarch = new FCheckBox("Play with Monarch");
     private final FCheckBox cbBattleboxCommanders = new FCheckBox("Play with Commanders");
     private final FCheckBox cbBattleboxPlanechase = new FCheckBox("Play with Planechase");
@@ -164,7 +164,7 @@ public class VLobby implements ILobbyView {
 
         // Battlebox options panel (hidden by default, shown when Battlebox selected)
         battleboxOptionsPanel.setOpaque(false);
-        battleboxOptionsPanel.add(newLabel("Battlebox Options"));
+        battleboxOptionsPanel.add(newLabel("Battlebox Options"), "wrap");
         battleboxOptionsPanel.add(cbBattleboxMonarch, "wrap");
         battleboxOptionsPanel.add(cbBattleboxCommanders, "wrap");
         battleboxOptionsPanel.add(cbBattleboxPlanechase, "wrap");
