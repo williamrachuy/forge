@@ -1,8 +1,5 @@
 package forge.ai.llm.runtime;
 
-import forge.game.player.Player;
-import forge.game.zone.ZoneType;
-
 /**
  * Lightweight game-state evaluator for Ultron's position.
  * Returns a numeric score estimating Ultron's relative position (higher = better).

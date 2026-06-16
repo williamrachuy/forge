@@ -3,8 +3,6 @@ package forge.ai.llm.runtime;
 import forge.game.ability.ApiType;
 import forge.game.spellability.SpellAbility;
 
-import java.util.List;
-
 /**
  * Decides whether Ultron should spend interaction (counterspell, removal,
  * protection) in response to a classified stack threat.
