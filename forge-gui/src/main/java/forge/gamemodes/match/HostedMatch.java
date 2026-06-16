@@ -11,7 +11,6 @@ import forge.StaticData;
 import forge.ai.AiProfileUtil;
 import forge.game.*;
 import forge.game.event.GameEvent;
-import forge.game.event.GameEventAddLog;
 import forge.game.event.GameEventSubgameEnd;
 import forge.game.event.GameEventSubgameStart;
 import forge.game.event.GameEventTurnPhase;

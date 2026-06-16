@@ -97,23 +97,29 @@ public abstract class GameLobby implements IHasGameType {
         return false;
     }
 
+    /** @return whether Battlebox monarch is enabled */
     public boolean isBattleboxMonarchEnabled() {
         return data.isBattleboxMonarchEnabled();
     }
+    /** @param enabled whether Battlebox monarch should be enabled */
     public void setBattleboxMonarchEnabled(boolean enabled) {
         data.setBattleboxMonarchEnabled(enabled);
     }
 
+    /** @return whether Battlebox commanders are enabled */
     public boolean isBattleboxCommandersEnabled() {
         return data.isBattleboxCommandersEnabled();
     }
+    /** @param enabled whether Battlebox commanders should be enabled */
     public void setBattleboxCommandersEnabled(boolean enabled) {
         data.setBattleboxCommandersEnabled(enabled);
     }
 
+    /** @return whether Battlebox planechase is enabled */
     public boolean isBattleboxPlanechaseEnabled() {
         return data.isBattleboxPlanechaseEnabled();
     }
+    /** @param enabled whether Battlebox planechase should be enabled */
     public void setBattleboxPlanechaseEnabled(boolean enabled) {
         data.setBattleboxPlanechaseEnabled(enabled);
     }
@@ -652,31 +658,39 @@ public abstract class GameLobby implements IHasGameType {
         private final Set<GameType> appliedVariants = EnumSet.noneOf(GameType.class);
         private final List<LobbySlot> slots = Lists.newArrayList();
 
-        // Battlebox-specific options
+        /** Whether Battlebox monarch option is enabled for this game. */
         private boolean battleboxMonarchEnabled = false;
+        /** Whether Battlebox commanders option is enabled for this game. */
         private boolean battleboxCommandersEnabled = false;
+        /** Whether Battlebox planechase option is enabled for this game. */
         private boolean battleboxPlanechaseEnabled = false;
 
         public GameLobbyData() {
         }
 
+        /** @return whether Battlebox monarch is enabled */
         public boolean isBattleboxMonarchEnabled() {
             return battleboxMonarchEnabled;
         }
+        /** @param enabled whether Battlebox monarch should be enabled */
         public void setBattleboxMonarchEnabled(boolean enabled) {
             this.battleboxMonarchEnabled = enabled;
         }
 
+        /** @return whether Battlebox commanders are enabled */
         public boolean isBattleboxCommandersEnabled() {
             return battleboxCommandersEnabled;
         }
+        /** @param enabled whether Battlebox commanders should be enabled */
         public void setBattleboxCommandersEnabled(boolean enabled) {
             this.battleboxCommandersEnabled = enabled;
         }
 
+        /** @return whether Battlebox planechase is enabled */
         public boolean isBattleboxPlanechaseEnabled() {
             return battleboxPlanechaseEnabled;
         }
+        /** @param enabled whether Battlebox planechase should be enabled */
         public void setBattleboxPlanechaseEnabled(boolean enabled) {
             this.battleboxPlanechaseEnabled = enabled;
         }
