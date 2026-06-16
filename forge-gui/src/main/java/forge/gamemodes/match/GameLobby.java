@@ -10,6 +10,7 @@ import forge.deck.Deck;
 import forge.deck.DeckFormat;
 import forge.deck.DeckSection;
 import forge.game.BattleboxConfig;
+import forge.game.GameRules;
 import forge.game.GameType;
 import forge.game.GameView;
 import forge.game.IHasGameType;
@@ -94,6 +95,27 @@ public abstract class GameLobby implements IHasGameType {
             }
         }
         return false;
+    }
+
+    public boolean isBattleboxMonarchEnabled() {
+        return data.isBattleboxMonarchEnabled();
+    }
+    public void setBattleboxMonarchEnabled(boolean enabled) {
+        data.setBattleboxMonarchEnabled(enabled);
+    }
+
+    public boolean isBattleboxCommandersEnabled() {
+        return data.isBattleboxCommandersEnabled();
+    }
+    public void setBattleboxCommandersEnabled(boolean enabled) {
+        data.setBattleboxCommandersEnabled(enabled);
+    }
+
+    public boolean isBattleboxPlanechaseEnabled() {
+        return data.isBattleboxPlanechaseEnabled();
+    }
+    public void setBattleboxPlanechaseEnabled(boolean enabled) {
+        data.setBattleboxPlanechaseEnabled(enabled);
     }
 
     public int getNumberOfSlots() {
@@ -594,7 +616,16 @@ public abstract class GameLobby implements IHasGameType {
         return () -> {
             hostedMatch = GuiBase.getInterface().hostMatch();
             hostedMatch.setOnMatchOver(this::onMatchOver);
-            hostedMatch.startMatch(GameType.Constructed, variantTypes, players, guis);
+
+            // Create GameRules with battlebox options if needed
+            final GameRules gameRules = new GameRules(GameType.Constructed);
+            if (isBattleboxMatch) {
+                gameRules.setBattleboxMonarchEnabled(data.isBattleboxMonarchEnabled());
+                gameRules.setBattleboxCommandersEnabled(data.isBattleboxCommandersEnabled());
+                gameRules.setBattleboxPlanechaseEnabled(data.isBattleboxPlanechaseEnabled());
+            }
+
+            hostedMatch.startMatch(gameRules, variantTypes, players, guis, null);
 
             for (final Player p : hostedMatch.getGame().getPlayers()) {
                 final LobbySlot slot = playerToSlot.get(p.getRegisteredPlayer());
@@ -621,7 +652,33 @@ public abstract class GameLobby implements IHasGameType {
         private final Set<GameType> appliedVariants = EnumSet.noneOf(GameType.class);
         private final List<LobbySlot> slots = Lists.newArrayList();
 
+        // Battlebox-specific options
+        private boolean battleboxMonarchEnabled = false;
+        private boolean battleboxCommandersEnabled = false;
+        private boolean battleboxPlanechaseEnabled = false;
+
         public GameLobbyData() {
+        }
+
+        public boolean isBattleboxMonarchEnabled() {
+            return battleboxMonarchEnabled;
+        }
+        public void setBattleboxMonarchEnabled(boolean enabled) {
+            this.battleboxMonarchEnabled = enabled;
+        }
+
+        public boolean isBattleboxCommandersEnabled() {
+            return battleboxCommandersEnabled;
+        }
+        public void setBattleboxCommandersEnabled(boolean enabled) {
+            this.battleboxCommandersEnabled = enabled;
+        }
+
+        public boolean isBattleboxPlanechaseEnabled() {
+            return battleboxPlanechaseEnabled;
+        }
+        public void setBattleboxPlanechaseEnabled(boolean enabled) {
+            this.battleboxPlanechaseEnabled = enabled;
         }
     }
 }

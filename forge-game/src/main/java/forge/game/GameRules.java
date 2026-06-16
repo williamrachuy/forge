@@ -25,6 +25,11 @@ public class GameRules {
     // whether to warn about cards AI can't play well
     private boolean warnAboutAICards = true;
 
+    // Battlebox-specific options
+    private boolean battleboxMonarchEnabled = false;
+    private boolean battleboxCommandersEnabled = false;
+    private boolean battleboxPlanechaseEnabled = false;
+
     public GameRules(final GameType type) {
         this.gameType = type;
     }
@@ -140,6 +145,27 @@ public class GameRules {
     }
     public void setWarnAboutAICards(final boolean warnAboutAICards) {
         this.warnAboutAICards = warnAboutAICards;
+    }
+
+    public boolean isBattleboxMonarchEnabled() {
+        return battleboxMonarchEnabled;
+    }
+    public void setBattleboxMonarchEnabled(final boolean enabled) {
+        this.battleboxMonarchEnabled = enabled;
+    }
+
+    public boolean isBattleboxCommandersEnabled() {
+        return battleboxCommandersEnabled;
+    }
+    public void setBattleboxCommandersEnabled(final boolean enabled) {
+        this.battleboxCommandersEnabled = enabled;
+    }
+
+    public boolean isBattleboxPlanechaseEnabled() {
+        return battleboxPlanechaseEnabled;
+    }
+    public void setBattleboxPlanechaseEnabled(final boolean enabled) {
+        this.battleboxPlanechaseEnabled = enabled;
     }
 
     public int getSimTimeout() {

@@ -184,6 +184,13 @@ public class HostedMatch {
         //https://developer.android.com/reference/java/util/concurrent/CompletableFuture#completeOnTimeout(T,%20long,%20java.util.concurrent.TimeUnit)
         game.AI_CAN_USE_TIMEOUT = !GuiBase.isAndroid() || GuiBase.getAndroidAPILevel() > 30;
 
+        // Set Battlebox options from GameRules
+        game.setBattleboxMonarchChoice(match.getRules().isBattleboxMonarchEnabled());
+        game.setBattleboxCommandersChoice(match.getRules().isBattleboxCommandersEnabled());
+        game.setBattleboxPlanechaseChoice(match.getRules().isBattleboxPlanechaseEnabled());
+        game.traceState("battlebox-options setup: monarch=" + game.isBattleboxMonarchEnabled() +
+                ", commanders=" + game.isBattleboxCommandersEnabled() + ", planechase=" + game.isBattleboxPlanechaseEnabled());
+
         StaticData.instance().setSourceImageForClone(FModel.getPreferences().getPrefBoolean(FPref.UI_CLONE_MODE_SOURCE));
 
         if (game.getRules().getGameType() == GameType.Quest) {
@@ -284,8 +291,6 @@ public class HostedMatch {
         if (humanCount == 0) { //watch game but do not participate
             final IGuiGame gui = spectatorGui == null ? GuiBase.getInterface().getNewGuiGame() : spectatorGui;
             prepareGuiForGame(gui, gameView, initializedGuis);
-            chooseBattleboxMonarchForAllAiSpectatorIfNeeded(gui);
-            chooseBattleboxCommandersForAllAiSpectatorIfNeeded(gui);
             registerSpectator(gui, new WatchLocalGame(game, new LobbyPlayerHuman("Spectator"), gui));
         }
 
@@ -385,36 +390,6 @@ public class HostedMatch {
         return game;
     }
 
-    private void chooseBattleboxMonarchForAllAiSpectatorIfNeeded(final IGuiGame gui) {
-        if (!isBattleboxGame() || game.isBattleboxMonarchChoiceMade() || gui == null) {
-            return;
-        }
-
-        final String prompt = "Play with monarch?\n\nIf yes, the first player to deal combat damage to an opponent becomes the monarch.";
-        final boolean enabled = gui.showConfirmDialog(prompt, "Battlebox Monarch", "Yes", "No", true);
-        game.setBattleboxMonarchChoice(enabled);
-        game.traceState("battlebox-monarch setup spectator enabled=" + enabled);
-        game.fireEvent(new GameEventAddLog(GameLogEntryType.INFORMATION,
-                "Battlebox monarch " + (enabled ? "enabled." : "disabled.")));
-    }
-
-    private void chooseBattleboxCommandersForAllAiSpectatorIfNeeded(final IGuiGame gui) {
-        if (!isBattleboxGame() || game.isBattleboxCommandersChoiceMade() || gui == null) {
-            return;
-        }
-
-        final String prompt = "Play with commanders?\n\nIf yes, each player may cast one commander from the shared commander zone.\n21 combat damage from a single commander causes that player to lose.";
-        final boolean enabled = gui.showConfirmDialog(prompt, "Battlebox Commanders", "Yes", "No", true);
-        game.setBattleboxCommandersChoice(enabled);
-        game.traceState("battlebox-commanders setup spectator enabled=" + enabled);
-        game.fireEvent(new GameEventAddLog(GameLogEntryType.INFORMATION,
-                "Battlebox commanders " + (enabled ? "enabled." : "disabled.")));
-    }
-
-    private boolean isBattleboxGame() {
-        return game != null && (game.getRules().getGameType() == GameType.Battlebox
-                || game.getRules().hasAppliedVariant(GameType.Battlebox));
-    }
 
     public Match getMatch() {
         return match;

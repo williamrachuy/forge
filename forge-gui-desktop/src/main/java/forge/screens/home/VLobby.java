@@ -114,6 +114,12 @@ public class VLobby implements ILobbyView {
     private final FCheckBox cbArtifacts = new FCheckBox(localizer.getMessage("cbRemoveArtifacts"));
     private final Deck[] decks = new Deck[MAX_PLAYERS];
 
+    // Battlebox options
+    private final FPanel battleboxOptionsPanel = new FPanel(new MigLayout("insets 10, gapx 10"));
+    private final FCheckBox cbBattleboxMonarch = new FCheckBox("Play with Monarch");
+    private final FCheckBox cbBattleboxCommanders = new FCheckBox("Play with Commanders");
+    private final FCheckBox cbBattleboxPlanechase = new FCheckBox("Play with Planechase");
+
     // Variants
     private final List<FList<Object>> schemeDeckLists = new ArrayList<>();
     private final List<FPanel> schemeDeckPanels = new ArrayList<>(MAX_PLAYERS);
@@ -155,6 +161,20 @@ public class VLobby implements ILobbyView {
                 ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER,
                 ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED),
                 "w 100%, h 45px!, gapbottom 10px, spanx 2, wrap");
+
+        // Battlebox options panel (hidden by default, shown when Battlebox selected)
+        battleboxOptionsPanel.setOpaque(false);
+        battleboxOptionsPanel.add(newLabel("Battlebox Options"));
+        battleboxOptionsPanel.add(cbBattleboxMonarch, "wrap");
+        battleboxOptionsPanel.add(cbBattleboxCommanders, "wrap");
+        battleboxOptionsPanel.add(cbBattleboxPlanechase, "wrap");
+        battleboxOptionsPanel.setVisible(false);
+        constructedFrame.add(battleboxOptionsPanel, "w 100%, gapbottom 10px, spanx 2, wrap");
+
+        // Add listeners for battlebox options
+        cbBattleboxMonarch.addItemListener(e -> lobby.setBattleboxMonarchEnabled(cbBattleboxMonarch.isSelected()));
+        cbBattleboxCommanders.addItemListener(e -> lobby.setBattleboxCommandersEnabled(cbBattleboxCommanders.isSelected()));
+        cbBattleboxPlanechase.addItemListener(e -> lobby.setBattleboxPlanechaseEnabled(cbBattleboxPlanechase.isSelected()));
 
         playersFrame.setOpaque(false);
         playersFrame.add(playersScroll, "w 100%, h 100%-35px");
@@ -289,6 +309,18 @@ public class VLobby implements ILobbyView {
         for (final VariantCheckBox vcb : vntBoxes) {
             vcb.setSelected(hasVariant(vcb.variant));
             vcb.setEnabled(lobby.hasControl());
+        }
+
+        // Update Battlebox options visibility
+        final boolean isBattleboxSelected = hasVariant(GameType.Battlebox);
+        battleboxOptionsPanel.setVisible(isBattleboxSelected);
+        if (isBattleboxSelected) {
+            cbBattleboxMonarch.setSelected(lobby.isBattleboxMonarchEnabled());
+            cbBattleboxCommanders.setSelected(lobby.isBattleboxCommandersEnabled());
+            cbBattleboxPlanechase.setSelected(lobby.isBattleboxPlanechaseEnabled());
+            cbBattleboxMonarch.setEnabled(lobby.hasControl());
+            cbBattleboxCommanders.setEnabled(lobby.hasControl());
+            cbBattleboxPlanechase.setEnabled(lobby.hasControl());
         }
 
         for (int i = 0; i < MAX_PLAYERS; i++) {
