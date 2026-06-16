@@ -285,6 +285,7 @@ public class HostedMatch {
             final IGuiGame gui = spectatorGui == null ? GuiBase.getInterface().getNewGuiGame() : spectatorGui;
             prepareGuiForGame(gui, gameView, initializedGuis);
             chooseBattleboxMonarchForAllAiSpectatorIfNeeded(gui);
+            chooseBattleboxCommandersForAllAiSpectatorIfNeeded(gui);
             registerSpectator(gui, new WatchLocalGame(game, new LobbyPlayerHuman("Spectator"), gui));
         }
 
@@ -395,6 +396,19 @@ public class HostedMatch {
         game.traceState("battlebox-monarch setup spectator enabled=" + enabled);
         game.fireEvent(new GameEventAddLog(GameLogEntryType.INFORMATION,
                 "Battlebox monarch " + (enabled ? "enabled." : "disabled.")));
+    }
+
+    private void chooseBattleboxCommandersForAllAiSpectatorIfNeeded(final IGuiGame gui) {
+        if (!isBattleboxGame() || game.isBattleboxCommandersChoiceMade() || gui == null) {
+            return;
+        }
+
+        final String prompt = "Play with commanders?\n\nIf yes, each player may cast one commander from the shared commander zone.\n21 combat damage from a single commander causes that player to lose.";
+        final boolean enabled = gui.showConfirmDialog(prompt, "Battlebox Commanders", "Yes", "No", true);
+        game.setBattleboxCommandersChoice(enabled);
+        game.traceState("battlebox-commanders setup spectator enabled=" + enabled);
+        game.fireEvent(new GameEventAddLog(GameLogEntryType.INFORMATION,
+                "Battlebox commanders " + (enabled ? "enabled." : "disabled.")));
     }
 
     private boolean isBattleboxGame() {

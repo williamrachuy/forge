@@ -315,6 +315,13 @@ public class MagicStack /* extends MyObservable */ implements Iterable<SpellAbil
             if (source.isCopiedSpell()) {
                 game.getStackZone().add(source);
             }
+
+            // Check if spell is being cast from shared command zone in Battlebox with commanders enabled
+            if (game.isBattleboxCommandersEnabled() && source.isInZone(ZoneType.Command)) {
+                if (activator.isBattleboxSharedCommandCard(source)) {
+                    source.setCommander(true);
+                }
+            }
         }
 
         if (!sp.isCopied() && !hasLegalTargeting(sp)) {

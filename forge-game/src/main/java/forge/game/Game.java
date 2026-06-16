@@ -126,6 +126,8 @@ public class Game {
     private Player monarchBeginTurn;
     private boolean battleboxMonarchChoiceMade;
     private boolean battleboxMonarchEnabled;
+    private boolean battleboxCommandersChoiceMade;
+    private boolean battleboxCommandersEnabled;
     private Player startingPlayer;
 
     private Direction turnOrder = Direction.getDefaultDirection();
@@ -190,6 +192,24 @@ public class Game {
     public void setBattleboxMonarchChoice(final boolean enabled) {
         setBattleboxMonarchChoiceMade(true);
         setBattleboxMonarchEnabled(enabled);
+    }
+
+    public boolean isBattleboxCommandersChoiceMade() {
+        return battleboxCommandersChoiceMade;
+    }
+    public void setBattleboxCommandersChoiceMade(final boolean battleboxCommandersChoiceMade) {
+        this.battleboxCommandersChoiceMade = battleboxCommandersChoiceMade;
+    }
+    public boolean isBattleboxCommandersEnabled() {
+        return battleboxCommandersEnabled;
+    }
+    public void setBattleboxCommandersEnabled(final boolean battleboxCommandersEnabled) {
+        this.battleboxCommandersEnabled = battleboxCommandersEnabled;
+    }
+
+    public void setBattleboxCommandersChoice(final boolean enabled) {
+        setBattleboxCommandersChoiceMade(true);
+        setBattleboxCommandersEnabled(enabled);
     }
 
     public void traceState(final String message) {

@@ -134,6 +134,13 @@ public final class BattleboxConfig {
         return deck.has(DeckSection.Sideboard) ? deck.get(DeckSection.Sideboard) : null;
     }
 
+    public static CardPool getCommanders(final Deck deck) {
+        if (deck == null || !deck.has(DeckSection.Commander)) {
+            return null;
+        }
+        return deck.get(DeckSection.Commander);
+    }
+
     public static Set<String> getLandNamesInMain(final Deck deck) {
         final Set<String> names = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
         if (deck == null || !deck.has(DeckSection.Main)) {

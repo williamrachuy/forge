@@ -1359,6 +1359,10 @@ public class Player extends GameEntity implements Comparable<Player> {
         return card != null && sharedCommandZone != null && card.getZone() == sharedCommandZone && card.isLand();
     }
 
+    public boolean isBattleboxSharedCommandCard(final Card card) {
+        return card != null && sharedCommandZone != null && card.getZone() == sharedCommandZone && !card.isLand();
+    }
+
     public void claimBattleboxSharedLandStationCard(final Card card) {
         if (isBattleboxSharedLandStationCard(card) && (card.getOwner() != this || card.getController() != this)) {
             card.clearControllers();
@@ -2190,7 +2194,8 @@ public class Player extends GameEntity implements Comparable<Player> {
             return true;
         }
 
-        if (game.getRules().hasAppliedVariant(GameType.Commander)) {
+        if (game.getRules().hasAppliedVariant(GameType.Commander) ||
+            (game.getRules().hasAppliedVariant(GameType.Battlebox) && game.isBattleboxCommandersEnabled())) {
             for (Entry<Card, Integer> entry : getCommanderDamage()) {
                 if (entry.getValue() >= 21 && loseConditionMet(GameLossReason.CommanderDamage, null)) {
                     return true;

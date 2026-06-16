@@ -243,7 +243,7 @@ public class Match {
         refreshBattleboxSharedZone(players, ZoneType.Library);
     }
 
-    private static void prepareBattleboxSharedCommand(final FCollectionView<Player> players, final List<RegisteredPlayer> playersConditions) {
+    private static void prepareBattleboxSharedCommand(final FCollectionView<Player> players, final List<RegisteredPlayer> playersConditions, final Game game) {
         if (players.isEmpty() || playersConditions.isEmpty()) {
             return;
         }
@@ -256,17 +256,31 @@ public class Match {
 
         final RegisteredPlayer battleboxSource = playersConditions.get(0);
         final BattleboxConfig config = BattleboxConfig.fromDeck(battleboxSource.getDeck());
+
+        // Add Land Station
         final CardPool landStation = config.getLandStation(battleboxSource.getDeck(), players.size());
-        if (landStation == null) {
-            refreshBattleboxSharedZone(players, ZoneType.Command);
-            return;
+        if (landStation != null) {
+            for (final PaperCard pc : landStation.toFlatList()) {
+                final Card stationLand = Card.fromPaperCard(pc, host);
+                stationLand.setCollectible(true);
+                stationLand.setStartsGameInPlay(true);
+                sharedCommand.add(stationLand);
+            }
         }
-        for (final PaperCard pc : landStation.toFlatList()) {
-            final Card stationLand = Card.fromPaperCard(pc, host);
-            stationLand.setCollectible(true);
-            stationLand.setStartsGameInPlay(true);
-            sharedCommand.add(stationLand);
+
+        // Add Commanders if enabled
+        if (game != null && game.isBattleboxCommandersEnabled()) {
+            final CardPool commanders = BattleboxConfig.getCommanders(battleboxSource.getDeck());
+            if (commanders != null) {
+                for (final PaperCard pc : commanders.toFlatList()) {
+                    final Card commanderCard = Card.fromPaperCard(pc, host);
+                    commanderCard.setCollectible(true);
+                    commanderCard.setStartsGameInPlay(true);
+                    sharedCommand.add(commanderCard);
+                }
+            }
         }
+
         refreshBattleboxSharedZone(players, ZoneType.Command);
     }
 
@@ -323,7 +337,7 @@ public class Match {
 
         if (isBattlebox) {
             prepareBattleboxSharedLibrary(players, playersConditions);
-            prepareBattleboxSharedCommand(players, playersConditions);
+            prepareBattleboxSharedCommand(players, playersConditions, game);
             prepareBattleboxSharedGraveyard(players);
         }
 
