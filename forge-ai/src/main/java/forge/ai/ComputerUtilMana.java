@@ -1447,11 +1447,22 @@ public class ComputerUtilMana {
     }
 
     public static CardCollection getAvailableManaSources(final Player ai, final boolean checkPlayable) {
-        final CardCollectionView list = CardCollection.combine(ai.getCardsIn(ZoneType.Battlefield), ai.getCardsIn(ZoneType.Hand));
+        // Include battlebox land station cards (untapped lands in the shared command zone) as mana sources.
+        // The AI normally only looks at Battlefield+Hand; without this, it can never see land station mana.
+        final List<Card> commandLands = CardLists.filter(ai.getCardsIn(ZoneType.Command),
+                c -> ai.isBattleboxSharedLandStationCard(c) && !c.isTapped());
+        final CardCollectionView list = commandLands.isEmpty()
+                ? CardCollection.combine(ai.getCardsIn(ZoneType.Battlefield), ai.getCardsIn(ZoneType.Hand))
+                : CardCollection.combine(
+                        CardCollection.combine(ai.getCardsIn(ZoneType.Battlefield), ai.getCardsIn(ZoneType.Hand)),
+                        new CardCollection(commandLands));
         final List<Card> manaSources = CardLists.filter(list, c -> {
+            // Battlebox land station cards in the command zone don't pass normal canPlay() since they're not on
+            // the battlefield, but the game rules allow players to use them for mana.
+            final boolean isBattleboxStationLand = ai.isBattleboxSharedLandStationCard(c);
             for (final SpellAbility am : getAIPlayableMana(c)) {
                 am.setActivatingPlayer(ai);
-                if (!checkPlayable || (am.canPlay() && am.checkRestrictions(ai))) {
+                if (!checkPlayable || isBattleboxStationLand || (am.canPlay() && am.checkRestrictions(ai))) {
                     return true;
                 }
             }
@@ -1605,12 +1616,13 @@ public class ComputerUtilMana {
             if (DEBUG_MANA_PAYMENT) {
                 System.out.println("DEBUG_MANA_PAYMENT: groupSourcesByManaColor sourceCard = " + sourceCard);
             }
+            final boolean isBattleboxStationLand = ai.isBattleboxSharedLandStationCard(sourceCard);
             for (final SpellAbility m : getAIPlayableMana(sourceCard)) {
                 if (DEBUG_MANA_PAYMENT) {
                     System.out.println("DEBUG_MANA_PAYMENT: groupSourcesByManaColor m = " + m);
                 }
                 m.setActivatingPlayer(ai);
-                if (checkPlayable && !m.canPlay()) {
+                if (checkPlayable && !isBattleboxStationLand && !m.canPlay()) {
                     continue;
                 }
 

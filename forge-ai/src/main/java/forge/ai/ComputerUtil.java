@@ -96,6 +96,14 @@ public class ComputerUtil {
                 }
             }
 
+            // Claim a shared Battlebox commander before it leaves the command zone.
+            // Guard: player must not already have a commander, and no other player can have claimed this card.
+            if (game.isBattleboxCommandersEnabled() && hz != null && hz.is(ZoneType.Command)
+                    && ai.isBattleboxSharedCommandCard(source) && ai.getCommanders().isEmpty()
+                    && game.getPlayers().stream().noneMatch(p -> p.getCommanders().contains(source))) {
+                source.setOwner(ai);
+                ai.addCommander(source);
+            }
             sa.setHostCard(game.getAction().moveToStack(source, sa));
         }
 

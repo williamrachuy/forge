@@ -81,6 +81,13 @@ public class Match {
     }
 
     public void startGame(final Game game, Runnable startGameHook) {
+        // Propagate battlebox options from rules to game (GUI path also does this via HostedMatch).
+        if (rules.getGameType() == GameType.Battlebox && !game.isBattleboxCommandersChoiceMade()) {
+            game.setBattleboxCommandersChoice(rules.isBattleboxCommandersEnabled());
+            game.setBattleboxMonarchChoice(rules.isBattleboxMonarchEnabled());
+            game.setBattleboxPlanechaseChoice(rules.isBattleboxPlanechaseEnabled());
+        }
+
         prepareAllZones(game);
         if (rules.useAnte()) {  // Deciding which cards go to ante
             Multimap<Player, Card> list = game.chooseCardsForAnte(rules.getMatchAnteRarity(), rules.getAnteIncludeBasicLands());

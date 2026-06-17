@@ -907,6 +907,26 @@ public class AiController {
 
         final Card card = sa.getHostCard();
 
+        // Battlebox shared commander gating: one per player per game.
+        if (sa.isSpell() && card != null && player.isBattleboxSharedCommandCard(card)) {
+            if (!player.getCommanders().isEmpty()) {
+                if (!player.getCommanders().contains(card)) {
+                    // Player already claimed a different commander — block this one.
+                    return AiPlayDecision.CantPlaySa;
+                }
+                // Player's own claimed commander returning from command zone for recast.
+                // Bypass canPlayWithSubs (returns CantPlayAi for commanders) and check cost directly.
+                return ComputerUtilCost.canPayCost(sa, player, false)
+                        ? AiPlayDecision.WillPlay : AiPlayDecision.CantAfford;
+            }
+            // Block if the card has already been claimed by another player.
+            if (player.getGame().getPlayers().stream()
+                    .filter(p -> !p.equals(player))
+                    .anyMatch(p -> p.getCommanders().contains(card))) {
+                return AiPlayDecision.CantPlaySa;
+            }
+        }
+
         // Trying to play a card that has Buyback without a Buyback cost, look for possible additional considerations
         if (getBoolProperty(AiProps.TRY_TO_PRESERVE_BUYBACK_SPELLS) && card.hasKeyword(Keyword.BUYBACK)
                 && !sa.isBuyback() && !canPlaySpellWithoutBuyback(card, sa)) {
@@ -1620,7 +1640,24 @@ public class AiController {
         saList.removeIf(spellAbility -> {
             // don't include removedAI cards if somehow the AI can play the ability or gain control of unsupported card
             // TODO allow when experimental profile?
-            return spellAbility.isLandAbility() || (spellAbility.getHostCard() != null && ComputerUtilCard.isCardRemAIDeck(spellAbility.getHostCard()));
+            if (spellAbility.isLandAbility()) return true;
+            final Card hostCard = spellAbility.getHostCard();
+            if (hostCard == null) return false;
+            if (ComputerUtilCard.isCardRemAIDeck(hostCard)) return true;
+            // Apply Battlebox commander constraints: one per player per game; can't steal another's claimed commander.
+            if (player.isBattleboxSharedCommandCard(hostCard)) {
+                // Block if player already has a different commander.
+                if (!player.getCommanders().isEmpty() && !player.getCommanders().contains(hostCard)) {
+                    return true;
+                }
+                // Block if the card has already been claimed by another player.
+                if (player.getGame().getPlayers().stream()
+                        .filter(p -> !p.equals(player))
+                        .anyMatch(p -> p.getCommanders().contains(hostCard))) {
+                    return true;
+                }
+            }
+            return false;
         });
         //removed skipped SA
         skipped = saList.stream().filter(SpellAbility::isSkip).collect(Collectors.toList());
@@ -1628,6 +1665,30 @@ public class AiController {
             saList.removeAll(skipped);
         //update LivingEndPlayer
         useLivingEnd = IterableUtil.any(player.getZone(ZoneType.Library), CardPredicates.nameEquals("Living End"));
+
+        // Explicitly evaluate shared Battlebox commanders during the active player's main phase.
+        // Normal spell evaluation returns early when it finds a castable hand card, so commanders may never
+        // be reached in the sorted list. This dedicated pass ensures they're always considered.
+        // Only runs when the player hasn't yet claimed a commander — once claimed, normal commander rules
+        // (commanderEffect MayPlay + commander tax) handle recasting through the standard eval path.
+        if (player.canCastSorcery() && game.getStack().isEmpty() && player.getCommanders().isEmpty()) {
+            List<SpellAbility> commanderSas = saList.stream()
+                .filter(sa -> sa.getHostCard() != null
+                    && sa.getHostCard().isInZone(ZoneType.Command)
+                    && !sa.getHostCard().isLand()
+                    && player.isBattleboxSharedCommandCard(sa.getHostCard()))
+                .collect(Collectors.toList());
+            if (!commanderSas.isEmpty()) {
+                for (SpellAbility csa : commanderSas) {
+                    csa.setActivatingPlayer(player);
+                    // Bypass canPlayWithSubs (card-specific AI evaluation) — just check timing and mana.
+                    // This is sufficient: the AI is willing to cast shared commanders whenever affordable.
+                    if (csa.canCastTiming(player) && ComputerUtilCost.canPayCost(csa, player, false)) {
+                        return csa;
+                    }
+                }
+            }
+        }
 
         SpellAbility chosenSa = chooseSpellAbilityToPlayFromList(saList, true);
 
@@ -1677,11 +1738,6 @@ public class AiController {
                 if (timeoutReached) {
                     timeoutReached = false;
                     break;
-                }
-
-                Card hostCard = sa.getHostCard();
-                if (hostCard != null && hostCard.isInZone(ZoneType.Command)) {
-                    System.out.println("DEBUG: Evaluating spell from command zone: " + hostCard.getName() + " (" + sa + ")");
                 }
 
                 if (sa.getHostCard().hasKeyword(Keyword.STORM)
@@ -1741,8 +1797,6 @@ public class AiController {
 
                 // reset LastStateBattlefield
                 sa.clearLastState();
-                // PhaseHandler ph = game.getPhaseHandler();
-                // System.out.printf("Ai thinks '%s' of %s -> %s @ %s %s >>> \n", opinion, sa.getHostCard(), sa, Lang.getInstance().getPossesive(ph.getPlayerTurn().getName()), ph.getPhase());
 
                 if (opinion != AiPlayDecision.WillPlay)
                     continue;
@@ -1758,10 +1812,6 @@ public class AiController {
                     continue;
                 }
 
-                Card saHost = sa.getHostCard();
-                if (saHost != null && saHost.isInZone(ZoneType.Command)) {
-                    System.out.println("DEBUG: AI CASTING COMMANDER: " + saHost.getName() + " (" + sa + ")");
-                }
                 return sa;
             }
 

@@ -316,12 +316,11 @@ public class MagicStack /* extends MyObservable */ implements Iterable<SpellAbil
                 game.getStackZone().add(source);
             }
 
-            // Check if spell is being cast from shared command zone in Battlebox with commanders enabled
-            if (game.isBattleboxCommandersEnabled() && source.isInZone(ZoneType.Command)) {
-                if (activator.isBattleboxSharedCommandCard(source)) {
-                    source.setCommander(true);
-                }
-            }
+            // When a shared Battlebox commander is cast, permanently claim it for the activating player.
+            // Transfer ownership so the full Commander rule set (zone-return, tax) applies.
+            // Note: Battlebox commander claiming happens in PlaySpellAbility before moveToStack,
+            // while the card is still in the command zone. By the time MagicStack.add() runs,
+            // the card is already in the Stack zone.
         }
 
         if (!sp.isCopied() && !hasLegalTargeting(sp)) {

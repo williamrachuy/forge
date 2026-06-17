@@ -81,11 +81,24 @@ public abstract class Spell extends SpellAbility implements java.io.Serializable
         }
 
         final boolean isBattleboxSharedCommander = activator.isBattleboxSharedCommandCard(card);
-        if (isBattleboxSharedCommander) {
-            System.out.println("DEBUG: canPlayFromHost - " + card.getName() + " is a shared commander");
-        }
         if (card.isInPlay() && !isBattleboxSharedCommander) {
             return null;
+        }
+        // Each player may claim at most one shared commander per game.
+        // But they CAN recast their own claimed commander after it returns to the command zone.
+        if (isBattleboxSharedCommander && !activator.getCommanders().isEmpty()
+                && !activator.getCommanders().contains(card)) {
+            return null;
+        }
+        // Block if the card has already been claimed by another player.
+        if (isBattleboxSharedCommander) {
+            final Player act = activator;
+            final Card c = card;
+            if (act.getGame().getPlayers().stream()
+                    .filter(p -> !p.equals(act))
+                    .anyMatch(p -> p.getCommanders().contains(c))) {
+                return null;
+            }
         }
 
         // CR 118.6 cost is unpayable

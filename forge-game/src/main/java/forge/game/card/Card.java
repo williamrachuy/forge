@@ -7600,8 +7600,10 @@ public class Card extends GameEntity implements Comparable<Card>, IHasSVars, ITr
             sa.setActivatingPlayer(player);
             // fix things like retrace
             // check only if SA can't be cast normally
-            // Don't remove spell abilities for shared commanders - they have special casting rules
-            if (!battleboxSharedCommander && !sa.canPlay(true) && (removeUnplayable || !sa.isPossible())) {
+            // Skip the canPlay() filter for unclaimed shared commanders — they have special casting rules.
+            // Once a player has claimed a commander, apply normal filtering so they can't claim another.
+            final boolean skipForUnclaimed = battleboxSharedCommander && player.getCommanders().isEmpty();
+            if (!skipForUnclaimed && !sa.canPlay(true) && (removeUnplayable || !sa.isPossible())) {
                 toRemove.add(sa);
             }
         }
