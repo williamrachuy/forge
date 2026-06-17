@@ -1672,20 +1672,14 @@ public class AiController {
         // Only runs when the player hasn't yet claimed a commander — once claimed, normal commander rules
         // (commanderEffect MayPlay + commander tax) handle recasting through the standard eval path.
         if (player.canCastSorcery() && game.getStack().isEmpty() && player.getCommanders().isEmpty()) {
-            List<SpellAbility> commanderSas = saList.stream()
-                .filter(sa -> sa.getHostCard() != null
-                    && sa.getHostCard().isInZone(ZoneType.Command)
-                    && !sa.getHostCard().isLand()
-                    && player.isBattleboxSharedCommandCard(sa.getHostCard()))
-                .collect(Collectors.toList());
-            if (!commanderSas.isEmpty()) {
-                for (SpellAbility csa : commanderSas) {
-                    csa.setActivatingPlayer(player);
-                    // Bypass canPlayWithSubs (card-specific AI evaluation) — just check timing and mana.
-                    // This is sufficient: the AI is willing to cast shared commanders whenever affordable.
-                    if (csa.canCastTiming(player) && ComputerUtilCost.canPayCost(csa, player, false)) {
-                        return csa;
-                    }
+            // Use getFirstSpellAbility() directly — saList copies of command zone cards have stripped costs.
+            for (Card c : game.getCardsIn(ZoneType.Command)) {
+                if (c.isLand() || !player.isBattleboxSharedCommandCard(c)) continue;
+                SpellAbility csa = c.getFirstSpellAbility();
+                if (csa == null || !csa.isSpell()) continue;
+                csa.setActivatingPlayer(player);
+                if (csa.canCastTiming(player) && ComputerUtilCost.canPayCost(csa, player, false)) {
+                    return csa;
                 }
             }
         }
