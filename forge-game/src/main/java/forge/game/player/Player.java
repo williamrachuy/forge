@@ -1311,8 +1311,22 @@ public class Player extends GameEntity implements Comparable<Player> {
     }
     public void updateZoneForView(PlayerZone zone) {
         if (zone.is(ZoneType.Command) && sharedCommandZone != null) {
-            final CardCollection cards = new CardCollection(sharedCommandZone.getCards(false));
-            cards.addAll(getPersonalCommandZone().getCards(false));
+            final CardCollection cards;
+            if (isBattleboxGame()) {
+                // In Battlebox: only show this player's own claimed commander in the Command Zone.
+                // The land station and unclaimed commanders appear in the playable (Flashback) zone.
+                cards = new CardCollection();
+                for (Card c : sharedCommandZone.getCards(false)) {
+                    if (getCommanders().contains(c)) {
+                        cards.add(c);
+                    }
+                }
+                cards.addAll(getPersonalCommandZone().getCards(false));
+                updateFlashbackForView();
+            } else {
+                cards = new CardCollection(sharedCommandZone.getCards(false));
+                cards.addAll(getPersonalCommandZone().getCards(false));
+            }
             view.updateZone(ZoneType.Command, cards, this);
             return;
         }
@@ -1493,7 +1507,26 @@ public class Player extends GameEntity implements Comparable<Player> {
         addCardsPlayerCanActivate(cl, seenZones, getZone(ZoneType.Exile));
         addCardsPlayerCanActivate(cl, seenZones, getZone(ZoneType.Library));
         if (includeCommandZone) {
-            addCardsPlayerCanActivate(cl, seenZones, getZone(ZoneType.Command));
+            if (isBattleboxGame() && sharedCommandZone != null) {
+                // Battlebox playable zone: land station always, commander pool filtered per-player.
+                // Pre-mark the shared zone as seen to skip the generic OwnCardsActivationFilter scan.
+                seenZones.add(sharedCommandZone);
+                for (Card c : sharedCommandZone.getCards(false)) {
+                    if (isBattleboxSharedLandStationCard(c)) {
+                        cl.add(c);
+                    } else if (isBattleboxSharedCommandCard(c)) {
+                        boolean firstCast = getCommanders().isEmpty()
+                                && game.getPlayers().stream().noneMatch(p -> p.getCommanders().contains(c));
+                        boolean recast = getCommanders().contains(c);
+                        if (firstCast || recast) {
+                            cl.add(c);
+                        }
+                    }
+                }
+                addCardsPlayerCanActivate(cl, seenZones, getPersonalCommandZone());
+            } else {
+                addCardsPlayerCanActivate(cl, seenZones, getZone(ZoneType.Command));
+            }
             addCardsPlayerCanActivate(cl, seenZones, getZone(ZoneType.Sideboard));
         }
 
@@ -2639,6 +2672,16 @@ public class Player extends GameEntity implements Comparable<Player> {
         for (final PlayerZone pz : zones.values()) {
             pz.resetCardsAddedThisTurn();
         }
+        // Shared Battlebox zones are not in zones.values() — reset via host player only to avoid double-reset.
+        if (sharedGraveyardZone != null && sharedGraveyardZone.getPlayer() == this) {
+            sharedGraveyardZone.resetCardsAddedThisTurn();
+        }
+        if (sharedLibraryZone != null && sharedLibraryZone.getPlayer() == this) {
+            sharedLibraryZone.resetCardsAddedThisTurn();
+        }
+        if (sharedCommandZone != null && sharedCommandZone.getPlayer() == this) {
+            sharedCommandZone.resetCardsAddedThisTurn();
+        }
         setNumDrawnLastTurn(getNumDrawnThisTurn());
         resetNumDrawnThisTurn();
         resetNumRollsThisTurn();
@@ -2941,6 +2984,13 @@ public class Player extends GameEntity implements Comparable<Player> {
             this.createCommanderEffect();
         commander.setCommander(true);
         view.updateCommander(this);
+        if (isBattleboxGame()) {
+            // Refresh all players' playable (Flashback) zones so unclaimed commanders disappear
+            // for everyone now that one has been claimed.
+            for (Player p : game.getPlayers()) {
+                p.updateFlashbackForView();
+            }
+        }
     }
 
     public void removeCommander(Card commander) {

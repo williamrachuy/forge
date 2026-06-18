@@ -1,0 +1,23 @@
+[metadata]
+BattleboxStartingLife=20
+BattleboxStartingHandSize=7
+BattleboxMaxHandSize=7
+PlayerLibrarySize=40
+SeedBasicLands=true
+
+[LandStation]
+10 Forest
+10 Island
+10 Swamp
+10 Mountain
+10 Plains
+
+[Commanders]
+1 Benalish Hero
+1 Savannah Lion
+1 Scryb Sprites
+1 Grizzly Bears
+1 Giant Spider
+
+[Main]
+60 Swamp

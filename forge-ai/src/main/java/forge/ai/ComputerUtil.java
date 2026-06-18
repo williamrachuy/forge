@@ -127,10 +127,31 @@ public class ComputerUtil {
         // Spell Permanents inherit their cost from Mana Cost
         final Cost cost = sa.getPayCosts();
 
+        final boolean isBattleboxCmdr = game.getRules().getGameType() == forge.game.GameType.Battlebox
+                && hz != null && hz.is(forge.game.zone.ZoneType.Command)
+                && game.isBattleboxCommandersEnabled();
+        final long stationTappedBefore = isBattleboxCmdr
+                ? ai.getCardsIn(forge.game.zone.ZoneType.Command).stream().filter(forge.game.card.Card::isTapped).count()
+                : 0;
+        if (isBattleboxCmdr) {
+            System.err.println("[CU-PAY] " + ai + " T" + game.getPhaseHandler().getTurn()
+                + " | " + source.getName()
+                + " | paymentCost=" + cost.getTotalMana()
+                + " | stationTappedBefore=" + stationTappedBefore);
+        }
+
         game.getStack().freezeStack(sa);
 
         final CostPayment pay = new CostPayment(cost, sa);
         if (pay.payComputerCosts(new AiCostDecision(ai, sa, false))) {
+            if (isBattleboxCmdr) {
+                long tappedAfter = ai.getCardsIn(forge.game.zone.ZoneType.Command).stream()
+                        .filter(forge.game.card.Card::isTapped).count();
+                System.err.println("[CU-PAY-OK] " + ai + " T" + game.getPhaseHandler().getTurn()
+                    + " | " + source.getName()
+                    + " | stationTappedAfter=" + tappedAfter
+                    + " | landsTapped=" + (tappedAfter - stationTappedBefore));
+            }
             game.getStack().addAndUnfreeze(sa);
             if (sa.getSplicedCards() != null && !sa.getSplicedCards().isEmpty()) {
                 game.getAction().reveal(sa.getSplicedCards(), ai, true, "Computer reveals spliced cards from ");

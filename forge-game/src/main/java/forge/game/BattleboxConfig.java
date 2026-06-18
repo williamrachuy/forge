@@ -27,27 +27,35 @@ public final class BattleboxConfig {
     public static final boolean DEFAULT_SEED_BASIC_LANDS = true;
 
     public static final String STARTING_LIFE = "BattleboxStartingLife";
+    public static final String COMMANDER_STARTING_LIFE = "CommanderStartingLife";
     public static final String STARTING_HAND_SIZE = "BattleboxStartingHandSize";
     public static final String MAX_HAND_SIZE = "BattleboxMaxHandSize";
     public static final String LEGACY_LIBRARY_SIZE = "BattleboxLibrarySize";
     public static final String PLAYER_LIBRARY_SIZE = "PlayerLibrarySize";
+    public static final String COMMANDER_PLAYER_LIBRARY_SIZE = "CommanderPlayerLibrarySize";
     public static final String SEED_BASIC_LANDS = "SeedBasicLands";
     public static final String BASIC_LANDS_SET = "BasicLandsSet";
 
     private final int startingLife;
+    private final int commanderStartingLife;
     private final int startingHandSize;
     private final int maxHandSize;
     private final int playerLibrarySize;
+    private final int commanderPlayerLibrarySize;
     private final boolean seedBasicLands;
     private final Map<String, List<BasicLandOption>> basicLandOptions;
 
-    private BattleboxConfig(final int startingLife, final int startingHandSize, final int maxHandSize,
-            final int playerLibrarySize, final boolean seedBasicLands,
+    private BattleboxConfig(final int startingLife, final int commanderStartingLife,
+            final int startingHandSize, final int maxHandSize,
+            final int playerLibrarySize, final int commanderPlayerLibrarySize,
+            final boolean seedBasicLands,
             final Map<String, List<BasicLandOption>> basicLandOptions) {
         this.startingLife = startingLife;
+        this.commanderStartingLife = commanderStartingLife;
         this.startingHandSize = startingHandSize;
         this.maxHandSize = maxHandSize;
         this.playerLibrarySize = playerLibrarySize;
+        this.commanderPlayerLibrarySize = commanderPlayerLibrarySize;
         this.seedBasicLands = seedBasicLands;
         this.basicLandOptions = basicLandOptions;
     }
@@ -55,16 +63,23 @@ public final class BattleboxConfig {
     public static BattleboxConfig fromDeck(final Deck deck) {
         final Map<String, String> metadata = deck == null ? Map.of() : deck.getMetadata();
         final int startingLife = getInt(metadata, STARTING_LIFE, DEFAULT_STARTING_LIFE);
+        final int commanderStartingLife = getInt(metadata, COMMANDER_STARTING_LIFE, startingLife);
         final int startingHandSize = getInt(metadata, STARTING_HAND_SIZE, DEFAULT_STARTING_HAND_SIZE);
         final int maxHandSize = getInt(metadata, MAX_HAND_SIZE, DEFAULT_MAX_HAND_SIZE);
         final int playerLibrarySize = getInt(metadata, PLAYER_LIBRARY_SIZE, DEFAULT_PLAYER_LIBRARY_SIZE);
+        final int commanderPlayerLibrarySize = getInt(metadata, COMMANDER_PLAYER_LIBRARY_SIZE, playerLibrarySize);
         final boolean seedBasicLands = getBoolean(metadata, SEED_BASIC_LANDS, DEFAULT_SEED_BASIC_LANDS);
-        return new BattleboxConfig(startingLife, startingHandSize, maxHandSize, playerLibrarySize, seedBasicLands,
+        return new BattleboxConfig(startingLife, commanderStartingLife, startingHandSize, maxHandSize,
+                playerLibrarySize, commanderPlayerLibrarySize, seedBasicLands,
                 parseBasicLandOptions(deck).options);
     }
 
     public int getStartingLife() {
         return startingLife;
+    }
+
+    public int getCommanderStartingLife() {
+        return commanderStartingLife;
     }
 
     public int getStartingHandSize() {
@@ -79,11 +94,19 @@ public final class BattleboxConfig {
         return playerLibrarySize;
     }
 
+    public int getCommanderPlayerLibrarySize() {
+        return commanderPlayerLibrarySize;
+    }
+
     public boolean shouldSeedBasicLands() {
         return seedBasicLands;
     }
 
     public CardPool getSharedLibrary(final Deck deck, final int playerCount) {
+        return getSharedLibrary(deck, playerCount, false);
+    }
+
+    public CardPool getSharedLibrary(final Deck deck, final int playerCount, final boolean commandersEnabled) {
         if (deck == null) {
             return null;
         }
@@ -97,7 +120,7 @@ public final class BattleboxConfig {
         Collections.shuffle(cards, MyRandom.getRandom());
 
         final int players = Math.max(1, playerCount);
-        final int randomCardsPerPlayer = getRandomCardsPerPlayer();
+        final int randomCardsPerPlayer = getRandomCardsPerPlayer(commandersEnabled);
         final int randomCardsNeeded = randomCardsPerPlayer * players;
         final CardPool selected = new CardPool();
         if (seedBasicLands) {
@@ -245,7 +268,12 @@ public final class BattleboxConfig {
     }
 
     private int getRandomCardsPerPlayer() {
-        return playerLibrarySize - (seedBasicLands ? MagicColor.Constant.BASIC_LANDS.size() : 0);
+        return getRandomCardsPerPlayer(false);
+    }
+
+    private int getRandomCardsPerPlayer(final boolean commandersEnabled) {
+        final int librarySize = commandersEnabled ? commanderPlayerLibrarySize : playerLibrarySize;
+        return librarySize - (seedBasicLands ? MagicColor.Constant.BASIC_LANDS.size() : 0);
     }
 
     private void addBasicLandSet(final CardPool pool) {

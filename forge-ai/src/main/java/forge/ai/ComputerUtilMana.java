@@ -1447,22 +1447,14 @@ public class ComputerUtilMana {
     }
 
     public static CardCollection getAvailableManaSources(final Player ai, final boolean checkPlayable) {
-        // Include battlebox land station cards (untapped lands in the shared command zone) as mana sources.
-        // The AI normally only looks at Battlefield+Hand; without this, it can never see land station mana.
-        final List<Card> commandLands = CardLists.filter(ai.getCardsIn(ZoneType.Command),
-                c -> ai.isBattleboxSharedLandStationCard(c) && !c.isTapped());
-        final CardCollectionView list = commandLands.isEmpty()
-                ? CardCollection.combine(ai.getCardsIn(ZoneType.Battlefield), ai.getCardsIn(ZoneType.Hand))
-                : CardCollection.combine(
-                        CardCollection.combine(ai.getCardsIn(ZoneType.Battlefield), ai.getCardsIn(ZoneType.Hand)),
-                        new CardCollection(commandLands));
+        // Land station cards stay in the command zone and are never tapped for mana directly.
+        // Players play one land per turn from the station to their own battlefield; only battlefield
+        // and hand cards are valid mana sources.
+        final CardCollectionView list = CardCollection.combine(ai.getCardsIn(ZoneType.Battlefield), ai.getCardsIn(ZoneType.Hand));
         final List<Card> manaSources = CardLists.filter(list, c -> {
-            // Battlebox land station cards in the command zone don't pass normal canPlay() since they're not on
-            // the battlefield, but the game rules allow players to use them for mana.
-            final boolean isBattleboxStationLand = ai.isBattleboxSharedLandStationCard(c);
             for (final SpellAbility am : getAIPlayableMana(c)) {
                 am.setActivatingPlayer(ai);
-                if (!checkPlayable || isBattleboxStationLand || (am.canPlay() && am.checkRestrictions(ai))) {
+                if (!checkPlayable || (am.canPlay() && am.checkRestrictions(ai))) {
                     return true;
                 }
             }

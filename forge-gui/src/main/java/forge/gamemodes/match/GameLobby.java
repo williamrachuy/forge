@@ -597,7 +597,10 @@ public abstract class GameLobby implements IHasGameType {
 
             if (isBattleboxMatch) {
                 final BattleboxConfig config = BattleboxConfig.fromDeck(battleboxDeck);
-                rp.setStartingLife(config.getStartingLife());
+                final int startingLife = data.isBattleboxCommandersEnabled()
+                        ? config.getCommanderStartingLife()
+                        : config.getStartingLife();
+                rp.setStartingLife(startingLife);
                 rp.setStartingHand(config.getStartingHandSize());
                 rp.setMaxHand(config.getMaxHandSize());
                 rp.setBattleboxLandStation(BattleboxConfig.getLandStation(battleboxDeck).toFlatList());

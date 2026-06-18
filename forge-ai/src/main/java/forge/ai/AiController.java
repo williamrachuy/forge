@@ -907,24 +907,11 @@ public class AiController {
 
         final Card card = sa.getHostCard();
 
-        // Battlebox shared commander gating: one per player per game.
+        // Battlebox shared commanders are handled exclusively by the dedicated commander pass in
+        // getSpellAbilityToPlay(). Block them here so saList-based evaluation (which uses stripped-cost
+        // SA copies) never triggers a free cast.
         if (sa.isSpell() && card != null && player.isBattleboxSharedCommandCard(card)) {
-            if (!player.getCommanders().isEmpty()) {
-                if (!player.getCommanders().contains(card)) {
-                    // Player already claimed a different commander — block this one.
-                    return AiPlayDecision.CantPlaySa;
-                }
-                // Player's own claimed commander returning from command zone for recast.
-                // Bypass canPlayWithSubs (returns CantPlayAi for commanders) and check cost directly.
-                return ComputerUtilCost.canPayCost(sa, player, false)
-                        ? AiPlayDecision.WillPlay : AiPlayDecision.CantAfford;
-            }
-            // Block if the card has already been claimed by another player.
-            if (player.getGame().getPlayers().stream()
-                    .filter(p -> !p.equals(player))
-                    .anyMatch(p -> p.getCommanders().contains(card))) {
-                return AiPlayDecision.CantPlaySa;
-            }
+            return AiPlayDecision.CantPlaySa;
         }
 
         // Trying to play a card that has Buyback without a Buyback cost, look for possible additional considerations
@@ -1646,16 +1633,9 @@ public class AiController {
             if (ComputerUtilCard.isCardRemAIDeck(hostCard)) return true;
             // Apply Battlebox commander constraints: one per player per game; can't steal another's claimed commander.
             if (player.isBattleboxSharedCommandCard(hostCard)) {
-                // Block if player already has a different commander.
-                if (!player.getCommanders().isEmpty() && !player.getCommanders().contains(hostCard)) {
-                    return true;
-                }
-                // Block if the card has already been claimed by another player.
-                if (player.getGame().getPlayers().stream()
-                        .filter(p -> !p.equals(player))
-                        .anyMatch(p -> p.getCommanders().contains(hostCard))) {
-                    return true;
-                }
+                // Always remove from saList — the dedicated commander pass handles casting with correct costs.
+                // saList copies of command zone SAs have stripped mana costs (zero), causing free casts.
+                return true;
             }
             return false;
         });
@@ -1666,19 +1646,26 @@ public class AiController {
         //update LivingEndPlayer
         useLivingEnd = IterableUtil.any(player.getZone(ZoneType.Library), CardPredicates.nameEquals("Living End"));
 
-        // Explicitly evaluate shared Battlebox commanders during the active player's main phase.
-        // Normal spell evaluation returns early when it finds a castable hand card, so commanders may never
-        // be reached in the sorted list. This dedicated pass ensures they're always considered.
-        // Only runs when the player hasn't yet claimed a commander — once claimed, normal commander rules
-        // (commanderEffect MayPlay + commander tax) handle recasting through the standard eval path.
-        if (player.canCastSorcery() && game.getStack().isEmpty() && player.getCommanders().isEmpty()) {
-            // Use getFirstSpellAbility() directly — saList copies of command zone cards have stripped costs.
+        // Dedicated pass for shared Battlebox commanders — handles both first cast and recasts.
+        // Uses getFirstSpellAbility() directly since saList copies have stripped mana costs.
+        // SpellPermanent is initialized from cardstate.getManaCost(), so the cost is already correct.
+        if (player.canCastSorcery() && game.getStack().isEmpty()) {
             for (Card c : game.getCardsIn(ZoneType.Command)) {
                 if (c.isLand() || !player.isBattleboxSharedCommandCard(c)) continue;
+                boolean firstCast = player.getCommanders().isEmpty()
+                        && game.getPlayers().stream().noneMatch(p -> p.getCommanders().contains(c));
+                boolean recast = player.getCommanders().contains(c);
+                if (!firstCast && !recast) continue;
                 SpellAbility csa = c.getFirstSpellAbility();
                 if (csa == null || !csa.isSpell()) continue;
                 csa.setActivatingPlayer(player);
                 if (csa.canCastTiming(player) && ComputerUtilCost.canPayCost(csa, player, false)) {
+                    System.err.println("[CMDR-CAST] " + player + " T" + game.getPhaseHandler().getTurn()
+                        + " | " + c.getName()
+                        + " | " + (firstCast ? "first" : "recast")
+                        + " | totalMana=" + csa.getPayCosts().getTotalMana()
+                        + " | manaPool=" + player.getManaPool().totalMana()
+                        + " | tapSrcs=" + ComputerUtilMana.getAvailableManaSources(player, true).size());
                     return csa;
                 }
             }

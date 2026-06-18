@@ -1001,7 +1001,7 @@ public class CardProperty {
                 return false;
             }
 
-            if (!card.getZone().isCardAddedThisTurn(card, origin)) {
+            if (card.getZone() == null || !card.getZone().isCardAddedThisTurn(card, origin)) {
                 return false;
             }
         } else if (property.startsWith("ThisTurnEntered")) {

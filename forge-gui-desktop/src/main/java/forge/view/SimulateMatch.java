@@ -124,7 +124,7 @@ public class SimulateMatch {
                 String name = TextUtil.concatNoSpace("Ai(", String.valueOf(i), ")-", d.getName());
                 sb.append(name);
 
-                RegisteredPlayer rp = registeredPlayerForDeck(d, type);
+                RegisteredPlayer rp = registeredPlayerForDeck(d, type, rules.isBattleboxCommandersEnabled());
                 rp.setPlayer(GamePlayerUtil.createAiPlayer(name, i - 1));
                 pp.add(rp);
                 i++;
@@ -379,13 +379,20 @@ public class SimulateMatch {
     }
 
     static RegisteredPlayer registeredPlayerForDeck(final Deck deck, final GameType type) {
+        return registeredPlayerForDeck(deck, type, false);
+    }
+
+    static RegisteredPlayer registeredPlayerForDeck(final Deck deck, final GameType type, final boolean commandersEnabled) {
         final RegisteredPlayer rp = type.equals(GameType.Commander)
                 ? RegisteredPlayer.forCommander(deck)
                 : new RegisteredPlayer(deck);
 
         if (type.equals(GameType.Battlebox)) {
             final BattleboxConfig config = BattleboxConfig.fromDeck(deck);
-            rp.setStartingLife(config.getStartingLife());
+            final int startingLife = commandersEnabled
+                    ? config.getCommanderStartingLife()
+                    : config.getStartingLife();
+            rp.setStartingLife(startingLife);
             rp.setStartingHand(config.getStartingHandSize());
             rp.setMaxHand(config.getMaxHandSize());
             if (BattleboxConfig.getLandStation(deck) != null) {

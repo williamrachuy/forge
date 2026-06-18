@@ -913,6 +913,12 @@ public class GameAction {
         if (zoneFrom == null || !zoneFrom.is(ZoneType.Graveyard)) {
             return null;
         }
+        // Commanders already have their owner set at cast time; don't reassign them when they
+        // return to the command zone via SBA, which would corrupt ownership and route the
+        // "send to command zone?" prompt to the wrong player.
+        if (c.isRealCommander()) {
+            return null;
+        }
         final Player currentOwner = c.getOwner();
         if (currentOwner == null || !currentOwner.isBattleboxSharedGraveyardCard(c)) {
             return null;
@@ -1645,7 +1651,8 @@ public class GameAction {
 
                 if ((game.getRules().hasAppliedVariant(GameType.Commander)
                         || game.getRules().hasAppliedVariant(GameType.Brawl)
-                        || game.getRules().hasAppliedVariant(GameType.Planeswalker)) && !checkAgain) {
+                        || game.getRules().hasAppliedVariant(GameType.Planeswalker)
+                        || (game.getRules().hasAppliedVariant(GameType.Battlebox) && game.getRules().isBattleboxCommandersEnabled())) && !checkAgain) {
                     for (final Card c : p.getCardsIn(ZoneType.Graveyard).threadSafeIterable()) {
                         checkAgain |= stateBasedAction_Commander(c, mapParams);
                     }

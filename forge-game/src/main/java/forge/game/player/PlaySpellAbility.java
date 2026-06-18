@@ -625,6 +625,16 @@ public class PlaySpellAbility {
             if (fromZone != null) {
                 zonePosition = fromZone.getCards().indexOf(c);
             }
+            // Claim a shared Battlebox commander for the human player before it leaves the command zone.
+            // Mirrors the same logic in ComputerUtil.handlePlayingSpellAbility() for the AI path.
+            if (game.isBattleboxCommandersEnabled()
+                    && fromZone != null && fromZone.is(ZoneType.Command)
+                    && player.isBattleboxSharedCommandCard(c)
+                    && player.getCommanders().isEmpty()
+                    && game.getPlayers().stream().noneMatch(p -> p.getCommanders().contains(c))) {
+                c.setOwner(player);
+                player.addCommander(c);
+            }
             ability.setHostCard(game.getAction().moveToStack(c, ability));
             ability.changeText();
         }

@@ -232,7 +232,7 @@ public class Match {
         return newLibrary;
     }
 
-    private static void prepareBattleboxSharedLibrary(final FCollectionView<Player> players, final List<RegisteredPlayer> playersConditions) {
+    private static void prepareBattleboxSharedLibrary(final FCollectionView<Player> players, final List<RegisteredPlayer> playersConditions, final Game game) {
         if (players.isEmpty() || playersConditions.isEmpty()) {
             return;
         }
@@ -244,7 +244,8 @@ public class Match {
         }
         final RegisteredPlayer battleboxSource = playersConditions.get(0);
         final BattleboxConfig config = BattleboxConfig.fromDeck(battleboxSource.getDeck());
-        sharedLibrary.setCards(createCardsForZone(host, config.getSharedLibrary(battleboxSource.getDeck(), players.size()),
+        final boolean commandersEnabled = game != null && game.getRules().isBattleboxCommandersEnabled();
+        sharedLibrary.setCards(createCardsForZone(host, config.getSharedLibrary(battleboxSource.getDeck(), players.size(), commandersEnabled),
                 battleboxSource.useRandomFoil()));
         sharedLibrary.shuffle();
         refreshBattleboxSharedZone(players, ZoneType.Library);
@@ -368,7 +369,7 @@ public class Match {
         }
 
         if (isBattlebox) {
-            prepareBattleboxSharedLibrary(players, playersConditions);
+            prepareBattleboxSharedLibrary(players, playersConditions, game);
             prepareBattleboxSharedCommand(players, playersConditions, game);
             prepareBattleboxSharedGraveyard(players);
         }
