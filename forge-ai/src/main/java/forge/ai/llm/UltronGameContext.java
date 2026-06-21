@@ -42,6 +42,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Set;
 import java.util.UUID;
 
 final class UltronGameContext {
@@ -75,6 +76,8 @@ final class UltronGameContext {
     private String lastAssessmentEvents = "";
     private int strategicPlanTurn = -1;
     private boolean strategicPlanDirty = true;
+    private int planBuildsThisTurn = 0;
+    private Set<String> currentAnchorCardNames = Set.of();
 
     UltronGameContext(Game game, Player advisor) {
         this.game = game;
@@ -166,9 +169,12 @@ final class UltronGameContext {
         sb.append(currentVisibleState);
         sb.append("\n</current_visible_state>\n\n");
         sb.append("Return only valid JSON with this shape:\n");
-        sb.append("{\"plan\":[{\"card\":\"card name\",\"api\":\"optional Forge API name\",\"timing\":\"main|combat|response|hold\"}],");
+        sb.append("{\"plan\":[{\"card\":\"card name\",\"api\":\"optional Forge API name\",\"timing\":\"main|combat|response|hold\",\"anchor\":false}],");
         sb.append("\"attackers\":[\"card name\"],\"defenders\":[\"card name\"],\"holdInteraction\":[\"card name\"],");
+        sb.append("\"anchorBoardCards\":[\"card name\"],");
         sb.append("\"rationale\":\"short reason\"}\n");
+        sb.append("Set \"anchor\":true on any planned action whose disruption (countered or removed) invalidates this plan.\n");
+        sb.append("List in \"anchorBoardCards\" any cards already on your battlefield that the plan depends on; if any are removed, the plan will be re-evaluated.\n");
         return sb.toString();
     }
 
@@ -179,7 +185,12 @@ final class UltronGameContext {
         }
         int turn = phase.getTurn();
         if (strategicPlanTurn != turn && phase.is(PhaseType.MAIN1)) {
+            planBuildsThisTurn = 0;
+            currentAnchorCardNames = Set.of();
             return true;
+        }
+        if (planBuildsThisTurn >= UltronConfig.maxLlmStrategicPlansPerTurn()) {
+            return false;
         }
         return strategicPlanTurn == turn && strategicPlanDirty;
     }
@@ -187,6 +198,9 @@ final class UltronGameContext {
     synchronized void recordStrategicPlan(UltronStrategicPlan plan, String rationale) {
         strategicPlanTurn = game.getPhaseHandler().getTurn();
         strategicPlanDirty = false;
+        planBuildsThisTurn++;
+        currentAnchorCardNames = (plan != null && !plan.getAnchorCardNames().isEmpty())
+                ? plan.getAnchorCardNames() : Set.of();
         String summary = "strategic_plan turn=" + strategicPlanTurn
                 + " empty=" + (plan == null || plan.isEmpty());
         if (!isBlank(rationale)) {
@@ -382,6 +396,31 @@ final class UltronGameContext {
         String summary = zoneChangeSummary(event);
         if (!isBlank(summary)) {
             appendVisibleEvent("zone", summary);
+        }
+        checkAnchorDisruption(event);
+    }
+
+    private void checkAnchorDisruption(GameEventCardChangeZone event) {
+        if (event == null || currentAnchorCardNames.isEmpty() || event.card() == null) {
+            return;
+        }
+        ZoneType from = event.from() == null ? null : event.from().zoneType();
+        ZoneType to = event.to() == null ? null : event.to().zoneType();
+        if (from != ZoneType.Battlefield && from != ZoneType.Stack) {
+            return;
+        }
+        if (to != ZoneType.Graveyard && to != ZoneType.Exile) {
+            return;
+        }
+        String cardName = event.card().getName();
+        if (cardName == null || cardName.isBlank()) {
+            return;
+        }
+        for (String anchor : currentAnchorCardNames) {
+            if (anchor.equalsIgnoreCase(cardName)) {
+                strategicPlanDirty = true;
+                return;
+            }
         }
     }
 

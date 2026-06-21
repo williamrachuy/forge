@@ -51,6 +51,8 @@ games. LLM infrastructure preserved but demoted to optional support layer.
   - `isChatEnabledFor(Player)` — requires `ULTRON_CHAT_ENABLED=true` + client
   - `isTableTalkEnabledFor(Player)` — requires `ULTRON_TABLE_TALK_ENABLED=true` + client
 - Added guard to `chooseSpellAbility` — returns `noAdvice()` unless `ULTRON_LLM_ADVISOR_ENABLED=true`
+- Added guard to `chooseFromStrategicPlan`, `analyzeOpeningHand`, and `filterPlannedAttackers` so
+  they only run when `ULTRON_LLM_STRATEGIC_PLAN_ENABLED=true`
 - Existing `isEnabledFor(Player)` preserved for backward compatibility
 
 ---
@@ -128,6 +130,94 @@ mvn test -pl forge-gui-desktop -am -Dcheckstyle.skip=true \
 ```
 Result: **14/14 PASSED**
 
+Additional runtime coverage:
+```
+mvn test -pl forge-gui-desktop -am -Dcheckstyle.skip=true \
+  -Dtest=forge.ai.llm.runtime.UltronThreatModelAndIntentTest,forge.ai.llm.runtime.UltronStackThreatAnalyzerTest \
+  -Dsurefire.failIfNoSpecifiedTests=false
+```
+Result: **18/18 PASSED**
+
+Interaction-policy coverage:
+```
+mvn test -pl forge-gui-desktop -am -Dcheckstyle.skip=true \
+  -Dtest=forge.ai.llm.runtime.UltronInteractionPolicyTest,forge.ai.llm.runtime.UltronThreatModelAndIntentTest,forge.ai.llm.runtime.UltronStackThreatAnalyzerTest \
+  -Dsurefire.failIfNoSpecifiedTests=false
+```
+Result: **23/23 PASSED**
+
+Fast-priority coverage:
+```
+mvn test -pl forge-gui-desktop -am -Dcheckstyle.skip=true \
+  -Dtest=forge.ai.llm.runtime.UltronFastPriorityPolicyTest,forge.ai.llm.runtime.UltronInteractionPolicyTest,forge.ai.llm.runtime.UltronThreatModelAndIntentTest,forge.ai.llm.runtime.UltronStackThreatAnalyzerTest \
+  -Dsurefire.failIfNoSpecifiedTests=false
+```
+Result: **28/28 PASSED**
+
+Main-phase policy coverage:
+```
+mvn test -pl forge-gui-desktop -am -Dcheckstyle.skip=true \
+  -Dtest=forge.ai.llm.runtime.UltronMainPhasePolicyTest,forge.ai.llm.runtime.UltronFastPriorityPolicyTest,forge.ai.llm.runtime.UltronInteractionPolicyTest,forge.ai.llm.runtime.UltronThreatModelAndIntentTest,forge.ai.llm.runtime.UltronStackThreatAnalyzerTest \
+  -Dsurefire.failIfNoSpecifiedTests=false
+```
+Result: **32/32 PASSED**
+
+Runtime-selection coverage:
+```
+mvn test -pl forge-gui-desktop -am -Dcheckstyle.skip=true \
+  -Dtest=forge.ai.llm.runtime.UltronRuntimeControllerSelectionTest,forge.ai.llm.runtime.UltronMainPhasePolicyTest,forge.ai.llm.runtime.UltronFastPriorityPolicyTest,forge.ai.llm.runtime.UltronInteractionPolicyTest,forge.ai.llm.runtime.UltronThreatModelAndIntentTest,forge.ai.llm.runtime.UltronStackThreatAnalyzerTest \
+  -Dsurefire.failIfNoSpecifiedTests=false
+```
+Result: **34/34 PASSED**
+
+Combat-policy coverage:
+```
+mvn test -pl forge-gui-desktop -am -Dcheckstyle.skip=true \
+  -Dtest=forge.ai.llm.runtime.UltronCombatPolicyTest,forge.ai.llm.runtime.UltronRuntimeControllerSelectionTest,forge.ai.llm.runtime.UltronMainPhasePolicyTest,forge.ai.llm.runtime.UltronFastPriorityPolicyTest,forge.ai.llm.runtime.UltronInteractionPolicyTest,forge.ai.llm.runtime.UltronThreatModelAndIntentTest,forge.ai.llm.runtime.UltronStackThreatAnalyzerTest \
+  -Dsurefire.failIfNoSpecifiedTests=false
+```
+Result: **36/36 PASSED**
+
+Runtime-cache invalidation coverage:
+```
+mvn test -pl forge-gui-desktop -am -Dcheckstyle.skip=true \
+  -Dtest=forge.ai.llm.runtime.UltronRuntimeCacheInvalidationTest,forge.ai.llm.runtime.UltronCombatPolicyTest,forge.ai.llm.runtime.UltronRuntimeControllerSelectionTest,forge.ai.llm.runtime.UltronMainPhasePolicyTest,forge.ai.llm.runtime.UltronFastPriorityPolicyTest,forge.ai.llm.runtime.UltronInteractionPolicyTest,forge.ai.llm.runtime.UltronThreatModelAndIntentTest,forge.ai.llm.runtime.UltronStackThreatAnalyzerTest \
+  -Dsurefire.failIfNoSpecifiedTests=false
+```
+Result: **37/37 PASSED**
+
+Runtime-hook invalidation coverage:
+```
+mvn test -pl forge-gui-desktop -am -Dcheckstyle.skip=true \
+  -Dtest=forge.ai.llm.runtime.UltronRuntimeHookInvalidationTest,forge.ai.llm.runtime.UltronRuntimeCacheInvalidationTest,forge.ai.llm.runtime.UltronCombatPolicyTest,forge.ai.llm.runtime.UltronRuntimeControllerSelectionTest,forge.ai.llm.runtime.UltronMainPhasePolicyTest,forge.ai.llm.runtime.UltronFastPriorityPolicyTest,forge.ai.llm.runtime.UltronInteractionPolicyTest,forge.ai.llm.runtime.UltronThreatModelAndIntentTest,forge.ai.llm.runtime.UltronStackThreatAnalyzerTest \
+  -Dsurefire.failIfNoSpecifiedTests=false
+```
+Result: **38/38 PASSED**
+
+Land-hook invalidation coverage:
+```
+mvn test -pl forge-gui-desktop -am -Dcheckstyle.skip=true \
+  -Dtest=forge.ai.llm.runtime.UltronRuntimeLandHookInvalidationTest,forge.ai.llm.runtime.UltronRuntimeHookInvalidationTest,forge.ai.llm.runtime.UltronRuntimeCacheInvalidationTest,forge.ai.llm.runtime.UltronCombatPolicyTest,forge.ai.llm.runtime.UltronRuntimeControllerSelectionTest,forge.ai.llm.runtime.UltronMainPhasePolicyTest,forge.ai.llm.runtime.UltronFastPriorityPolicyTest,forge.ai.llm.runtime.UltronInteractionPolicyTest,forge.ai.llm.runtime.UltronThreatModelAndIntentTest,forge.ai.llm.runtime.UltronStackThreatAnalyzerTest \
+  -Dsurefire.failIfNoSpecifiedTests=false
+```
+Result: **39/39 PASSED**
+
+Stack-hook invalidation coverage:
+```
+mvn test -pl forge-gui-desktop -am -Dcheckstyle.skip=true \
+  -Dtest=forge.ai.llm.runtime.UltronRuntimeStackHookInvalidationTest,forge.ai.llm.runtime.UltronRuntimeLandHookInvalidationTest,forge.ai.llm.runtime.UltronRuntimeHookInvalidationTest,forge.ai.llm.runtime.UltronRuntimeCacheInvalidationTest,forge.ai.llm.runtime.UltronCombatPolicyTest,forge.ai.llm.runtime.UltronRuntimeControllerSelectionTest,forge.ai.llm.runtime.UltronMainPhasePolicyTest,forge.ai.llm.runtime.UltronFastPriorityPolicyTest,forge.ai.llm.runtime.UltronInteractionPolicyTest,forge.ai.llm.runtime.UltronThreatModelAndIntentTest,forge.ai.llm.runtime.UltronStackThreatAnalyzerTest \
+  -Dsurefire.failIfNoSpecifiedTests=false
+```
+Result: **40/40 PASSED**
+
+AiController integration coverage:
+```
+mvn test -pl forge-gui-desktop -am -Dcheckstyle.skip=true \
+  -Dtest=forge.ai.llm.runtime.UltronAiControllerIntegrationTest,forge.ai.llm.runtime.UltronRuntimeStackHookInvalidationTest,forge.ai.llm.runtime.UltronRuntimeLandHookInvalidationTest,forge.ai.llm.runtime.UltronRuntimeHookInvalidationTest,forge.ai.llm.runtime.UltronRuntimeCacheInvalidationTest,forge.ai.llm.runtime.UltronCombatPolicyTest,forge.ai.llm.runtime.UltronRuntimeControllerSelectionTest,forge.ai.llm.runtime.UltronMainPhasePolicyTest,forge.ai.llm.runtime.UltronFastPriorityPolicyTest,forge.ai.llm.runtime.UltronInteractionPolicyTest,forge.ai.llm.runtime.UltronThreatModelAndIntentTest,forge.ai.llm.runtime.UltronStackThreatAnalyzerTest \
+  -Dsurefire.failIfNoSpecifiedTests=false
+```
+Result: **42/42 PASSED**
+
 ---
 
 ## API Quirks Found During Implementation
@@ -163,19 +253,69 @@ Result: **14/14 PASSED**
 6. **Table leader identification** — `UltronTableThreatSummary` marks highest `boardValue` opponent as leader
 7. **Attack most vulnerable** — `UltronTurnIntent.preferredAttackTarget` = opponent with `life <= 10`
 8. **Main-phase scoring** — `UltronActionScorer` penalizes tapping out when ahead
+9. **Leader / danger / vulnerability table reads** — covered by `UltronThreatModelAndIntentTest`
+10. **Desperate-mode role selection** — covered by `UltronThreatModelAndIntentTest`
+11. **Counter lethal with live candidate spell** — covered by `UltronInteractionPolicyTest`
+12. **Ignore low-value stack noise** — covered by `UltronInteractionPolicyTest`
+13. **Do not overreact to weak non-leader combo noise** — covered by `UltronInteractionPolicyTest`
+14. **Treat board wipes differently when ahead vs behind** — covered by `UltronInteractionPolicyTest`
+15. **Pass immediately with no candidates** — covered by `UltronFastPriorityPolicyTest`
+16. **Defer own main-phase empty-stack decisions to main-phase scoring** — covered by `UltronFastPriorityPolicyTest`
+17. **Allow opponent-end-step instant-speed opportunities instead of auto-pass** — covered by `UltronFastPriorityPolicyTest`
+18. **Pass when Ultron already controls the top of the stack** — covered by `UltronFastPriorityPolicyTest`
+19. **Pass on weak-opponent low-value stack spells through full priority policy** — covered by `UltronFastPriorityPolicyTest`
+20. **Reserve counterspell mana when ahead** — covered by `UltronMainPhasePolicyTest`
+21. **Drop mana reservation in desperate mode** — covered by `UltronMainPhasePolicyTest`
+22. **Prefer board development over main-phase counterspell deployment when ahead** — covered by `UltronMainPhasePolicyTest`
+23. **Relax ahead-state tap-out penalties while stabilizing** — covered by `UltronMainPhasePolicyTest`
+24. **Honor filler-pruning even when the candidate list is small** — covered by `UltronRuntimeControllerSelectionTest`
+25. **Pass instead of deploying pruned filler when runtime policy rejects every main-phase option** — covered by `UltronRuntimeControllerSelectionTest`
+26. **Prefer a clean kill on the vulnerable target over generic leader pressure even outside explicit lethal mode** — covered by `UltronCombatPolicyTest`
+27. **Remove attacks when crackback would be lethal** — covered by `UltronCombatPolicyTest`
+28. **Invalidate cached table state along with turn intent after a same-turn board swing** — covered by `UltronRuntimeCacheInvalidationTest`
+29. **Refresh Ultron runtime cache from a real AI `playNoStack` action hook** — covered by `UltronRuntimeHookInvalidationTest`
+30. **Refresh Ultron runtime cache after a real AI land play through `playChosenSpellAbility`** — covered by `UltronRuntimeLandHookInvalidationTest`
+31. **Refresh Ultron runtime cache after a real AI stack-based spell play through `handlePlayingSpellAbility`** — covered by `UltronRuntimeStackHookInvalidationTest`
 
 ---
 
+## Completed TODOs (Phase 13 follow-up)
+
+All five remaining TODOs from the original remodel plan have been addressed:
+
+- **Commander-aware combat**: `UltronOpponentProfile.analyze()` signature changed from
+  `analyze(Player opp, int ultronLife)` to `analyze(Player opp, Player ultron)`. Now populates
+  `commanderValue` from commander damage already dealt to Ultron (`ultron.getCommanderDamage()`)
+  and commander power on the opponent's battlefield (`c.isCommander()`). Commander damage >= 15
+  escalates `lethalThreatToUltron` to at least 80. `commanderValue/5` added to `boardValue`.
+
+- **Per-target crackback in combat filtering**: `UltronCombatPolicy.filterAttackers()` now computes
+  crackback per attacker→target pair. Crackback from *other* opponents (not the one being attacked)
+  is counted as ambient future retaliation; the target's own untapped power contributes blocker risk
+  (`targetProfile.untappedPower / 2`). Removes the over-conservative "count all opponents' evasive
+  power for every attack" behavior.
+
+- **Player elimination PRESSURING escalation**: `UltronTurnIntentBuilder.build()` now checks after
+  role determination: if the most vulnerable opponent is at ≤5 life and Ultron has any board
+  presence, role escalates to `PRESSURING`, `preferredAttackTarget` is set to that player, and
+  `lookForLethal = true`. Desperate/Stabilizing override takes priority.
+
+- **Strategic plan hints**: `UltronStrategicPlan.getHoldInteraction()` added. `UltronAdvisor` exposes
+  `getLastPlanHoldInteraction(Game, Player)`. `UltronRuntimeController` accepts
+  `injectPlanHints(Set<String>, Set<String>)` which forces an intent rebuild incorporating the LLM
+  plan's hold names. `AiController` calls this after `chooseFromStrategicPlan()` so subsequent
+  runtime decisions in the same game reflect the strategic plan's interaction intent.
+  `UltronTurnIntentBuilder.build()` accepts hold/protect name sets (backward-compatible no-arg overload
+  preserved).
+
+- **Simulation integration**: `UltronGameStateEvaluator.evaluateWithSimulation(Game, Player)` calls
+  `forge.ai.simulation.GameStateEvaluator.getScoreForGameState()`. `UltronTableThreatSummary.analyze()`
+  now accepts `Game` (passed through from `UltronThreatModel`). When `ULTRON_USE_SIMULATION_EVAL=true`,
+  the simulation score overrides the heuristic `ultronIsAhead`/`ultronIsBehind` flags. Disabled by
+  default to preserve existing performance; enable for heavier but more accurate position assessment.
+  `UltronConfig.useSimulationEval()` flag added.
+
 ## Remaining TODOs / Future Work
 
-- **Simulation integration**: `UltronGameStateEvaluator` is currently heuristic-only; could integrate
-  `forge.ai.simulation.GameStateEvaluator` for deeper lookahead when budget allows
-- **Strategic plan hints**: When `ULTRON_LLM_STRATEGIC_PLAN_ENABLED=true`, plan hold/protect arrays
-  could feed into `UltronTurnIntent.holdCardNames` / `protectCardNames`
-- **Commander-aware combat**: `commanderValue` field exists but not fully populated
-- **Expanded combat filtering**: `UltronCombatPolicy.filterAttackers` uses estimated crackback;
-  a more precise per-attack-target analysis would improve aggression decisions
-- **Player elimination detection**: When a player is at low life and we have the kill, intent
-  should prioritize `PRESSURING` mode more aggressively
 - **Test coverage for game-engine integration tests**: Current tests are pure-unit; game-integration
   tests would need a running Forge instance

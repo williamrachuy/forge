@@ -339,7 +339,7 @@ python3 tools/simstats/analyze_ultron.py \
   --top-cards 20
 ```
 
-### TICKET-107: Sim run — Ultron baseline [IN_PROGRESS]
+### TICKET-107: Sim run — Ultron baseline [DONE 2026-06-21]
 200 games, seed=123456, 4-player monarch Battlebox, Ultron seat 0 vs Default seats 1-3.
 No adaptive weights. Establishes Ultron's baseline win rate and decision profile.
 Config: `configs/simstats/battlebox_monarch_4p_ultron.ini`
@@ -392,20 +392,31 @@ Decision quality issues:
 Avg attacks: WIN=28.4 LOSS=4.0. Attack correlation is the strongest signal found —
 winning games average 7× more attacks than losses. All Phase A/B/C fixes confirmed active.
 
-**25-Game Regression (2026-06-21, adaptive per-card learning, no prior card data):**
-IN PROGRESS — seed=123456, adaptiveWeights=true, first run of UltronCardStats system.
-Expected: ~28% win rate (no card adjustments yet, all at zero plays).
+**25-Game Regression (2026-06-21, adaptive per-card learning, no prior card data):** DONE.
+Win rate 8/25 = **32%** (vs 28% with manual card rules). Confirmed no regression from removing
+`UltronCardContextEvaluator`. Attack rate improved: Ultron 10.8/game vs Default 7.5/game.
+Monarch turns: 8.2 Ultron vs 8.1 Default (parity). Score paradox resolved: WIN=35.5 > LOSS=33.7.
+Adaptive weights after 25 games: aggression=2.559, removalBonus=1.269, pruneAggression=1.011.
 
-### TICKET-108: Sim run — Ultron adaptive [PLANNED]
-Same setup as baseline but sim.adaptiveWeights=true. Weights start neutral, update after each
-completed game, persist to ~/.forge/ultron-learning/weights.json.
-Run AFTER baseline so you have a clean comparison. Delete weights file before starting:
+### TICKET-108: Sim run — Ultron adaptive [IN_PROGRESS 2026-06-21]
+250-game adaptive run with per-card learning + weight learning.
+Config: `/tmp/ultron_250game_learning.ini` (outputDir = `simstats/out/ultron_250_adaptive_learning/`).
+Starting weights: aggression=2.559, removalBonus=1.269, pruneAggression=1.011 (from 25-game regression).
+Starting card stats: 223 cards tracked, no penalties/bonuses yet (max plays=6, need MIN_SAMPLE=8).
+Run started 2026-06-21 ~02:58 in `tmux ultron_sim`. Expected completion: ~8-10 hours.
 ```bash
-rm -f ~/.forge/ultron-learning/weights.json
-java -jar ../forge-gui-desktop/target/forge-gui-desktop-2.0.13-SNAPSHOT-jar-with-dependencies.jar \
-  simstats -config ../configs/simstats/battlebox_monarch_4p_ultron_adaptive.ini
+bash tools/simstats/run_simstats.sh /tmp/ultron_250game_learning.ini
 ```
-Goal: compare win rate and decision profile against baseline run to see if adaptive weights help.
+Progress: 1 game confirmed complete at 03:03. Monitoring hourly until done.
+> AGENT NOTE [2026-06-21 03:06]: Several restart failures before this run succeeded. Root cause:
+  `GuiDesktop.screenScale` static field initializer called `getDefaultScreenDevice()` which throws
+  `HeadlessException` when no display is available (no $DISPLAY in this session). Fixed: added
+  `GraphicsEnvironment.isHeadless()` guard — returns 1.0f in headless mode. See BUG-005.
+  Also: run_simstats.sh now redirects all sim output to `<outputDir>/run.log` (was going to /tmp).
+  Config key `run.outputDir` is now required; script exits with error if missing.
+> AGENT NOTE [2026-06-21 03:06]: Card learning convergence expected at ~100 total games for
+  frequently-played cards (Coalition Relic, Bushwhack, Cultivate, Sneak Attack). MIN_SAMPLE=8
+  threshold means ~3 batches of 25 games per bad card to start firing penalties.
 
 ---
 
@@ -519,6 +530,15 @@ SimulateStats must run from `forge-gui/` — `res/languages/en-US.properties` re
 to CWD for SNAPSHOT builds (`getAssetsDir()` returns "" for SNAPSHOT). Run commands now
 explicitly `cd forge-gui` before launching the jar.
 
+### TICKET-S004: Sim output co-located with run data [DONE 2026-06-21]
+`tools/simstats/run_simstats.sh` now parses `run.outputDir` from the config and redirects
+all sim stdout/stderr to `<outputDir>/run.log`. Previously, sim progress output went to
+wherever the caller's stdout pointed (often /tmp or swallowed). Now `run.log` lives alongside
+`games.jsonl` in the same output directory, keeping all run artifacts together.
+The script fails with an error if `outputDir` is missing from the config (previously silently
+defaulted to a relative path that could vary by CWD).
+**File:** `tools/simstats/run_simstats.sh`
+
 ---
 
 # KNOWN BUGS / INVESTIGATIONS
@@ -537,6 +557,23 @@ Root causes found and fixed (see TICKET-116, TICKET-118, TICKET-119, TICKET-120,
 Key changes: ultronInDanger penalty -30→-10, crackback sum→max, CONTROL/AHEAD avoidTappingOut
 removed, vulnerability thresholds recalibrated, Monarch steal bonus +25, turn≥12 all-in mode.
 Impact to be measured in next sim run.
+
+### BUG-005: GuiDesktop static initializer crashes in headless mode [FIXED 2026-06-21]
+**Symptom:** `java -jar forge.jar simstats ...` exits with code 1 and zero output when no
+display is available (`$DISPLAY` unset). Process dies before Logback opens forge.log. Stderr
+also empty because `ExceptionInInitializerError` propagates before Sentry/GuiBase can redirect
+System.err. Diagnosed via `-verbose:class`: last class loaded before the error was `forge.gui.GuiBase`.
+**Root cause chain:**
+1. `Main.main()` calls `GuiBase.setInterface(new GuiDesktop())`
+2. `GuiDesktop` has `static float screenScale = initializeScreenScale()` at class load time
+3. `initializeScreenScale()` calls `getDefaultScreenDevice().getDefaultConfiguration()`
+4. `getDefaultScreenDevice()` throws `HeadlessException` in headless environments
+5. Exception wraps in `ExceptionInInitializerError` → exits before forge.log is opened
+**Why this worked before:** Prior sessions had `$DISPLAY` set (X11 forwarding or virtual display).
+Session 2026-06-21 had no display → first exposure to the crash.
+**Fix:** Added `GraphicsEnvironment.isHeadless()` guard in `initializeScreenScale()` — returns
+`1.0f` when headless. The sim doesn't need screen scale; only the desktop UI uses it.
+**File:** `forge-gui-desktop/src/main/java/forge/GuiDesktop.java` (`initializeScreenScale()`)
 
 ### BUG-003: Targeting path unverified [OPEN]
 UltronTargetPriorityEvaluator exists but may not be wired into PlayerControllerAi target
@@ -691,8 +728,10 @@ If you're a fresh agent session reading this:
    Do not reset or clean files without reading them first.
 2. **Current active branch is `ultron-fast-ai-remodel`.** It's ahead of master with the
    full Ultron runtime AI implementation.
-3. **The sim may be running.** Check `simstats/out/battlebox_monarch_4p_ultron/games.jsonl`
-   line count before touching SimulateStats or UltronRuntimeController.
+3. **The sim may be running.** As of 2026-06-21 a 250-game adaptive run is active in
+   `tmux ultron_sim`. Output in `simstats/out/ultron_250_adaptive_learning/`. Check
+   `wc -l simstats/out/ultron_250_adaptive_learning/games.jsonl` before touching anything.
+   Also check `tmux has-session -t ultron_sim` — if alive, leave it alone.
 4. **Learning files** at `~/.forge/ultron-learning/` are mutable sim output — do not commit.
    `weights.json` = scalar weight multipliers. `ultron_card_stats.json` = per-card play/win
    counts. Delete both to reset adaptive learning to baseline.

@@ -24,17 +24,20 @@ public final class UltronCandidatePruner {
      * @return pruned list
      */
     public static List<SpellAbility> prune(List<SpellAbility> all, UltronDecisionContext ctx) {
-        int max = UltronConfig.maxCandidates();
-        if (all.size() <= max) return all;
-
-        List<SpellAbility> result = new ArrayList<>(max);
+        // pruneAggression > 1 → consider fewer candidates (faster, less thorough)
+        // pruneAggression < 1 → consider more candidates (slower, more thorough)
+        int max = Math.max(5,
+                (int)(UltronConfig.maxCandidates() / UltronWeights.get(UltronWeights.PRUNE_AGGRESSION)));
+        int targetSize = Math.min(max, all.size());
+        List<SpellAbility> result = new ArrayList<>(targetSize);
         for (SpellAbility sa : all) {
             if (result.size() >= max) break;
             if (!shouldSkip(sa, ctx)) result.add(sa);
         }
 
-        // If filtering removed too many, top up from original list
-        if (result.size() < Math.min(max / 2, all.size())) {
+        // If filtering removed too many from a crowded list, top up from original ordering.
+        // Small lists should remain pruned; otherwise the policy is effectively bypassed.
+        if (all.size() > max && result.size() < max / 2) {
             for (SpellAbility sa : all) {
                 if (result.size() >= max) break;
                 if (!result.contains(sa)) result.add(sa);

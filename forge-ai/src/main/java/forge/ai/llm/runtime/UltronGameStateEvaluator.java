@@ -1,9 +1,12 @@
 package forge.ai.llm.runtime;
 
+import forge.game.Game;
+import forge.game.player.Player;
+
 /**
  * Lightweight game-state evaluator for Ultron's position.
  * Returns a numeric score estimating Ultron's relative position (higher = better).
- * No simulation, no LLM.
+ * No simulation, no LLM by default; optional simulation path via ULTRON_USE_SIMULATION_EVAL.
  */
 public final class UltronGameStateEvaluator {
 
@@ -48,5 +51,21 @@ public final class UltronGameStateEvaluator {
     public static int developmentBonus(String cardName, int cmc) {
         // Simple CMC-based proxy — ramp more in early turns, value later
         return cmc * 5;
+    }
+
+    /**
+     * Run the Forge simulation evaluator to get a more precise position score.
+     * Copies the game and simulates upcoming combat — only call when budget allows.
+     * Returns 0 if the simulation throws or produces an unusable result.
+     */
+    public static int evaluateWithSimulation(Game game, Player ultron) {
+        if (game == null || ultron == null) return 0;
+        try {
+            forge.ai.simulation.GameStateEvaluator gse = new forge.ai.simulation.GameStateEvaluator();
+            forge.ai.simulation.GameStateEvaluator.Score score = gse.getScoreForGameState(game, ultron);
+            return score != null ? score.value : 0;
+        } catch (RuntimeException ex) {
+            return 0;
+        }
     }
 }

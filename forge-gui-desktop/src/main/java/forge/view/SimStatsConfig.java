@@ -77,7 +77,9 @@ final class SimStatsConfig {
     }
 
     int getTimeoutSeconds() {
-        return getInt("run.timeoutSeconds", 120);
+        // 600s default: kills runaway games (token engines, infinite recursion) while
+        // leaving normal 4-player Battlebox games (~100-400s) unaffected.
+        return getInt("run.timeoutSeconds", 600);
     }
 
     Path getOutputDir() {
@@ -128,6 +130,29 @@ final class SimStatsConfig {
 
     boolean isTurnSnapshotsEnabled() {
         return getBoolean("stats.turnSnapshots", true);
+    }
+
+    /**
+     * Per-AI-decision timeout in seconds for the FutureTask in AiController.
+     * Default 60s — generous enough that complex boards complete without timing out,
+     * unlike the hardcoded game default of 5s which causes timeout storms in sim.
+     */
+    int getAiDecisionTimeoutSeconds() {
+        return getInt("sim.aiDecisionTimeoutSeconds", 60);
+    }
+
+    /** When true, Ultron updates a weight override file after each game. */
+    boolean isAdaptiveWeightsEnabled() {
+        return getBoolean("sim.adaptiveWeights", false);
+    }
+
+    /**
+     * Path to the mutable weight override file.
+     * Defaults to {@code ~/.forge/ultron-learning/weights.json}.
+     */
+    Path getWeightsPath() {
+        String defaultPath = System.getProperty("user.home") + "/.forge/ultron-learning/weights.json";
+        return Path.of(get("sim.weightsPath", defaultPath));
     }
 
     private String get(final String key, final String fallback) {

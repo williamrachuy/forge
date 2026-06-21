@@ -1,8 +1,11 @@
 package forge.ai.llm.runtime;
 
+import forge.game.Game;
+import forge.game.ability.ApiType;
 import forge.game.card.Card;
 import forge.game.card.CardCollectionView;
 import forge.game.player.Player;
+import forge.game.spellability.SpellAbility;
 import forge.game.zone.ZoneType;
 
 import java.util.ArrayList;
@@ -30,6 +33,9 @@ public final class UltronTableThreatSummary {
     public final boolean ultronIsAhead;
     public final boolean ultronIsBehind;
     public final boolean ultronInDanger;
+    public final boolean ultronHasCounterspell;
+    public final boolean ultronHasMonarch;
+    public final Player monarchHolder;          // null if no monarch in play yet
 
     private UltronTableThreatSummary(Builder b) {
         ultron = b.ultron;
@@ -45,14 +51,25 @@ public final class UltronTableThreatSummary {
         ultronIsAhead = b.ultronIsAhead;
         ultronIsBehind = b.ultronIsBehind;
         ultronInDanger = b.ultronInDanger;
+        ultronHasCounterspell = b.ultronHasCounterspell;
+        ultronHasMonarch = b.ultronHasMonarch;
+        monarchHolder = b.monarchHolder;
     }
 
     /** Build the summary for Ultron from live game state. */
-    public static UltronTableThreatSummary analyze(Player ultron) {
+    public static UltronTableThreatSummary analyze(Game game, Player ultron) {
         Builder b = new Builder();
         b.ultron = ultron;
         b.ultronLife = ultron.getLife();
         b.ultronHandSize = ultron.getCardsIn(ZoneType.Hand).size();
+
+        // Check whether Ultron holds a counterspell (gates reserveCounterspellMana in intent)
+        outer:
+        for (Card c : ultron.getCardsIn(ZoneType.Hand)) {
+            for (SpellAbility sa : c.getSpellAbilities()) {
+                if (sa.getApi() == ApiType.Counter) { b.ultronHasCounterspell = true; break outer; }
+            }
+        }
 
         // Ultron's own board metrics
         CardCollectionView ultronBf = ultron.getCardsIn(ZoneType.Battlefield);
@@ -69,7 +86,7 @@ public final class UltronTableThreatSummary {
         // Opponent profiles
         List<UltronOpponentProfile> profiles = new ArrayList<>();
         for (Player opp : ultron.getOpponents()) {
-            profiles.add(UltronOpponentProfile.analyze(opp, b.ultronLife));
+            profiles.add(UltronOpponentProfile.analyze(opp, ultron));
         }
 
         // Identify leader (highest boardValue among opponents)
@@ -118,12 +135,23 @@ public final class UltronTableThreatSummary {
 
         b.opponents = profiles;
 
-        // Situational flags
+        // Situational flags (heuristic baseline)
+        // Monarch tracking
+        b.ultronHasMonarch = ultron.isMonarch();
+        b.monarchHolder = game.getMonarch();
+
         b.ultronInDanger = profiles.stream().anyMatch(p -> p.canLikelyKillUltronSoon);
         int avgOppBV = profiles.isEmpty() ? 0
                 : profiles.stream().mapToInt(p -> p.boardValue).sum() / profiles.size();
         b.ultronIsAhead  = b.ultronBoardValue > avgOppBV * 125 / 100;
         b.ultronIsBehind = b.ultronBoardValue < avgOppBV * 75  / 100;
+
+        // Optional: refine ahead/behind with the simulation evaluator when budget allows
+        if (game != null && forge.ai.llm.UltronConfig.useSimulationEval()) {
+            int simScore = UltronGameStateEvaluator.evaluateWithSimulation(game, ultron);
+            if (simScore > 200) b.ultronIsAhead = true;
+            else if (simScore < -100) { b.ultronIsBehind = true; b.ultronIsAhead = false; }
+        }
 
         return new UltronTableThreatSummary(b);
     }
@@ -141,6 +169,8 @@ public final class UltronTableThreatSummary {
         List<UltronOpponentProfile> opponents;
         UltronOpponentProfile leader, weakest, mostDangerousToUltron, mostVulnerable;
         int ultronBoardValue, ultronLife, ultronHandSize, ultronOpenManaEstimate;
-        boolean ultronIsAhead, ultronIsBehind, ultronInDanger;
+        boolean ultronIsAhead, ultronIsBehind, ultronInDanger, ultronHasCounterspell;
+        boolean ultronHasMonarch;
+        Player monarchHolder;
     }
 }

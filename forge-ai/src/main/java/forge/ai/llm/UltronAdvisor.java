@@ -182,6 +182,9 @@ public final class UltronAdvisor {
 
     public Decision chooseFromStrategicPlan(Game game, Player player, List<SpellAbility> candidates, AiCardMemory memory,
             UltronStrategicPlan.GameState gameState) {
+        if (!isLlmStrategicPlanEnabledFor(player)) {
+            return Decision.noAdvice();
+        }
         DeepSeekClient activeClient = getStrategicPlanClient();
         if (activeClient == null || candidates == null || candidates.isEmpty()) {
             return Decision.noAdvice();
@@ -198,7 +201,7 @@ public final class UltronAdvisor {
 
     public void analyzeOpeningHand(Game game, Player player, AiCardMemory memory) {
         DeepSeekClient activeClient = getStrategicPlanClient();
-        if (activeClient == null || game == null || player == null || !isEnabledFor(player)) {
+        if (activeClient == null || game == null || player == null || !isLlmStrategicPlanEnabledFor(player)) {
             return;
         }
         UltronGameContext context = getContext(game, player);
@@ -206,13 +209,22 @@ public final class UltronAdvisor {
     }
 
     public void filterPlannedAttackers(Game game, Player player, Combat combat) {
-        if (game == null || player == null || combat == null || !isEnabledFor(player)) {
+        if (game == null || player == null || combat == null || !isLlmStrategicPlanEnabledFor(player)) {
             return;
         }
         UltronStrategicPlan plan = getStrategicPlan(game, player);
         if (plan != null) {
             plan.filterAttackers(combat);
         }
+    }
+
+    /**
+     * Return the hold-interaction card names from the most recent strategic plan for
+     * this player. Empty list if no plan exists or strategic plan LLM is disabled.
+     */
+    public List<String> getLastPlanHoldInteraction(Game game, Player player) {
+        UltronStrategicPlan plan = getStrategicPlan(game, player);
+        return plan != null ? plan.getHoldInteraction() : Collections.emptyList();
     }
 
     private void buildStrategicPlan(DeepSeekClient activeClient, Game game, Player player, List<SpellAbility> candidates,

@@ -175,6 +175,7 @@ Primary files:
 - General reporter: `tools/simstats/report_simstats.py`.
 - Comparator: `tools/simstats/compare_reports.py`.
 - Raw output: `simstats/out/<run>/games.jsonl`.
+- Run log: `simstats/out/<run>/run.log` — sim stdout/stderr, redirected by `run_simstats.sh`.
 - Docs: `docs/Development/SimStats.md`.
 
 Typical Ultron flow:
@@ -246,7 +247,7 @@ Reporting expectations:
 - Fast compile for game/gui seams: `mvn -pl forge-game,forge-gui -am -DskipTests compile`.
 - Desktop package path used before: `mvn -pl forge-gui-desktop -am -DskipTests package`.
 - Full CI-style test command: `mvn -U -B clean test`.
-- CI runs tests under Xvfb. For GUI/headless behavior, use a virtual framebuffer when needed.
+- CI runs tests under Xvfb. For GUI/headless behavior, the `GuiDesktop` headless guard means `$DISPLAY` is no longer required for sim runs.
 - Network stress tests are under `forge-gui-desktop/src/test/java/forge/net/` and are usually gated by `-Drun.stress.tests=true`.
 - Network docs: `docs/Development/Network-Testing.md`.
 - AI simulation CLI docs: `docs/AI.md`.
@@ -269,4 +270,6 @@ Reporting expectations:
 - Deck metadata is case-insensitive through `Deck`'s metadata map.
 - `GameType.Constructed` may still be used as the base match type while variants are applied through `GameRules.appliedVariants`.
 - Battlebox currently uses shared physical zones; normal assumptions about each player owning a separate library/graveyard may be wrong in that mode.
+- **Headless sim runs require no display** (`$DISPLAY` unset is fine). `GuiDesktop.initializeScreenScale()` was fixed with a `GraphicsEnvironment.isHeadless()` guard (returns `1.0f`) — if you see `ExceptionInInitializerError` from `GuiDesktop.<clinit>`, the fix is in that method. Sim runs do still instantiate `GuiDesktop` (required for `ForgeConstants.ASSETS_DIR` via `GuiBase.getInterface().getAssetsDir()`), so the guard must remain.
+- **CI runs tests under Xvfb.** For GUI/headless behavior, use a virtual framebuffer when needed.
 - The root worktree may be dirty with user changes. Do not run cleanup commands, `git reset`, or checkout files unless explicitly requested.

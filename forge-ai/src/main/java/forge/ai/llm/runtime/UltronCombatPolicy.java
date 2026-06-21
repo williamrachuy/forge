@@ -48,15 +48,25 @@ public final class UltronCombatPolicy {
 
         int attackerPower = Math.max(0, attacker.getNetPower());
 
-        // Lethal opportunity: prioritize finishing a vulnerable player
-        if (profile.life <= attackerPower && intent.lookForLethal) {
+        // Real kill shots stay valuable even outside explicit "look for lethal" turns.
+        if (profile.life <= attackerPower) {
             score += 80;
         } else if (profile.vulnerability >= 70) {
             score += 40;
         }
 
+        if (intent.preferredAttackTarget != null && target.equals(intent.preferredAttackTarget)) {
+            score += 20;
+        }
+
         // Attacking the leader is generally good
         if (profile.isLeader) score += 30;
+
+        // Monarch steal: attacking the monarch holder steals card draw
+        if (table.monarchHolder != null && !table.ultronHasMonarch
+                && target.equals(table.monarchHolder)) {
+            score += 25;
+        }
 
         // Don't attack a player who will die and only benefit the leader
         if (profile.vulnerability >= 80 && table.leader != null
@@ -72,9 +82,9 @@ public final class UltronCombatPolicy {
             score -= 50;
         }
 
-        // Avoid attacking if Ultron is in danger and needs blockers
+        // Avoid attacking if Ultron is in danger and needs blockers (light penalty — don't freeze)
         if (table.ultronInDanger) {
-            score -= 30;
+            score -= 10;
         }
 
         return score;
@@ -94,16 +104,23 @@ public final class UltronCombatPolicy {
 
         int ultronLife = table.ultronLife;
 
-        // Estimate total crackback from all dangerous opponents
-        int crackbackRisk = 0;
-        for (UltronOpponentProfile opp : table.opponents) {
-            crackbackRisk += opp.evasivePower;
-        }
-
         List<Card> toRemove = new java.util.ArrayList<>();
         for (Card attacker : combat.getAttackers()) {
             Player target = combat.getDefendingPlayerRelatedTo(attacker);
             if (target == null) continue;
+
+            // Per-target crackback: model the single most dangerous non-target opponent
+            // (not the sum — only one player takes their turn before Ultron can respond).
+            int crackbackFromOthers = 0;
+            UltronOpponentProfile targetProfile = table.profileFor(target);
+            for (UltronOpponentProfile opp : table.opponents) {
+                if (!opp.player.equals(target)) {
+                    crackbackFromOthers = Math.max(crackbackFromOthers, opp.evasivePower);
+                }
+            }
+            int blockerRisk = targetProfile != null ? targetProfile.untappedPower / 2 : 0;
+            int crackbackRisk = crackbackFromOthers + blockerRisk;
+
             int attackScore = scoreAttack(attacker, target, intent, table, ultronLife, crackbackRisk);
             if (attackScore < -20) {
                 toRemove.add(attacker);

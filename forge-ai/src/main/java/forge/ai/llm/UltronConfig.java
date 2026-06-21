@@ -66,6 +66,15 @@ public final class UltronConfig {
         return boolEnv("ULTRON_DECISION_LOGGING", false);
     }
 
+    /**
+     * Use Forge simulation evaluator for more accurate ahead/behind detection.
+     * Disabled by default because it copies the game and simulates combat.
+     * Enable with {@code ULTRON_USE_SIMULATION_EVAL=true}.
+     */
+    public static boolean useSimulationEval() {
+        return boolEnv("ULTRON_USE_SIMULATION_EVAL", false);
+    }
+
     // -----------------------------------------------------------------------
     // Timing budgets
     // -----------------------------------------------------------------------
@@ -98,6 +107,14 @@ public final class UltronConfig {
     /** Min turns between LLM strategic plan refreshes (default 4). */
     public static int minTurnsBetweenLlmPlans() {
         return intEnv("ULTRON_LLM_MIN_TURNS_BETWEEN_PLANS", 4);
+    }
+
+    /**
+     * Max LLM strategic plan builds per player turn (default 2: initial plan + 1 anchor-triggered re-plan).
+     * Prevents runaway LLM calls when anchors are repeatedly disrupted.
+     */
+    public static int maxLlmStrategicPlansPerTurn() {
+        return intEnv("ULTRON_LLM_MAX_PLANS_PER_TURN", 2);
     }
 
     // -----------------------------------------------------------------------

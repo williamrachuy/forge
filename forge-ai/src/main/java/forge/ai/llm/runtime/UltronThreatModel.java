@@ -16,6 +16,6 @@ public final class UltronThreatModel {
      * Fast — inspects Forge objects directly, no LLM, no large serialization.
      */
     public static UltronTableThreatSummary analyze(Game game, Player ultron) {
-        return UltronTableThreatSummary.analyze(ultron);
+        return UltronTableThreatSummary.analyze(game, ultron);
     }
 }

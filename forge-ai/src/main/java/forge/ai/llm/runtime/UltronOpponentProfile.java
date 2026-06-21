@@ -58,10 +58,14 @@ public final class UltronOpponentProfile {
         canLikelyKillUltronSoon = b.canLikelyKillUltronSoon;
     }
 
-    /** Analyze an opponent relative to Ultron's current life total. */
-    public static UltronOpponentProfile analyze(Player opponent, int ultronLife) {
+    /**
+     * Analyze an opponent relative to Ultron's full player state.
+     * Accounts for commander damage dealt to Ultron and commanders on the battlefield.
+     */
+    public static UltronOpponentProfile analyze(Player opponent, Player ultron) {
         Builder b = new Builder();
         b.player = opponent;
+        int ultronLife = ultron.getLife();
         b.life = opponent.getLife();
         b.poison = opponent.getPoisonCounters();
         b.cardsInHand = opponent.getCardsIn(ZoneType.Hand).size();
@@ -75,6 +79,7 @@ public final class UltronOpponentProfile {
         int enchantments = 0;
         int engineKeywords = 0;
         int graveyardCreatures = 0;
+        int commanderPower = 0;
 
         for (Card c : bf) {
             if (c.isLand() && !c.isTapped()) untappedLands++;
@@ -95,6 +100,7 @@ public final class UltronOpponentProfile {
                         || c.hasKeyword(Keyword.MENACE)
                         || c.getOracleText().toLowerCase().contains("can't be blocked");
                 if (evasive) b.evasivePower += power;
+                if (c.isCommander()) commanderPower += power;
             }
 
             // Engine heuristics from oracle text / keywords
@@ -112,13 +118,27 @@ public final class UltronOpponentProfile {
 
         b.openManaEstimate = untappedLands;
 
-        // boardValue: composite score
+        // Commander damage already dealt to Ultron by this opponent's commanders
+        int cmdDamageDealt = 0;
+        for (java.util.Map.Entry<Card, Integer> entry : ultron.getCommanderDamage()) {
+            Card cmd = entry.getKey();
+            if (opponent.getCommanders().contains(cmd)
+                    || opponent.equals(cmd.getOwner())
+                    || opponent.equals(cmd.getController())) {
+                cmdDamageDealt += entry.getValue();
+            }
+        }
+        // commanderValue: pressure from commander combat damage already dealt + commander on field
+        b.commanderValue = Math.min(100, cmdDamageDealt * 4 + commanderPower * 5);
+
+        // boardValue: composite score — commander pressure added
         b.boardValue = b.totalPower * 3
                 + artifacts * 2
                 + enchantments * 2
                 + b.cardsInHand * 2
                 + untappedLands
-                + engineKeywords * 3;
+                + engineKeywords * 3
+                + b.commanderValue / 5;
 
         // engineValue: heavy draws / repeatable effects
         b.engineValue = engineKeywords * 5 + artifacts + enchantments;
@@ -135,14 +155,16 @@ public final class UltronOpponentProfile {
         if (b.combatThreatToUltron >= ultronLife) lethalRaw = 95;
         else if (b.combatThreatToUltron >= ultronLife * 2 / 3) lethalRaw = 70;
         else if (b.combatThreatToUltron >= ultronLife / 2) lethalRaw = 40;
+        // Commander damage already dealt escalates the threat: 15+ damage means one more attack kill
+        if (cmdDamageDealt >= 15) lethalRaw = Math.max(lethalRaw, 80);
         b.lethalThreatToUltron = lethalRaw;
 
-        // vulnerability: low life + weak board
+        // vulnerability: low life + weak board (calibrated for 20-life Battlebox format)
         int vulnRaw = 0;
-        if (b.life <= 5) vulnRaw = 95;
-        else if (b.life <= 10) vulnRaw = 70;
+        if (b.life <= 8) vulnRaw = 95;
+        else if (b.life <= 13) vulnRaw = 70;
         else if (b.life <= 15 && b.totalPower == 0 && b.cardsInHand <= 2) vulnRaw = 50;
-        else if (b.life <= 20 && b.battlefieldCount <= 2) vulnRaw = 25;
+        else if (b.life <= 16 && b.battlefieldCount <= 2) vulnRaw = 25;
         b.vulnerability = vulnRaw;
 
         b.canLikelyKillUltronSoon = b.lethalThreatToUltron >= 70;

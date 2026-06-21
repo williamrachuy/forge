@@ -9,6 +9,7 @@ import forge.game.spellability.SpellAbility;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.WeakHashMap;
 
 /**
@@ -40,6 +41,13 @@ public final class UltronRuntimeController {
     private int currentIntentTurn = -1;
     private UltronTableThreatSummary lastTable;
     private int lastTableTurn = -1;
+    // Set by scoreMainPhase before returning, read by doChoose for sim stats
+    private int lastPrunedCount = 0;
+    private int lastChoiceScore = 0;
+    private Set<String> pendingHoldNames = Set.of();
+    private Set<String> pendingProtectNames = Set.of();
+
+    private final UltronSimStats simStats = new UltronSimStats();
 
     private UltronRuntimeController(Game game, Player player, AiCardMemory memory) {
         this.game = game;
@@ -51,9 +59,17 @@ public final class UltronRuntimeController {
     public static synchronized UltronRuntimeController getOrCreate(Game game, Player player,
                                                                     AiCardMemory memory) {
         Map<Player, UltronRuntimeController> byPlayer =
-                INSTANCES.computeIfAbsent(game, k -> new WeakHashMap<>());
+                INSTANCES.computeIfAbsent(game, k -> new java.util.HashMap<>());
         return byPlayer.computeIfAbsent(player,
                 p -> new UltronRuntimeController(game, p, memory));
+    }
+
+    /** Returns the sim stats for this controller, or null if no instance exists. */
+    public static synchronized UltronSimStats getSimStats(Game game, Player player) {
+        Map<Player, UltronRuntimeController> byPlayer = INSTANCES.get(game);
+        if (byPlayer == null) return null;
+        UltronRuntimeController ctrl = byPlayer.get(player);
+        return ctrl == null ? null : ctrl.simStats;
     }
 
     // -----------------------------------------------------------------------
@@ -125,9 +141,10 @@ public final class UltronRuntimeController {
         if (ctx.isOverDeadline()) {
             UltronDecisionLog.log(player, UltronDecisionLog.TIMING,
                     "budget exceeded " + elapsedMs + "ms -> fallback");
-            return UltronRuntimeDecision.fallback("over deadline");
+            decision = UltronRuntimeDecision.fallback("over deadline");
         }
 
+        recordSimDecision(decision, ctx, gameState);
         return decision;
     }
 
@@ -138,6 +155,15 @@ public final class UltronRuntimeController {
     private UltronRuntimeDecision scoreMainPhase(UltronDecisionContext ctx) {
         UltronManaReservation reservation = UltronManaReservationPolicy.compute(ctx);
         List<SpellAbility> pruned = UltronCandidatePruner.prune(ctx.candidates, ctx);
+        lastPrunedCount = ctx.candidates.size() - pruned.size();
+        lastChoiceScore = 0;
+
+        if (pruned.isEmpty()) {
+            if (ctx.intent.avoidTappingOut || ctx.intent.reserveCounterspellMana) {
+                return UltronRuntimeDecision.pass("all candidates pruned by runtime policy");
+            }
+            return UltronRuntimeDecision.fallback("all candidates pruned by runtime policy");
+        }
 
         SpellAbility bestSa = null;
         UltronScore bestScore = null;
@@ -150,6 +176,9 @@ public final class UltronRuntimeController {
                 bestSa = sa;
             }
         }
+
+        // Always capture best score seen — even for PASS/FALLBACK this tells us what was rejected.
+        if (bestScore != null) lastChoiceScore = bestScore.value;
 
         if (bestSa != null && bestScore != null && bestScore.value > 0) {
             String reason = "main-phase score=" + bestScore.value + " " + bestScore.reason;
@@ -165,6 +194,76 @@ public final class UltronRuntimeController {
 
         // Fall through to Forge default ordering
         return UltronRuntimeDecision.fallback("no strongly-scored candidate");
+    }
+
+    // -----------------------------------------------------------------------
+    // Sim stats recording
+    // -----------------------------------------------------------------------
+
+    private void recordSimDecision(UltronRuntimeDecision decision, UltronDecisionContext ctx,
+                                   UltronStrategicPlan.GameState gameState) {
+        String phase = switch (gameState) {
+            case MAIN_PHASE -> "MAIN";
+            case RESPONDING -> "RESPOND";
+            default -> "OTHER";
+        };
+        String kind = switch (decision.getKind()) {
+            case CHOOSE      -> "CHOOSE";
+            case PASS        -> "PASS";
+            case FALLBACK    -> "FALLBACK";
+            case NO_DECISION -> "NO_DECISION";
+        };
+        String chosenName = null;
+        if (decision.getKind() == UltronRuntimeDecision.Kind.CHOOSE && decision.getSpellAbility() != null) {
+            chosenName = decision.getSpellAbility().getHostCard().getName();
+        }
+        // Capture reason for all kinds: CHOOSE → why this card; PASS → why passed or threat severity.
+        String scoreReason = decision.getReason().isEmpty() ? null : decision.getReason();
+        simStats.record(new UltronSimStats.Decision(
+                game.getPhaseHandler().getTurn(),
+                phase,
+                player.getLife(),
+                game.getStack().size(),
+                ctx.intent.role.toString(),
+                kind,
+                chosenName,
+                lastChoiceScore,
+                scoreReason,
+                ctx.candidates.size(),
+                lastPrunedCount,
+                ctx.intent.avoidTappingOut,
+                ctx.intent.reserveCounterspellMana
+        ));
+        // Reset for next call
+        lastPrunedCount = 0;
+        lastChoiceScore = 0;
+    }
+
+    /**
+     * Record a NO_DECISION entry when no candidates scored above threshold.
+     * Called from AiController when ultronCandidates is empty but the controller
+     * is initialized — ensures loss-game stats blocks are populated.
+     */
+    public void recordNoDecision(UltronStrategicPlan.GameState gameState) {
+        String phase = switch (gameState) {
+            case MAIN_PHASE -> "MAIN";
+            case RESPONDING -> "RESPOND";
+            default -> "OTHER";
+        };
+        UltronTableThreatSummary table = getOrRebuildTable();
+        UltronTurnIntent intent = getOrRebuildIntent(table);
+        simStats.record(new UltronSimStats.Decision(
+                game.getPhaseHandler().getTurn(),
+                phase,
+                player.getLife(),
+                game.getStack().size(),
+                intent.role.toString(),
+                "NO_DECISION",
+                null, 0, null,
+                0, 0,
+                intent.avoidTappingOut,
+                intent.reserveCounterspellMana
+        ));
     }
 
     // -----------------------------------------------------------------------
@@ -184,7 +283,8 @@ public final class UltronRuntimeController {
     private UltronTurnIntent getOrRebuildIntent(UltronTableThreatSummary table) {
         int turn = game.getPhaseHandler().getTurn();
         if (currentIntent == null || currentIntentTurn != turn) {
-            currentIntent = UltronTurnIntentBuilder.build(table, turn);
+            currentIntent = UltronTurnIntentBuilder.build(table, turn,
+                    pendingHoldNames, pendingProtectNames);
             currentIntentTurn = turn;
             UltronDecisionLog.log(player, UltronDecisionLog.INTENT,
                     "rebuilt intent: " + currentIntent.reason);
@@ -192,8 +292,22 @@ public final class UltronRuntimeController {
         return currentIntent;
     }
 
-    /** Invalidate the cached intent — call when the board changes materially. */
+    /** Invalidate cached turn-state — call when the board changes materially. */
     public void invalidateIntent() {
+        currentIntent = null;
+        currentIntentTurn = -1;
+        lastTable = null;
+        lastTableTurn = -1;
+    }
+
+    /**
+     * Inject strategic-plan hold/protect hints from the LLM.
+     * Forces an intent rebuild so the hints take effect on the next decision.
+     */
+    public synchronized void injectPlanHints(Set<String> holdNames, Set<String> protectNames) {
+        pendingHoldNames    = holdNames    != null ? Set.copyOf(holdNames)    : Set.of();
+        pendingProtectNames = protectNames != null ? Set.copyOf(protectNames) : Set.of();
+        currentIntent = null;   // force rebuild with new hints
         currentIntentTurn = -1;
     }
 

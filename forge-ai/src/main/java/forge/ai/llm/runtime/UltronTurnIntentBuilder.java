@@ -10,8 +10,9 @@ public final class UltronTurnIntentBuilder {
 
     private UltronTurnIntentBuilder() {}
 
-    /** Derive intent from the current table summary and turn number. */
-    public static UltronTurnIntent build(UltronTableThreatSummary table, int turn) {
+    /** Derive intent from the current table summary, turn number, and optional plan hints. */
+    public static UltronTurnIntent build(UltronTableThreatSummary table, int turn,
+                                          Set<String> holdCardNames, Set<String> protectCardNames) {
         UltronTurnIntent.Builder b = new UltronTurnIntent.Builder();
         b.turn = turn;
 
@@ -24,9 +25,11 @@ public final class UltronTurnIntentBuilder {
             b.primaryThreat = table.mostDangerousToUltron.player;
         }
 
-        // Preferred attack target: killable player first, then leader
-        if (table.mostVulnerable != null && table.mostVulnerable.life <= 10) {
+        // Preferred attack target: killable player first, then monarch (card-draw denial), then leader
+        if (table.mostVulnerable != null && table.mostVulnerable.life <= 13) {
             b.preferredAttackTarget = table.mostVulnerable.player;
+        } else if (table.monarchHolder != null && !table.ultronHasMonarch) {
+            b.preferredAttackTarget = table.monarchHolder;
         } else if (table.leader != null) {
             b.preferredAttackTarget = table.leader.player;
         }
@@ -51,13 +54,25 @@ public final class UltronTurnIntentBuilder {
 
         // Apply role-specific intent settings
         switch (b.role) {
-            case CONTROL, AHEAD -> {
+            case CONTROL -> {
+                // Ultron is the board leader — press the advantage, look for eliminations
                 b.interactionThreshold    = 50;
                 b.counterspellThreshold   = 65;
-                b.removalThreshold        = 60;
-                b.reserveCounterspellMana = true;
-                b.reserveRemovalMana      = true;
-                b.avoidTappingOut         = true;
+                b.removalThreshold        = 55;
+                b.reserveCounterspellMana = table.ultronHasCounterspell;
+                b.reserveRemovalMana      = false;
+                b.avoidTappingOut         = false;
+                b.lookForLethal           = true;
+                b.holdBoardWipe           = false;
+            }
+            case AHEAD -> {
+                // Neutral: no clear leader, no clear threat — develop and pressure
+                b.interactionThreshold    = 55;
+                b.counterspellThreshold   = 70;
+                b.removalThreshold        = 65;
+                b.reserveCounterspellMana = table.ultronHasCounterspell;
+                b.reserveRemovalMana      = false;
+                b.avoidTappingOut         = false;
                 b.holdBoardWipe           = false;
             }
             case PRESSURING -> {
@@ -106,12 +121,42 @@ public final class UltronTurnIntentBuilder {
             }
         }
 
+        // Escalate to PRESSURING when we can kill a player (elimination priority)
+        if (b.role != UltronRuntimeRole.DESPERATE && b.role != UltronRuntimeRole.STABILIZING) {
+            if (table.mostVulnerable != null && table.mostVulnerable.life <= 8
+                    && table.ultronBoardValue > 0) {
+                b.role = UltronRuntimeRole.PRESSURING;
+                b.preferredAttackTarget = table.mostVulnerable.player;
+                b.lookForLethal = true;
+                b.avoidTappingOut = false;
+                b.reserveCounterspellMana = false;
+            }
+        }
+
+        // Late game: go all-in — mana reserves are irrelevant when the game must end
+        if (turn >= 12) {
+            b.avoidTappingOut = false;
+            b.reserveCounterspellMana = false;
+            b.reserveRemovalMana = false;
+            b.lookForLethal = true;
+        }
+
+        // Don't hold mana for a counterspell we don't actually have in hand.
+        if (b.reserveCounterspellMana && !table.ultronHasCounterspell) {
+            b.reserveCounterspellMana = false;
+        }
+
         b.preferMain2CreatureDeployment = b.avoidTappingOut || b.reserveCounterspellMana;
-        b.holdCardNames    = Set.of();
-        b.protectCardNames = Set.of();
+        b.holdCardNames    = (holdCardNames != null && !holdCardNames.isEmpty()) ? holdCardNames : Set.of();
+        b.protectCardNames = (protectCardNames != null && !protectCardNames.isEmpty()) ? protectCardNames : Set.of();
         b.reason = buildReason(b, table);
 
         return new UltronTurnIntent(b);
+    }
+
+    /** Derive intent with no plan hints (backward-compatible overload). */
+    public static UltronTurnIntent build(UltronTableThreatSummary table, int turn) {
+        return build(table, turn, Set.of(), Set.of());
     }
 
     private static String buildReason(UltronTurnIntent.Builder b, UltronTableThreatSummary table) {

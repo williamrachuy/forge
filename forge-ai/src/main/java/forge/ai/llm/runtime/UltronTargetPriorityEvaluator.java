@@ -61,7 +61,7 @@ public final class UltronTargetPriorityEvaluator {
         if (target.isToken()) score -= 30;
 
         // Creature targeting Ultron = high priority
-        if (target.isAttacking() && target.getController() != ultron) score += 20;
+        if (target.getGame().getCombat() != null && target.isAttacking() && target.getController() != ultron) score += 20;
 
         // Creature that is restraining the leader (don't remove — helps leader)
         if (table != null && table.leader != null) {

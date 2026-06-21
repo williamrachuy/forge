@@ -7,9 +7,12 @@ import forge.game.player.Player;
 import forge.game.spellability.SpellAbility;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -23,18 +26,22 @@ public final class UltronStrategicPlan {
     private final List<String> defenders;
     private final List<String> holdInteraction;
     private final String rationale;
+    /** Union of anchor planned-action names and anchorBoardCards — watched for disruption. */
+    private final Set<String> anchorCardNames;
 
     private UltronStrategicPlan(List<PlanItem> plannedActions, List<String> attackers, List<String> defenders,
-            List<String> holdInteraction, String rationale) {
+            List<String> holdInteraction, String rationale, Set<String> anchorCardNames) {
         this.plannedActions = plannedActions;
         this.attackers = attackers;
         this.defenders = defenders;
         this.holdInteraction = holdInteraction;
         this.rationale = rationale;
+        this.anchorCardNames = anchorCardNames;
     }
 
     static UltronStrategicPlan empty() {
-        return new UltronStrategicPlan(new ArrayList<>(), new ArrayList<>(), new ArrayList<>(), new ArrayList<>(), null);
+        return new UltronStrategicPlan(new ArrayList<>(), new ArrayList<>(), new ArrayList<>(),
+                new ArrayList<>(), null, Set.of());
     }
 
     static UltronStrategicPlan parse(String responseJson) {
@@ -50,14 +57,24 @@ public final class UltronStrategicPlan {
             if (isBlank(card)) {
                 continue;
             }
-            items.add(new PlanItem(card, stringField(itemJson, "api"), stringField(itemJson, "timing")));
+            items.add(new PlanItem(card, stringField(itemJson, "api"), stringField(itemJson, "timing"),
+                    boolField(itemJson, "anchor")));
         }
 
         List<String> attackers = stringArrayField(responseJson, "attackers");
         List<String> defenders = stringArrayField(responseJson, "defenders");
         List<String> hold = stringArrayField(responseJson, "holdInteraction");
+        List<String> anchorBoard = stringArrayField(responseJson, "anchorBoardCards");
 
-        return new UltronStrategicPlan(items, attackers, defenders, hold, extractRationale(responseJson));
+        Set<String> anchors = new HashSet<>(anchorBoard);
+        for (PlanItem item : items) {
+            if (item.anchor()) {
+                anchors.add(item.card());
+            }
+        }
+
+        return new UltronStrategicPlan(items, attackers, defenders, hold, extractRationale(responseJson),
+                Collections.unmodifiableSet(anchors));
     }
 
     UltronAdvisor.Decision choose(GameState gameState, List<SpellAbility> candidates, Player advisor, AiCardMemory memory) {
@@ -82,6 +99,19 @@ public final class UltronStrategicPlan {
             }
         }
         return UltronAdvisor.Decision.noAdvice();
+    }
+
+    /** Card names the LLM plan wants held for interaction responses. */
+    public List<String> getHoldInteraction() {
+        return Collections.unmodifiableList(holdInteraction);
+    }
+
+    /**
+     * Names of cards the LLM marked as anchors to this plan — either board permanents
+     * or planned spells whose disruption should trigger a re-plan.
+     */
+    public Set<String> getAnchorCardNames() {
+        return anchorCardNames;
     }
 
     boolean isEmpty() {
@@ -196,6 +226,16 @@ public final class UltronStrategicPlan {
         return JsonSupport.unquoteAt(responseJson, matcher.end() - 1);
     }
 
+    private static boolean boolField(String json, String fieldName) {
+        String needle = JsonSupport.quote(fieldName);
+        int fieldIndex = json.indexOf(needle);
+        if (fieldIndex < 0) return false;
+        int colonIndex = json.indexOf(':', fieldIndex + needle.length());
+        if (colonIndex < 0) return false;
+        String rest = json.substring(colonIndex + 1).stripLeading();
+        return rest.startsWith("true");
+    }
+
     private static boolean isBlank(String value) {
         return value == null || value.trim().isEmpty();
     }
@@ -206,7 +246,7 @@ public final class UltronStrategicPlan {
         OTHER
     }
 
-    private record PlanItem(String card, String api, String timing) {
+    private record PlanItem(String card, String api, String timing, boolean anchor) {
         boolean matches(SpellAbility candidate, Player advisor, AiCardMemory memory) {
             if (!card.equalsIgnoreCase(UltronGameStateSerializer.sourceName(candidate, advisor, memory))) {
                 return false;

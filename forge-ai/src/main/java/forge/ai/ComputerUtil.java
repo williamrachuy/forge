@@ -22,6 +22,8 @@ import com.google.common.collect.*;
 import forge.ai.AiCardMemory.MemorySet;
 import forge.ai.ability.ProtectAi;
 import forge.ai.ability.TokenAi;
+import forge.ai.llm.UltronConfig;
+import forge.ai.llm.runtime.UltronRuntimeController;
 import forge.card.CardStateName;
 import forge.card.CardType;
 import forge.card.ColorSet;
@@ -153,6 +155,7 @@ public class ComputerUtil {
                     + " | landsTapped=" + (tappedAfter - stationTappedBefore));
             }
             game.getStack().addAndUnfreeze(sa);
+            invalidateUltronRuntime(ai, game);
             if (sa.getSplicedCards() != null && !sa.getSplicedCards().isEmpty()) {
                 game.getAction().reveal(sa.getSplicedCards(), ai, true, "Computer reveals spliced cards from ");
             }
@@ -294,10 +297,19 @@ public class ComputerUtil {
         final CostPayment pay = new CostPayment(cost, sa);
         if (pay.payComputerCosts(new AiCostDecision(ai, sa, effect))) {
             AbilityUtils.resolve(sa);
+            invalidateUltronRuntime(ai, game);
             return true;
         }
 
         return false;
+    }
+
+    static void invalidateUltronRuntime(final Player ai, final Game game) {
+        if (!UltronConfig.enabledForRuntime() || !UltronConfig.isUltronPlayer(ai)) {
+            return;
+        }
+        UltronRuntimeController.getOrCreate(game, ai, new AiCardMemory())
+                .invalidateIntent();
     }
 
     public static Card getCardPreference(final Player ai, final Card activate, final String pref, final CardCollection typeList) {

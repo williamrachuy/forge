@@ -355,6 +355,9 @@ public class GuiDesktop implements IGuiBase {
     }
 
     private static float initializeScreenScale() {
+        if (GraphicsEnvironment.isHeadless()) {
+            return 1.0f;
+        }
         GraphicsConfiguration gc = GraphicsEnvironment.getLocalGraphicsEnvironment().getDefaultScreenDevice().getDefaultConfiguration();
         AffineTransform at = gc.getDefaultTransform();
         double scaleX = at.getScaleX();

@@ -109,7 +109,8 @@ public class AiController {
     private int lastAttackAggression;
     private boolean useLivingEnd;
     private List<SpellAbility> skipped;
-    private boolean timeoutReached;
+    // Written by main thread, read by AI eval worker thread — must be volatile.
+    private volatile boolean timeoutReached;
 
     public AiController(final Player computerPlayer, final Game game0) {
         player = computerPlayer;
@@ -1612,12 +1613,32 @@ public class AiController {
         }
 
         if (!game.getStack().isEmpty()) {
-            SpellAbility counter = chooseCounterSpell(getPlayableCounters(cards));
-            if (counter != null) return counter;
+            final UltronAdvisor _ua = UltronAdvisor.get();
+            if (_ua.isUltronRuntimeProfile(player) && UltronConfig.enabledForRuntime()) {
+                // Veto approach: let Forge pick the best counterspell, then let Ultron's interaction
+                // policy decide whether the threat actually warrants using it.
+                // This avoids routing through canPlayAndPayFor again (already done by getPlayableCounters).
+                List<SpellAbility> counters = getPlayableCounters(cards);
+                if (!counters.isEmpty()) {
+                    SpellAbility forgeChoice = chooseCounterSpell(counters);
+                    if (forgeChoice != null) {
+                        UltronRuntimeController _runtime = UltronRuntimeController.getOrCreate(game, player, memory);
+                        UltronRuntimeDecision veto = _runtime.choose(
+                                java.util.List.of(forgeChoice), UltronStrategicPlan.GameState.RESPONDING);
+                        if (veto.isPass()) return null;
+                        return veto.hasChoice() ? veto.getSpellAbility() : forgeChoice;
+                    }
+                }
+                SpellAbility counterETB = chooseSpellAbilityToPlayFromList(getPossibleETBCounters(), false);
+                if (counterETB != null) return counterETB;
+            } else {
+                SpellAbility counter = chooseCounterSpell(getPlayableCounters(cards));
+                if (counter != null) return counter;
 
-            SpellAbility counterETB = chooseSpellAbilityToPlayFromList(getPossibleETBCounters(), false);
-            if (counterETB != null)
-                return counterETB;
+                SpellAbility counterETB = chooseSpellAbilityToPlayFromList(getPossibleETBCounters(), false);
+                if (counterETB != null)
+                    return counterETB;
+            }
         }
 
         if (saList.isEmpty()) {
@@ -1681,8 +1702,23 @@ public class AiController {
     }
 
     private SpellAbility chooseSpellAbilityToPlayFromList(final List<SpellAbility> all, boolean skipCounter) {
-        if (all == null || all.isEmpty())
+        // Hoist Ultron controller init so stats are tracked even when candidate list is empty.
+        final UltronAdvisor ultronAdvisor = UltronAdvisor.get();
+        final boolean isUltronRuntime = ultronAdvisor.isUltronRuntimeProfile(player)
+                && UltronConfig.enabledForRuntime();
+        if (isUltronRuntime) {
+            UltronRuntimeController.getOrCreate(game, player, memory);
+        }
+
+        if (all == null || all.isEmpty()) {
+            // Record NO_DECISION for main-phase calls where the candidate list was empty before
+            // scoring — covers loss-game turns where Forge's WillPlay filter blocked everything.
+            if (isUltronRuntime && ultronGameState() == UltronStrategicPlan.GameState.MAIN_PHASE) {
+                UltronRuntimeController.getOrCreate(game, player, memory)
+                        .recordNoDecision(UltronStrategicPlan.GameState.MAIN_PHASE);
+            }
             return null;
+        }
 
         try {
             all.sort(ComputerUtilAbility.saEvaluator); // put best spells first
@@ -1696,10 +1732,6 @@ public class AiController {
         // in case of infinite loop reset below would not be reached
         timeoutReached = false;
 
-        final UltronAdvisor ultronAdvisor = UltronAdvisor.get();
-        // Phase 15: runtime profile check (no API key needed) vs legacy LLM advisor check
-        final boolean isUltronRuntime = ultronAdvisor.isUltronRuntimeProfile(player)
-                && UltronConfig.enabledForRuntime();
         final UltronRuntimeController runtime = isUltronRuntime
                 ? UltronRuntimeController.getOrCreate(game, player, memory)
                 : null;
@@ -1814,6 +1846,14 @@ public class AiController {
                 if (UltronConfig.enabledForStrategicPlanLlm()) {
                     UltronAdvisor.Decision decision = ultronAdvisor.chooseFromStrategicPlan(
                             game, player, ultronCandidates, memory, ultronGameState());
+                    // Feed plan hold-hints into the runtime controller for future decisions
+                    if (runtime != null) {
+                        java.util.List<String> holdNames =
+                                ultronAdvisor.getLastPlanHoldInteraction(game, player);
+                        if (!holdNames.isEmpty()) {
+                            runtime.injectPlanHints(new java.util.HashSet<>(holdNames), java.util.Set.of());
+                        }
+                    }
                     if (decision.hasAdvice()) {
                         return decision.getSpellAbility();
                     }
@@ -1824,6 +1864,11 @@ public class AiController {
                 return ultronCandidates.get(0);
             }
 
+            // Record NO_DECISION for main-phase turns where nothing scored above threshold.
+            // Gated to MAIN_PHASE only — OTHER/RESPOND empty-candidate passes are expected and noisy.
+            if (runtime != null && ultronGameState() == UltronStrategicPlan.GameState.MAIN_PHASE) {
+                runtime.recordNoDecision(UltronStrategicPlan.GameState.MAIN_PHASE);
+            }
             return null;
         });
 
@@ -1832,15 +1877,20 @@ public class AiController {
         try {
             return future.get(game.getAITimeout(), TimeUnit.SECONDS);
         } catch (InterruptedException | ExecutionException | TimeoutException e) {
+            System.err.println("[AI-EVAL] " + e.getClass().getSimpleName() + " in Game AI Eval thread: " + e.getMessage());
             try {
-                e.printStackTrace();
                 t.stop();
             } catch (UnsupportedOperationException ex) {
-                // Android and Java 20 dropped support to stop so sadly thread will keep running
+                // Thread.stop() removed in Java 20+. Signal the eval loop via volatile flag,
+                // cancel the future, then join to wait for the thread to actually exit.
+                // Without join(), zombie threads accumulate and exhaust the heap over long runs.
                 timeoutReached = true;
                 future.cancel(true);
-                // TODO wait a few more seconds to try and exit at a safe point before letting the engine continue
-                // TODO mark some as skipped to increase chance to find something playable next priority
+                try {
+                    t.join(3_000);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
             }
             return null;
         }
@@ -1946,7 +1996,7 @@ public class AiController {
     }
 
     public List<SpellAbility> chooseSaToActivateFromOpeningHand(List<SpellAbility> usableFromOpeningHand) {
-        if (UltronAdvisor.get().isEnabledFor(player)) {
+        if (UltronAdvisor.get().isLlmStrategicPlanEnabledFor(player)) {
             UltronAdvisor.get().analyzeOpeningHand(game, player, memory);
         }
 

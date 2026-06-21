@@ -833,6 +833,7 @@ public class PlayerControllerAi extends PlayerController {
         if (sa.isLandAbility()) {
             if (sa.canPlay()) {
                 sa.resolve();
+                ComputerUtil.invalidateUltronRuntime(player, getGame());
             }
         } else {
             ComputerUtil.handlePlayingSpellAbility(player, sa, getDeferredTargetingPlayerRunnable(sa));
