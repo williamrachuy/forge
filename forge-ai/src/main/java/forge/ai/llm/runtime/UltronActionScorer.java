@@ -2,6 +2,7 @@ package forge.ai.llm.runtime;
 
 import forge.game.ability.ApiType;
 import forge.game.card.Card;
+import forge.game.keyword.Keyword;
 import forge.game.spellability.SpellAbility;
 
 /**
@@ -19,8 +20,8 @@ public final class UltronActionScorer {
     /**
      * Score a candidate SpellAbility for main-phase selection.
      *
-     * @param sa      the candidate
-     * @param ctx     current decision context
+     * @param sa          the candidate
+     * @param ctx         current decision context
      * @param reservation mana reserved for interaction
      * @return scoring result
      */
@@ -41,7 +42,7 @@ public final class UltronActionScorer {
         int cmc = host.getCMC();
         ApiType api = sa.getApi();
 
-        // Base development score from CMC
+        // Base development score from CMC (proxy for card quality; scales with mana cost)
         board += UltronGameStateEvaluator.developmentBonus(host.getName(), cmc);
 
         // Interaction candidates score lower in main phase (should save for stack)
@@ -59,17 +60,47 @@ public final class UltronActionScorer {
         if (api == ApiType.Destroy || api == ApiType.ChangeZone) {
             Card targeted = sa.getTargets() != null ? sa.getTargets().getFirstTargetedCard() : null;
             if (targeted != null) {
-                int targetScore = UltronTargetPriorityEvaluator.removalScore(targeted, table, ctx.player);
+                int rawTargetScore = UltronTargetPriorityEvaluator.removalScore(targeted, table, ctx.player);
+                int targetScore = (int)(rawTargetScore * UltronWeights.get(UltronWeights.REMOVAL_BONUS));
                 leaderThreat += targetScore / 2;
                 board += targetScore / 3;
                 reason.append("removal target score=").append(targetScore);
             }
         }
 
-        // Permanent deployment — add board presence
+        // Permanent deployment — board presence
         if (host.isPermanent()) {
             board += cmc * 2;
-            if (host.isCreature()) board += Math.max(0, host.getNetPower()) * 2;
+
+            if (host.isCreature()) {
+                int power = Math.max(0, host.getNetPower());
+                // Base power bonus
+                board += (int)(power * 2 * UltronWeights.get(UltronWeights.AGGRESSION));
+                // Evasive threats are worth extra — they attack profitably in multiplayer
+                if (isEvasive(host)) {
+                    board += 15;
+                    reason.append(" evasive+15");
+                } else if (host.hasKeyword(Keyword.DEATHTOUCH)) {
+                    board += 8;
+                    reason.append(" deathtouch+8");
+                }
+            } else {
+                // Non-creature permanents: penalise heavy engines in fast roles
+                // (equipment, artifacts, enchantments that provide no immediate pressure)
+                boolean aggressiveRole = isAggressiveRole(intent.role);
+                if (aggressiveRole) {
+                    String rules = host.getOracleText().toLowerCase();
+                    boolean isEngine = rules.contains("whenever") || rules.contains("at the beginning");
+                    if (isEngine) {
+                        board -= 15;
+                        reason.append(" engine-in-fast-role");
+                    } else if (cmc >= 3) {
+                        // Expensive non-creature, non-engine permanents don't advance the board
+                        board -= (cmc - 2) * 3;
+                        reason.append(" slow-noncreature");
+                    }
+                }
+            }
         }
 
         // Avoid tapping out when we should hold interaction
@@ -85,8 +116,16 @@ public final class UltronActionScorer {
         // Bonus for advancing lethal
         if (intent.lookForLethal) {
             if (api == ApiType.DamageAll || api == ApiType.DealDamage || api == ApiType.Draw) {
-                leaderThreat += 15;
+                leaderThreat += (int)(15 * UltronWeights.get(UltronWeights.AGGRESSION));
                 reason.append(" lethal-seeker");
+            }
+        }
+
+        // Card draw is extremely valuable when behind — it's how you claw back
+        if (api == ApiType.Draw) {
+            if (intent.role == UltronRuntimeRole.BEHIND || intent.role == UltronRuntimeRole.DESPERATE) {
+                hand += 20;
+                reason.append(" draw-when-behind");
             }
         }
 
@@ -110,7 +149,11 @@ public final class UltronActionScorer {
             reason.append(" helps-leader-penalty");
         }
 
-        int total = board + hand + life + defense - danger + leaderThreat + combo + balance;
+        // Learned per-card win-rate adjustment (O(1) lookup, updated after each sim game)
+        int learnedAdj = UltronCardStats.scoreAdjustment(host.getName());
+        if (learnedAdj != 0) reason.append(" learned=").append(learnedAdj);
+
+        int total = board + hand + life + defense - danger + leaderThreat + combo + balance + learnedAdj;
 
         UltronDecisionLog.logScore(sa, total, reason.toString());
 
@@ -118,11 +161,26 @@ public final class UltronActionScorer {
                 combo, balance, reason.toString());
     }
 
+    /** Roles where tempo matters more than engine value. */
+    private static boolean isAggressiveRole(UltronRuntimeRole role) {
+        return role == UltronRuntimeRole.PRESSURING
+                || role == UltronRuntimeRole.DESPERATE
+                || role == UltronRuntimeRole.BEHIND;
+    }
+
+    /** True if the card can attack without being blocked by most ground creatures. */
+    private static boolean isEvasive(Card card) {
+        return card.hasKeyword(Keyword.FLYING)
+                || card.hasKeyword(Keyword.SHADOW)
+                || card.hasKeyword(Keyword.HORSEMANSHIP)
+                || card.hasKeyword(Keyword.FEAR)
+                || card.hasKeyword(Keyword.INTIMIDATE)
+                || card.hasKeyword(Keyword.MENACE)
+                || card.getOracleText().toLowerCase().contains("can't be blocked");
+    }
+
     private static boolean isHelpingLeader(SpellAbility sa, UltronTableThreatSummary table) {
         if (table.leader == null) return false;
-        // Rough check: does this ability's effect benefit the leader?
-        // A GainLife for all, or a ramp, or similar — too complex to detect precisely.
-        // Keep simple: beneficial effect with "Each player" defined that helps everyone.
         String defined = sa.getParam("Defined");
         if (defined == null) return false;
         return defined.contains("AllPlayers") || defined.contains("Each");

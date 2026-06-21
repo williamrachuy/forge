@@ -12,12 +12,18 @@ import java.util.Random;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
+import forge.ai.llm.UltronConfig;
+import forge.ai.llm.runtime.UltronAdaptiveLearner;
+import forge.ai.llm.runtime.UltronRuntimeController;
+import forge.ai.llm.runtime.UltronSimStats;
+import forge.ai.llm.runtime.UltronWeights;
 import forge.deck.Deck;
 import forge.game.Game;
 import forge.game.GameEndReason;
 import forge.game.GameRules;
 import forge.game.GameType;
 import forge.game.Match;
+import forge.game.player.Player;
 import forge.game.player.RegisteredPlayer;
 import forge.game.stats.GameStatsCollector;
 import forge.game.stats.SimStatsGameContext;
@@ -60,6 +66,15 @@ public final class SimulateStats {
         System.out.println("Run: " + config.getRunName() + " games=" + config.getGames() + " players=" + playerCount
                 + " format=" + format);
 
+        final boolean adaptiveWeights = config.isAdaptiveWeightsEnabled();
+        final java.nio.file.Path weightsPath = config.getWeightsPath();
+        if (adaptiveWeights) {
+            UltronWeights.load(weightsPath);
+            UltronAdaptiveLearner.loadCardStats(weightsPath);
+            System.out.println("Adaptive weights ENABLED — override file: " + weightsPath);
+            UltronAdaptiveLearner.logCurrentWeights();
+        }
+
         final Random originalRandom = MyRandom.getRandom();
         try (BufferedWriter writer = config.isStatsEnabled()
                 ? Files.newBufferedWriter(gamesJsonl, StandardCharsets.UTF_8, StandardOpenOption.CREATE,
@@ -72,12 +87,17 @@ public final class SimulateStats {
                 rules.setAppliedVariants(EnumSet.of(format));
                 rules.setSimTimeout(config.getTimeoutSeconds());
 
+                if (format == GameType.Battlebox && config.getBattleboxMonarch() != null) {
+                    rules.setBattleboxMonarchEnabled(config.getBattleboxMonarch());
+                }
                 final Match match = new Match(rules, registeredPlayers(decks, aiProfiles, format, playerCount),
                         config.getRunName());
                 final Game game = match.createGame();
-                if (format == GameType.Battlebox && config.getBattleboxMonarch() != null) {
-                    game.setBattleboxMonarchChoice(config.getBattleboxMonarch());
-                }
+                // Give AI decisions a generous budget in headless sim — the 5s default causes
+                // timeout storms on complex boards, wasting seconds per decision and piling up
+                // background threads. 60s lets the eval finish; the game-level timeout (if set)
+                // still bounds total game length.
+                game.AI_TIMEOUT = config.getAiDecisionTimeoutSeconds();
 
                 final SimStatsGameContext context = new SimStatsGameContext(config.getRunName(), i, config.getSeed(),
                         gameSeed, config.getHash(), format, playerCount, deckNames, aiProfiles,
@@ -113,9 +133,26 @@ public final class SimulateStats {
                 final boolean completedNormally = !timeout && error == null;
 
                 if (collector != null) {
-                    writer.write(SimStatsJson.toJson(collector.finish(completedNormally, timeout, error, elapsed)));
+                    final java.util.Map<String, Object> record =
+                            collector.finish(completedNormally, timeout, error, elapsed);
+                    final UltronSimStats ultronStats = findUltronSimStats(game);
+                    if (ultronStats != null) {
+                        record.put("ultron", ultronStats.toMap());
+                        // Snapshot the active weight multipliers so analysis can track evolution
+                        final java.util.Map<String, Double> wts = UltronWeights.all();
+                        if (!wts.isEmpty()) {
+                            record.put("ultronWeights", wts);
+                        }
+                    }
+                    writer.write(SimStatsJson.toJson(record));
                     writer.newLine();
                     writer.flush();
+
+                    if (adaptiveWeights && ultronStats != null && completedNormally) {
+                        final Player ultronPlayer = findUltronPlayer(game);
+                        final boolean ultronWon = ultronPlayer != null && ultronPlayer.hasWon();
+                        UltronAdaptiveLearner.update(ultronStats, ultronWon, weightsPath);
+                    }
                 }
 
                 System.out.printf("Game %d/%d finished in %d ms%s%s%n", i + 1, config.getGames(), elapsed,
@@ -171,6 +208,24 @@ public final class SimulateStats {
             result.add(profiles.get(profiles.size() == 1 ? 0 : i % profiles.size()));
         }
         return result;
+    }
+
+    private static UltronSimStats findUltronSimStats(final Game game) {
+        for (final Player player : game.getRegisteredPlayers()) {
+            if (UltronConfig.isUltronPlayer(player)) {
+                return UltronRuntimeController.getSimStats(game, player);
+            }
+        }
+        return null;
+    }
+
+    private static Player findUltronPlayer(final Game game) {
+        for (final Player player : game.getRegisteredPlayers()) {
+            if (UltronConfig.isUltronPlayer(player)) {
+                return player;
+            }
+        }
+        return null;
     }
 
     private static long seedForGame(final long baseSeed, final int gameIndex) {

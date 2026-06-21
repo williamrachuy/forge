@@ -3,6 +3,14 @@
 This file is a compact orientation map for Codex/agent sessions in `/home/william/github/forge`.
 Use it to avoid broad rediscovery. Verify exact code before changing behavior.
 
+## Project Tracker
+
+**Read `FORGE_TRACKER.md` before starting any work.**
+It is the authoritative multi-project journal: active tickets, work done, rationale, open bugs,
+ideas, and agent/human notes across all development threads on this fork. It tells you what's
+in progress, what's done and why, and what the next steps are. Update it when you complete
+work or discover something non-obvious.
+
 ## Operating Rules
 
 - Treat this checkout as a real local workstation repo. Inspect live state before editing.
@@ -70,8 +78,36 @@ Use it to avoid broad rediscovery. Verify exact code before changing behavior.
 - Static abilities live in `forge-game/src/main/java/forge/game/staticability/`.
 - AI support for APIs lives mostly in `forge-ai/src/main/java/forge/ai/ability/` and maps through `SpellApiToAi`.
 
-## Ultron AI Advisor
+## Ultron AI — Runtime + Adaptive Learning
 
+**The runtime AI is now the primary decision path. The LLM advisor is opt-in.**
+
+### Runtime layer (fast, no API key required)
+- All runtime code lives in `forge-ai/src/main/java/forge/ai/llm/runtime/`.
+- Entry point from `AiController`: `UltronRuntimeController.choose()` — invoked for all Ultron
+  priority decisions. Returns CHOOSE / PASS / FALLBACK / NO_DECISION.
+- Decision budget: 10ms priority, 50ms stack response, 500ms main phase.
+- Key classes:
+  - `UltronRuntimeController` — singleton per (Game,Player), routes to policy or scorer
+  - `UltronThreatModel` / `UltronTableThreatSummary` — full-table threat analysis, rebuilt once/turn
+  - `UltronTurnIntentBuilder` — derives role + intent (avoidTappingOut, reserveMana, lookForLethal)
+  - `UltronActionScorer` — main-phase candidate scoring (CMC baseline + power + evasion + roles)
+  - `UltronCombatPolicy` — multiplayer-aware attacker filtering with Monarch steal bonus
+  - `UltronFastPriorityPolicy` + `UltronInteractionPolicy` — stack/priority responses
+- All Ultron runtime code is isolated behind `UltronConfig.isUltronPlayer(player)` — Default AI is unaffected.
+
+### Adaptive learning system
+- `UltronWeights` — scalar multipliers (AGGRESSION, REMOVAL_BONUS, PRUNE_AGGRESSION). Persisted
+  to `~/.forge/ultron-learning/weights.json`. Nudged after each game via `UltronAdaptiveLearner`.
+- `UltronCardStats` — per-card `(plays, wins)` table. Persisted to
+  `~/.forge/ultron-learning/ultron_card_stats.json`. Cards with ≥8 plays and extreme win rates
+  get a score bonus/penalty in `UltronActionScorer`. Replaces the former hand-coded
+  `UltronCardContextEvaluator` rules. Updated after each completed sim game.
+- `UltronSimStats` — per-game decision log; `cardsPlayed()` feeds card stats.
+- Both files accumulate across runs. Delete both to reset to baseline.
+- Enabled via `sim.adaptiveWeights=true` in the INI config.
+
+### Ultron LLM Advisor (opt-in)
 - `forge-gui/res/ai/Ultron.ai` is intentionally a baseline clone of `Default.ai`; avoid adding arbitrary keys unless `AiProps` is extended because profile loading uses `AiProps.valueOf`.
 - `forge-ai/src/main/java/forge/ai/llm/` contains the Ultron-only DeepSeek advisor path.
 - `AiController.chooseSpellAbilityToPlayFromList` remains the legal/playability gate. For the `Ultron` profile only, it gathers a bounded list of Forge-approved `WillPlay` candidates and asks the advisor to rerank or return `-1` to pass/hold.
@@ -131,19 +167,37 @@ Use this when William asks for many headless Battlebox sims, monarch vs no-monar
 
 Primary files:
 
-- Configs: `configs/simstats/battlebox_monarch_4p.ini` and `configs/simstats/battlebox_no_monarch_4p.ini`.
-- Runner: `tools/simstats/run_simstats.sh`.
-- Reporter: `tools/simstats/report_simstats.py`.
+- Configs: `configs/simstats/battlebox_monarch_4p.ini`, `battlebox_no_monarch_4p.ini`,
+  `battlebox_monarch_4p_ultron.ini` (Ultron seat 0), `battlebox_monarch_4p_ultron_adaptive.ini`.
+- Runner: `tools/simstats/run_simstats.sh <config.ini>` — handles jar discovery + working dir.
+- Ultron analysis: `tools/simstats/analyze_ultron.py` — win rate, combat, monarch, decision
+  quality, top cards by win/loss split, scoreReason tokens, weight evolution.
+- General reporter: `tools/simstats/report_simstats.py`.
 - Comparator: `tools/simstats/compare_reports.py`.
 - Raw output: `simstats/out/<run>/games.jsonl`.
-- Reports: `simstats/out/<run>/report.md` and `simstats/out/<run>/report.json`.
 - Docs: `docs/Development/SimStats.md`.
 
-Typical flow:
+Typical Ultron flow:
 
 ```bash
-mvn -pl forge-gui-desktop -am -DskipTests package
-tools/simstats/run_simstats.sh configs/simstats/battlebox_monarch_4p.ini
+mvn -pl forge-ai,forge-gui-desktop -am -DskipTests package -q
+bash tools/simstats/run_simstats.sh configs/simstats/battlebox_monarch_4p_ultron.ini
+python3 tools/simstats/analyze_ultron.py \
+  simstats/out/battlebox_monarch_4p_ultron/games.jsonl \
+  --weights-file ~/.forge/ultron-learning/weights.json \
+  --top-cards 20
+```
+
+Reset adaptive learning:
+
+```bash
+rm -f ~/.forge/ultron-learning/weights.json ~/.forge/ultron-learning/ultron_card_stats.json
+```
+
+Typical general flow:
+
+```bash
+bash tools/simstats/run_simstats.sh configs/simstats/battlebox_monarch_4p.ini
 tools/simstats/report_simstats.py simstats/out/battlebox_monarch_4p/games.jsonl
 tools/simstats/compare_reports.py \
   simstats/out/battlebox_no_monarch_4p/report.json \
