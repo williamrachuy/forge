@@ -155,6 +155,15 @@ final class SimStatsConfig {
         return Path.of(get("sim.weightsPath", defaultPath));
     }
 
+    /**
+     * Cards excluded from all decks during sim runs only.
+     * Does not affect the deck files on disk or non-sim code paths.
+     * Comma/semicolon separated card names matching exactly (case-sensitive to card data).
+     */
+    List<String> getSimBannedCards() {
+        return splitList(get("sim.bannedCards", ""));
+    }
+
     private String get(final String key, final String fallback) {
         final String value = values.get(key);
         return value == null || value.isBlank() ? fallback : value;

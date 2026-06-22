@@ -65,6 +65,10 @@ public final class SimulateStats {
         System.out.println("Config: " + config.getSource());
         System.out.println("Run: " + config.getRunName() + " games=" + config.getGames() + " players=" + playerCount
                 + " format=" + format);
+        final List<String> bannedCards = config.getSimBannedCards();
+        if (!bannedCards.isEmpty()) {
+            System.out.println("Sim-banned cards (excluded from deck pool this run): " + bannedCards);
+        }
 
         final boolean adaptiveWeights = config.isAdaptiveWeightsEnabled();
         final java.nio.file.Path weightsPath = config.getWeightsPath();
@@ -77,8 +81,8 @@ public final class SimulateStats {
 
         final Random originalRandom = MyRandom.getRandom();
         try (BufferedWriter writer = config.isStatsEnabled()
-                ? Files.newBufferedWriter(gamesJsonl, StandardCharsets.UTF_8, StandardOpenOption.CREATE,
-                        StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)
+                ? Files.newBufferedWriter(gamesJsonl, StandardCharsets.UTF_8,
+                        StandardOpenOption.CREATE, StandardOpenOption.APPEND)
                 : null) {
             for (int i = 0; i < config.getGames(); i++) {
                 final long gameSeed = seedForGame(config.getSeed(), i);
@@ -174,12 +178,17 @@ public final class SimulateStats {
         if (requestedDecks.size() != 1 && requestedDecks.size() != playerCount) {
             throw new IllegalArgumentException("Configured deck count must be 1 or equal game.players");
         }
+        final List<String> bannedCards = config.getSimBannedCards();
         final List<Deck> decks = new ArrayList<>();
         for (int i = 0; i < playerCount; i++) {
             final String requested = requestedDecks.get(requestedDecks.size() == 1 ? 0 : i);
             final Deck deck = SimulateMatch.deckFromCommandLineParameter(requested, format);
             if (deck == null) {
                 throw new IllegalArgumentException("Could not load deck: " + requested);
+            }
+            for (final String banned : bannedCards) {
+                // removeCardName removes one copy; loop to clear all copies
+                while (deck.removeCardName(banned) != null) { /* remove all */ }
             }
             decks.add(deck);
         }

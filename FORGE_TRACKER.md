@@ -398,25 +398,39 @@ Win rate 8/25 = **32%** (vs 28% with manual card rules). Confirmed no regression
 Monarch turns: 8.2 Ultron vs 8.1 Default (parity). Score paradox resolved: WIN=35.5 > LOSS=33.7.
 Adaptive weights after 25 games: aggression=2.559, removalBonus=1.269, pruneAggression=1.011.
 
-### TICKET-108: Sim run — Ultron adaptive [IN_PROGRESS 2026-06-21]
-250-game adaptive run with per-card learning + weight learning.
+### TICKET-108: Sim run — Ultron adaptive 250-game (attempt 1) [DONE/BLOCKED 2026-06-21]
+250-game adaptive run. Ran 92/250 games before OOM crash. See BUG-006 and BUG-007.
 Config: `/tmp/ultron_250game_learning.ini` (outputDir = `simstats/out/ultron_250_adaptive_learning/`).
 Starting weights: aggression=2.559, removalBonus=1.269, pruneAggression=1.011 (from 25-game regression).
-Starting card stats: 223 cards tracked, no penalties/bonuses yet (max plays=6, need MIN_SAMPLE=8).
-Run started 2026-06-21 ~02:58 in `tmux ultron_sim`. Expected completion: ~8-10 hours.
+
+**92-game results (65 completed, 27 timeouts):**
+- Win rate on completed games: **26.7%** (at parity with 25% FFA baseline)
+- Seat equity: Ultron 26.7% = Seat 1 Default 26.7% (normalized after early variance)
+- MIN_SAMPLE hits by game 92: Restoration Angel (50%), Baleful Strix (40%), Fury (67%),
+  Spore Frog (67%), Wishclaw Talisman (44%), Ministrant of Obligation (44%), Scavenging Ooze (50%)
+  all earned bonuses. Pyroclasm (12%), Cultivate (0%), Bushwhack (0%), Sneak Attack (0%),
+  Unburial Rites (12%), Soul-Guide Lantern (0%), Hanged Executioner (0%), Backdraft Hellkite (25%)
+  earned penalties. Coalition Relic (0% WR, 10 plays) — penalty active.
+- Weight evolution: aggression 2.558→2.610, removalBonus 1.266→1.276
+
+**Failure:** Games 70-92 all timed out (600s). Root causes: see BUG-006, BUG-007.
+Learning state persists — card stats and weights carried into TICKET-108b.
+> AGENT NOTE [2026-06-21 03:06]: Run.log co-location fix and headless guard fix applied this
+  session. See BUG-005 and TICKET-S004.
+
+### TICKET-108b: Sim run — Ultron adaptive 250-game (attempt 2, 5×50) [IN_PROGRESS 2026-06-21]
+250-game adaptive run restructured as 5 batches of 50 games. Each batch gets a fresh JVM heap
+(ZGC + 8g). Card stats and weights carry over between batches on disk.
+Config: `configs/simstats/battlebox_monarch_4p_ultron_adaptive.ini`
+outputDir: `simstats/out/battlebox_monarch_4p_ultron_adaptive/`
+Banned cards: `Nadu, Winged Wisdom`, `Scute Swarm`, `Mystic Forge` (see BUG-007)
+Run started 2026-06-21 ~16:28 in `tmux ultron_sim`.
 ```bash
-bash tools/simstats/run_simstats.sh /tmp/ultron_250game_learning.ini
+bash tools/simstats/run_simstats.sh \
+  configs/simstats/battlebox_monarch_4p_ultron_adaptive.ini
 ```
-Progress: 1 game confirmed complete at 03:03. Monitoring hourly until done.
-> AGENT NOTE [2026-06-21 03:06]: Several restart failures before this run succeeded. Root cause:
-  `GuiDesktop.screenScale` static field initializer called `getDefaultScreenDevice()` which throws
-  `HeadlessException` when no display is available (no $DISPLAY in this session). Fixed: added
-  `GraphicsEnvironment.isHeadless()` guard — returns 1.0f in headless mode. See BUG-005.
-  Also: run_simstats.sh now redirects all sim output to `<outputDir>/run.log` (was going to /tmp).
-  Config key `run.outputDir` is now required; script exits with error if missing.
-> AGENT NOTE [2026-06-21 03:06]: Card learning convergence expected at ~100 total games for
-  frequently-played cards (Coalition Relic, Bushwhack, Cultivate, Sneak Attack). MIN_SAMPLE=8
-  threshold means ~3 batches of 25 games per bad card to start firing penalties.
+Progress: 11 games complete at 17:03 check. Pace normal (~3 min/game). No consecutive timeouts.
+Confirmed: "Sim-banned cards" line appears in run.log. No Nadu/Scute/Forge log warnings.
 
 ---
 
@@ -530,6 +544,23 @@ SimulateStats must run from `forge-gui/` — `res/languages/en-US.properties` re
 to CWD for SNAPSHOT builds (`getAssetsDir()` returns "" for SNAPSHOT). Run commands now
 explicitly `cd forge-gui` before launching the jar.
 
+### TICKET-S005: Sim batching — repeat counter + banned cards + ZGC [DONE 2026-06-21]
+**Problem:** Single-JVM 250-game runs hit a GC death spiral: LKI snapshot accumulation → long
+GC pauses → timeout-cascade → OOM at game 92 (see BUG-006). Also: specific cards cause
+near-infinite trigger chains that consume the full 600s timeout (see BUG-007).
+**Changes:**
+- `run.repeat` INI key: script loops this many JVM invocations. Each batch gets a fresh heap.
+  All batches append to the same `games.jsonl` (`SimulateStats` writer now uses `APPEND` mode;
+  script clears the file before batch 1). Batches share the same seed sequence (games 0-49
+  repeat) — diversity comes from evolving adaptive weights between batches.
+- `sim.bannedCards` INI key: comma/semicolon list of cards excluded from the deck pool at
+  load time via `Deck.removeCardName()`. Deck files on disk are unchanged. `SimStatsConfig`
+  exposes `getSimBannedCards()`. `SimulateStats.loadDecks()` applies the filter.
+- JVM flags: `-XX:+UseZGC -XX:MaxGCPauseMillis=200` added to `run_simstats.sh`. ZGC
+  concurrent collection eliminates the GC pause spikes that pushed games over the timeout.
+**Files:** `tools/simstats/run_simstats.sh`, `forge-gui-desktop/.../SimStatsConfig.java`,
+`forge-gui-desktop/.../SimulateStats.java`, `configs/simstats/battlebox_monarch_4p_ultron_adaptive.ini`
+
 ### TICKET-S004: Sim output co-located with run data [DONE 2026-06-21]
 `tools/simstats/run_simstats.sh` now parses `run.outputDir` from the config and redirects
 all sim stdout/stderr to `<outputDir>/run.log`. Previously, sim progress output went to
@@ -574,6 +605,41 @@ Session 2026-06-21 had no display → first exposure to the crash.
 **Fix:** Added `GraphicsEnvironment.isHeadless()` guard in `initializeScreenScale()` — returns
 `1.0f` when headless. The sim doesn't need screen scale; only the desktop UI uses it.
 **File:** `forge-gui-desktop/src/main/java/forge/GuiDesktop.java` (`initializeScreenScale()`)
+
+### BUG-006: GC death spiral — LKI accumulation → timeout cascade → OOM [FIXED 2026-06-21]
+**Symptom:** In the 250-game run (attempt 1), all games from #70 onward timed out at 600s.
+OOM crash at game 92: `java.lang.OutOfMemoryError: Java heap space` in `Game.setGameOver()`.
+**Root cause:** Each game — especially long/complex ones — creates LKI (Last Known Information)
+snapshots, game event histories, and game state graphs that accumulate in the heap across the
+JVM's lifetime. With default G1GC under -Xmx8g, GC pause times grow as the heap fills.
+By game 70, GC pauses consumed most of the 600s game budget even when actual game logic was
+fast. This caused every game to timeout, which worsened memory pressure (timed-out games don't
+clean up as completely as normally-completed ones), accelerating the spiral.
+**Evidence:** Timeout games had avg 19 turns vs 41 for normal games. The game state was young
+(few turns played), but wall-clock time was gone to GC.
+**Fix:** (1) `run.repeat` batching: each batch of 50 games gets a fresh JVM (fresh heap).
+(2) ZGC (`-XX:+UseZGC -XX:MaxGCPauseMillis=200`): concurrent collector keeps pause times
+bounded regardless of heap fullness. Both applied in TICKET-S005.
+**Files:** `run_simstats.sh`, `battlebox_monarch_4p_ultron_adaptive.ini`
+
+### BUG-007: Near-infinite trigger chains — Nadu, Scute Swarm, Mystic Forge [MITIGATED 2026-06-21]
+**Symptom:** Isolated early timeouts (games 3, 31, 46) plus the sustained cluster (games 70+)
+contained games with very few turns (2-10) that still consumed the full 600s budget.
+**Root cause candidates:**
+- `Nadu, Winged Wisdom`: banned in Legacy for creating near-infinite land trigger chains.
+  With this deck's 30+ fetch/dual lands and many creatures, Nadu chains are catastrophic in
+  Forge's trigger resolver which has no loop guard for this pattern.
+- `Scute Swarm`: exponential token creation each time a land enters. The land station in
+  Battlebox makes early land drops frequent → Scute doubles repeatedly → millions of tokens.
+- `Mystic Forge`: AI evaluates "can I cast the top card?" every priority pass. With the right
+  top card, this becomes O(n) per priority in a priority-dense game state.
+**Mitigation:** All three cards added to `sim.bannedCards` in the adaptive config. They remain
+in the `BattleBox.dck` file — normal play is unaffected. Sim-only exclusion via `Deck.removeCardName()`
+at load time. See TICKET-S005.
+**Note:** BUG-006 (GC) likely amplified these isolated hangs into the sustained cluster. Both
+fixes together (batching + ZGC + banned cards) should prevent recurrence.
+**Long-term fix:** Add a trigger-loop guard in Forge's game engine for Nadu-style unbounded
+chains. Out of scope for this session.
 
 ### BUG-003: Targeting path unverified [OPEN]
 UltronTargetPriorityEvaluator exists but may not be wired into PlayerControllerAi target
@@ -728,10 +794,12 @@ If you're a fresh agent session reading this:
    Do not reset or clean files without reading them first.
 2. **Current active branch is `ultron-fast-ai-remodel`.** It's ahead of master with the
    full Ultron runtime AI implementation.
-3. **The sim may be running.** As of 2026-06-21 a 250-game adaptive run is active in
-   `tmux ultron_sim`. Output in `simstats/out/ultron_250_adaptive_learning/`. Check
-   `wc -l simstats/out/ultron_250_adaptive_learning/games.jsonl` before touching anything.
+3. **The sim may be running.** As of 2026-06-21 a 5×50-game adaptive run is active in
+   `tmux ultron_sim`. Output in `simstats/out/battlebox_monarch_4p_ultron_adaptive/`. Check
+   `wc -l simstats/out/battlebox_monarch_4p_ultron_adaptive/games.jsonl` before touching anything.
    Also check `tmux has-session -t ultron_sim` — if alive, leave it alone.
+   The run uses `run.repeat=5` (5 JVM-restart batches of 50 games each) with ZGC and a
+   `sim.bannedCards` list (Nadu, Scute Swarm, Mystic Forge) — see TICKET-S005.
 4. **Learning files** at `~/.forge/ultron-learning/` are mutable sim output — do not commit.
    `weights.json` = scalar weight multipliers. `ultron_card_stats.json` = per-card play/win
    counts. Delete both to reset adaptive learning to baseline.
@@ -741,3 +809,7 @@ If you're a fresh agent session reading this:
 6. **When you complete work on a ticket, update its status here and add an AGENT NOTE with date.**
 7. **UltronCardContextEvaluator.java** is a dead orphan file (untracked, all references removed).
    Delete it: `rm forge-ai/src/main/java/forge/ai/llm/runtime/UltronCardContextEvaluator.java`
+8. **Sim banned cards** (excluded from deck pool for headless sim only, not for normal play):
+   `Nadu, Winged Wisdom`, `Scute Swarm`, `Mystic Forge`. Configured in
+   `configs/simstats/battlebox_monarch_4p_ultron_adaptive.ini` under `sim.bannedCards`.
+   See BUG-007 for rationale.

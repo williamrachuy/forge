@@ -207,15 +207,20 @@ tools/simstats/compare_reports.py \
 
 Useful INI knobs:
 
-- `run.games`: number of games.
+- `run.games`: games per batch.
+- `run.repeat`: number of JVM-restart batches (default 1). Script loops this many times, each with a fresh heap. All batches append to the same `games.jsonl`. Use 5×50 instead of 1×250 to prevent GC death spiral (heap accumulates LKI snapshots across games).
 - `run.seed`: deterministic seed; paired comparisons should use the same seed.
-- `run.timeoutSeconds=0`: no timeout; let every game run to completion.
+- `run.timeoutSeconds`: per-game wall-clock limit (600s default). Set 0 for no timeout.
 - `run.outputDir`: keep each run in its own directory.
 - `game.players`: `2`, `3`, or `4`.
 - `game.deck=BattleBox.dck`: William's Battlebox deck lives under `.forge/decks/battlebox`.
 - `game.battleboxMonarch=true|false`: explicit monarch flag for profiling.
 - `stats.enabled=true`: required for `games.jsonl`.
 - `stats.turnSnapshots=true`: needed for turn-slice questions like lands by turn 40.
+- `sim.bannedCards`: comma/semicolon list of card names excluded from the deck pool **for sim runs only**. Does not modify `.dck` files on disk; normal play is unaffected. Use this for cards that cause near-infinite trigger chains or exponential game-state growth in headless sim. Current banned list (in `battlebox_monarch_4p_ultron_adaptive.ini`): `Nadu, Winged Wisdom` (infinite land-trigger loops), `Scute Swarm` (exponential token creation), `Mystic Forge` (AI loops casting from top every priority pass).
+
+**GC / JVM flags (in `run_simstats.sh`):**
+`-Xmx8g -XX:+UseZGC -XX:MaxGCPauseMillis=200` — ZGC's concurrent collection prevents the pause spikes that push complex games over the per-game timeout. Previously used G1GC (default), which caused a death spiral: accumulated LKI snapshots → long GC pauses → games hit 600s timeout → even more accumulation → OOM.
 
 Deep game traces:
 
@@ -261,6 +266,12 @@ Reporting expectations:
 - Deck format and metadata lookup: `rg -n "DeckSection|DeckSerializer|DeckFileHeader|metadata|getMetadata" forge-core/src/main/java forge-gui/src/main/java`.
 - Lobby startup path: `rg -n "startGame\\(|startMatch\\(|RegisteredPlayer|GameRules" forge-gui/src/main/java forge-game/src/main/java`.
 - Battlebox seam: `rg -n "Battlebox|BattleboxConfig|SharedPlayerZone|LandStation|PlayerLibrarySize|SeedBasicLands" forge-core forge-game forge-gui forge-gui-desktop`.
+
+## Sim Banned Cards
+
+Cards in `sim.bannedCards` are filtered from every player's deck at load time in `SimulateStats.loadDecks()` via `Deck.removeCardName()`. They remain in `.dck` files — normal play is unaffected. Adding a new card to the banned list requires only editing the INI; no Java rebuild needed.
+
+Current banned list is in `configs/simstats/battlebox_monarch_4p_ultron_adaptive.ini`. Before adding a card, verify the ban is justified by the card causing actual timeouts in `run.log` (not just slow games).
 
 ## Common Pitfalls
 
