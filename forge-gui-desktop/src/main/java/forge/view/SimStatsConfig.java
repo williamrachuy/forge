@@ -76,6 +76,18 @@ final class SimStatsConfig {
         return getLong("run.seed", System.currentTimeMillis());
     }
 
+    /**
+     * Global game-index offset added to the local per-run game index before seed derivation.
+     * Used by the parallel sim runner: each shard runs games 0..N-1 locally but must occupy a
+     * disjoint slice of the global seed space, so shard k gets seedOffset = k * gamesPerShard.
+     * Because the seed-mixing function (SimulateStats.seedForGame) is a bijective 64-bit mix,
+     * disjoint (baseSeed, index) inputs are guaranteed to produce disjoint game seeds — not
+     * just "very likely."
+     */
+    long getSeedOffset() {
+        return getLong("run.seedOffset", 0L);
+    }
+
     int getTimeoutSeconds() {
         // 600s default: kills runaway games (token engines, infinite recursion) while
         // leaving normal 4-player Battlebox games (~100-400s) unaffected.
@@ -122,6 +134,16 @@ final class SimStatsConfig {
     Boolean getBattleboxMonarch() {
         final String value = get("game.battleboxMonarch", null);
         return value == null ? null : Boolean.parseBoolean(value);
+    }
+
+    /**
+     * When true, the aiProfiles-to-seat assignment rotates each game: game N assigns seat s the
+     * profile that was originally at index (s + N) mod playerCount. A non-Default profile then
+     * cycles through every seat across a run instead of being pinned to seat 0, which otherwise
+     * confounds win-rate measurement with seat-position variance (see FORGE_TRACKER TICKET-107).
+     */
+    boolean isRotateSeatsEnabled() {
+        return getBoolean("game.rotateSeats", false);
     }
 
     boolean isStatsEnabled() {

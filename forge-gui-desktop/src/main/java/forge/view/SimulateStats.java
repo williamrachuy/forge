@@ -80,7 +80,12 @@ public final class SimulateStats {
         }
 
         final long baseSeed = config.getSeed();
-        System.out.println("Base seed: " + baseSeed);
+        final long seedOffset = config.getSeedOffset();
+        final boolean rotateSeats = config.isRotateSeatsEnabled();
+        System.out.println("Base seed: " + baseSeed + (seedOffset != 0 ? " (seedOffset=" + seedOffset + ")" : ""));
+        if (rotateSeats) {
+            System.out.println("Seat rotation ENABLED — aiProfiles rotate by (gameIndex mod playerCount) each game");
+        }
 
         final Random originalRandom = MyRandom.getRandom();
         try (BufferedWriter writer = config.isStatsEnabled()
@@ -88,7 +93,8 @@ public final class SimulateStats {
                         StandardOpenOption.CREATE, StandardOpenOption.APPEND)
                 : null) {
             for (int i = 0; i < config.getGames(); i++) {
-                final long gameSeed = seedForGame(baseSeed, i);
+                final long globalIndex = seedOffset + i;
+                final long gameSeed = seedForGame(baseSeed, globalIndex);
                 MyRandom.setRandom(new Random(gameSeed));
                 final GameRules rules = new GameRules(format);
                 rules.setAppliedVariants(EnumSet.of(format));
@@ -97,7 +103,10 @@ public final class SimulateStats {
                 if (format == GameType.Battlebox && config.getBattleboxMonarch() != null) {
                     rules.setBattleboxMonarchEnabled(config.getBattleboxMonarch());
                 }
-                final Match match = new Match(rules, registeredPlayers(decks, aiProfiles, format, playerCount),
+                final List<String> gameAiProfiles = rotateSeats
+                        ? rotateProfiles(aiProfiles, globalIndex)
+                        : aiProfiles;
+                final Match match = new Match(rules, registeredPlayers(decks, gameAiProfiles, format, playerCount),
                         config.getRunName());
                 final Game game = match.createGame();
                 // Give AI decisions a generous budget in headless sim — the 5s default causes
@@ -106,8 +115,8 @@ public final class SimulateStats {
                 // still bounds total game length.
                 game.AI_TIMEOUT = config.getAiDecisionTimeoutSeconds();
 
-                final SimStatsGameContext context = new SimStatsGameContext(config.getRunName(), i, baseSeed,
-                        gameSeed, config.getHash(), format, playerCount, deckNames, aiProfiles,
+                final SimStatsGameContext context = new SimStatsGameContext(config.getRunName(), (int) globalIndex,
+                        baseSeed, gameSeed, config.getHash(), format, playerCount, deckNames, gameAiProfiles,
                         config.getBattleboxMonarch());
                 final GameStatsCollector collector = config.isStatsEnabled()
                         ? new GameStatsCollector(game, context, config.isTurnSnapshotsEnabled())
@@ -240,13 +249,32 @@ public final class SimulateStats {
         return null;
     }
 
-    private static long seedForGame(final long baseSeed, final int gameIndex) {
+    private static long seedForGame(final long baseSeed, final long gameIndex) {
         long value = baseSeed + 0x9e3779b97f4a7c15L * (gameIndex + 1L);
         value ^= value >>> 30;
         value *= 0xbf58476d1ce4e5b9L;
         value ^= value >>> 27;
         value *= 0x94d049bb133111ebL;
         return value ^ (value >>> 31);
+    }
+
+    /**
+     * Rotates the seat-to-profile assignment for game {@code globalIndex}: seat s gets the
+     * profile originally at index (s + globalIndex) mod count. Over a run of N >= playerCount
+     * games this cycles every profile through every seat, eliminating seat-position confound
+     * (see FORGE_TRACKER TICKET-107: seat 1 vs seat 3 win rates differed by 27pp at fixed seats).
+     */
+    private static List<String> rotateProfiles(final List<String> profiles, final long globalIndex) {
+        final int count = profiles.size();
+        if (count == 0) {
+            return profiles;
+        }
+        final int shift = (int) Math.floorMod(globalIndex, (long) count);
+        final List<String> rotated = new ArrayList<>(count);
+        for (int seat = 0; seat < count; seat++) {
+            rotated.add(profiles.get((seat + shift) % count));
+        }
+        return rotated;
     }
 
     private static Path configPath(final String[] args) {
