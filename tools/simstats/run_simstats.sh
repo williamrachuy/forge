@@ -34,7 +34,14 @@ if [[ ! -d "$FORGE_GUI" ]]; then
 fi
 
 # Resolve outputDir from config so the run log lands next to games.jsonl.
-output_dir="$(grep -E '^\s*outputDir\s*=' "$config" | head -1 | sed 's/.*=\s*//')"
+# Use `tail -1` (last match wins), matching SimStatsConfig.java's parser semantics — a key
+# that appears twice (e.g. run_parallel.sh appends an override [run] section after the base
+# config's [run] section) must resolve to the LAST occurrence in both places, or the shell
+# script and the Java process disagree about where output actually lands.
+# `|| true` on the grep guards against `set -o pipefail` aborting the script when the key is
+# simply absent (grep exits 1 on no-match, which is not an error here — see `getBoolean`/
+# `getInt` fallback semantics in SimStatsConfig).
+output_dir="$( { grep -E '^\s*outputDir\s*=' "$config" || true; } | tail -1 | sed 's/.*=\s*//')"
 if [[ -z "$output_dir" ]]; then
   echo "Config missing outputDir — cannot determine log location." >&2
   exit 1
@@ -42,7 +49,7 @@ fi
 mkdir -p "$output_dir"
 
 # Resolve repeat count from config (default 1 = single run, no batching).
-repeat="$(grep -E '^\s*repeat\s*=' "$config" | head -1 | sed 's/.*=\s*//')"
+repeat="$( { grep -E '^\s*repeat\s*=' "$config" || true; } | tail -1 | sed 's/.*=\s*//')"
 repeat="${repeat:-1}"
 
 run_log="$output_dir/run.log"
