@@ -35,6 +35,108 @@ providing strategic hints.
 
 ---
 
+## EPIC: ULTRON-V3 / PHASE-0
+**Status:** IN_PROGRESS
+**Branch:** `ultron-v3` (created off `ultron-fast-ai-remodel`)
+**Goal:** Measurement infrastructure that can't lie, per plan §7 Phase 0. Everything here is
+scaffolding for statistically valid win-rate claims — no AI decision logic changes.
+Plan doc: `/home/william/agents/brainstorm/plans/ultron-v3-search-and-learning.md`.
+
+### TICKET-V3-001: Parallel sim runner [DONE 2026-07-03]
+File: `tools/simstats/run_parallel.sh` (new).
+Launches W worker JVMs concurrently, each running a disjoint shard of games via the new
+`run.seedOffset` config key (see TICKET-V3-002), each writing to its own `shard_N/` directory
+(config, `run.log`/`wrapper.log`, `games.jsonl`), then merges all shards' `games.jsonl` into
+`<outputDir>/games.jsonl`.
+**Measured machine limits (2026-07-03):** `nproc`=4 cores. `free -g`: total=15g, available=7g
+(the "available" column, not "free" — accounts for reclaimable buff/cache). Budget formula:
+`min(50% of total, available) - 1g safety margin` = min(7, 7) - 1 = **6g** total committed
+heap ceiling. Computed defaults: workers=3, xmx=2g (3×2=6g). For the smoke test we overrode
+to a more conservative **workers=2, xmx=3g** (6g total) given this box also runs other
+Tailscale/hub agent services — see policy 19 (usage-aware acceptance). Both W and Xmx are
+CLI-overridable (`--workers`, `--xmx`); computed defaults are printed every run under a
+"RAM safety check" banner for auditing.
+Workers run under `nice -n 10`. Refuses to launch any config with `sim.adaptiveWeights=true`
+(shared mutable state in `~/.forge/ultron-learning/` would race across workers — Ultron v3
+does not use that mechanism).
+**Bugs found and fixed in existing infra while wiring this up (not new v3 code, but blocking):**
+1. `run_simstats.sh` parsed `outputDir`/`repeat` via `grep | head -1` — picks the FIRST match
+   in the file. `SimStatsConfig.java`'s parser is last-value-wins (a `TreeMap` keyed by
+   `section.key`, overwritten on each read). Since `run_parallel.sh` appends an override
+   `[run]` section after the base config's `[run]` section (so the same key appears twice),
+   the shell script and the Java process disagreed about where `run.log`/`games.jsonl` should
+   land. Fixed: `head -1` → `tail -1` in both places, matching Java's override semantics.
+2. Same greps used bare `grep | ...` inside `set -o pipefail`. When a key (here: `repeat`,
+   which our new v3 configs don't set) has zero matches, `grep` exits 1, `pipefail` propagates
+   that through the pipeline, and `set -e` kills the script — silently, no error message,
+   because grep with no match writes nothing to stderr. Fixed: wrapped the grep in
+   `{ grep ... || true; }` so an absent optional key just resolves to empty (existing
+   fallback logic already handles empty `repeat`; `outputDir` still errors explicitly via
+   its own emptiness check afterward).
+`run_simstats.sh` also gained `FORGE_SIM_XMX` (overrides `-Xmx8g`, default unchanged) and
+`FORGE_SKIP_GROOM` (skip the Cube Cobra deck-groom step — avoids every shard worker hitting
+the network / clobbering the deck file concurrently).
+
+### TICKET-V3-002: Seat rotation [DONE 2026-07-03]
+Files: `SimStatsConfig.java`, `SimulateStats.java`.
+`game.rotateSeats=true`: each game N, seat s is assigned the profile originally at index
+`(s + N) mod playerCount` — a non-Default profile cycles through every seat across a run
+instead of being pinned to seat 0 (see TICKET-107: seat 1 vs seat 3 win rates differed by
+27pp at fixed seats in the 37-game run — that confound poisons every seat-0-pinned
+measurement made to date).
+The per-game **rotated** profile list is passed into `SimStatsGameContext` and recorded as
+`run.aiProfiles` in that game's JSONL record — so seat-vs-profile is fully recoverable
+per-game without adding a new field. Verified: `players[]` records `name`/`seat`/`won`;
+`run.aiProfiles[seat]` gives the profile name for that seat in that specific game.
+`tools/simstats/analyze_ultron.py` was NOT updated to be rotation-aware this session (it
+still assumes `--ultron-seat` fixed at 0) — out of scope for P0.2 strictly, but flagged here
+since a future session running seat-rotated data through it will get wrong numbers until
+it's updated to use `run.aiProfiles` like `gate.py` does. **Deviation/TODO.**
+Also added `run.seedOffset` (long, default 0): games are seeded from
+`(seedOffset + local game index)`, not local index alone. The seed-mixing function
+(`SimulateStats.seedForGame`) is a bijective 64-bit hash (SplitMix64-style finalizer), so
+disjoint index ranges are *guaranteed* disjoint seeds — this is what TICKET-V3-001's
+parallel runner uses for non-overlapping shard seed ranges.
+
+### TICKET-V3-003: Control lane configs [DONE 2026-07-03]
+Files: `configs/simstats/v3_control_default_4p.ini` (4x Default), `v3_ultron_vs_default_4p.ini`
+(Ultron + 3x Default). Both: `battleboxMonarch=true`, `rotateSeats=true`, identical seed
+(910123) and `bannedCards` list (Nadu Winged Wisdom, Scute Swarm, Mystic Forge),
+`timeoutSeconds=1200`, `stats.enabled=true`, `sim.adaptiveWeights=false`. Same seed across
+both configs gives a true paired same-seed comparison per plan §7 P0.3 / §8.
+
+### TICKET-V3-004: gate.py statistical gate script [DONE 2026-07-03]
+File: `tools/simstats/gate.py` (new, python3 stdlib only).
+Reads candidate `games.jsonl` (+ optional control `games.jsonl`), computes win rate by AI
+**profile** (looked up per-game via `run.aiProfiles`, so seat rotation is transparent) rather
+than by fixed seat. `--seat N` supports legacy files predating `run.aiProfiles`.
+Reports: games counted, timeouts (excluded from the win-rate denominator, reported
+separately, never silently dropped), wins, win rate, Wilson 95% CI, exact one-sided
+binomial p-value vs the 0.25 four-player null. With `--control`: per-seat win rates in the
+control file, a pooled control baseline, and a two-proportion z-test candidate-vs-control
+(documented caveat in `control_baseline()`: the 4 per-game seat outcomes are mutually
+exclusive/dependent, not independent Bernoulli trials — pooling them for n is a pragmatic
+engineering shortcut, not a peer-reviewed estimator; flagged in the script's own docstring).
+`--min-games 150` (default) prints "SAMPLE TOO SMALL — NOISE" below that count per the
+plan's §8 power analysis, and withholds PASS/FAIL rather than printing a misleading verdict.
+Smoke-tested against the existing 25-game `battlebox_monarch_4p_ultron/games.jsonl` (both
+with and without `run.aiProfiles`, exercising the `--seat` fallback) — see verification
+results below.
+
+### TICKET-V3-005: Pre-existing test failures found during verification [OPEN, NOT CAUSED BY V3 WORK]
+8/42 `forge.ai.llm.runtime.Ultron*` unit tests fail on this branch: `UltronCombatPolicyTest`,
+`UltronMainPhasePolicyTest`, `UltronRuntimeCacheInvalidationTest`,
+`UltronRuntimeControllerSelectionTest` (×2), `UltronRuntimeHookInvalidationTest`,
+`UltronRuntimeLandHookInvalidationTest`, `UltronRuntimeStackHookInvalidationTest` — all
+"Ahead-state ..." assertions (pruning/mana-preservation expectations flipped). Verified via
+a throwaway worktree at the `checkpoint: WIP from adaptive-learning sessions (pre-v3)` commit
+(before any Phase 0 work) — same 8 failures present there. This is pre-existing breakage in
+the WIP that predates this session; out of scope per this session's instructions (no changes
+to `forge-ai/.../forge/ai/` decision logic beyond seed/rotation config). Needs a follow-up
+session before Phase 1 starts — Phase 1's gate requires all unit tests green.
+
+---
+
 ## EPIC: ULTRON-AI / CORE-RUNTIME
 Fast non-LLM runtime AI layer. All under `forge-ai/src/main/java/forge/ai/llm/runtime/`.
 
