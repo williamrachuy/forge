@@ -60,7 +60,9 @@ echo "Output: $output_dir" | tee -a "$run_log"
 # -Xmx8g: 4-player Battlebox runs accumulate LKI snapshots. 8g gives headroom per batch.
 # -XX:+UseZGC: concurrent GC prevents the pause spikes that push complex games over the
 #   per-game timeout. ZGC targets <200ms pauses regardless of heap size.
-JVM_FLAGS="-Xmx8g -XX:+UseZGC -XX:MaxGCPauseMillis=200"
+# FORGE_SIM_XMX overrides the default 8g — used by run_parallel.sh so each worker JVM gets a
+# heap sized to fit the machine's RAM budget when running W workers concurrently (see P0.1).
+JVM_FLAGS="-Xmx${FORGE_SIM_XMX:-8g} -XX:+UseZGC -XX:MaxGCPauseMillis=200"
 
 GROOM_SCRIPT="${HOME}/games/forge-testing/groom-battlebox.sh"
 
@@ -71,7 +73,11 @@ for batch_num in $(seq 1 "$repeat"); do
 
   # Refresh the BattleBox deck from Cube Cobra before each batch so mid-run
   # edits to the cube take effect without restarting the sim.
-  if [[ -x "$GROOM_SCRIPT" ]]; then
+  # FORGE_SKIP_GROOM=1 skips this — set by run_parallel.sh so concurrent shard workers
+  # don't all hit the Cube Cobra network fetch / clobber the deck file at once.
+  if [[ -n "${FORGE_SKIP_GROOM:-}" ]]; then
+    : # skip grooming; caller already groomed once (or explicitly opted out)
+  elif [[ -x "$GROOM_SCRIPT" ]]; then
     echo "--- Grooming BattleBox deck..." | tee -a "$run_log"
     if bash "$GROOM_SCRIPT" >> "$run_log" 2>&1; then
       echo "--- Groom complete." | tee -a "$run_log"
