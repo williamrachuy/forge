@@ -79,13 +79,16 @@ public final class SimulateStats {
             UltronAdaptiveLearner.logCurrentWeights();
         }
 
+        final long baseSeed = config.getSeed();
+        System.out.println("Base seed: " + baseSeed);
+
         final Random originalRandom = MyRandom.getRandom();
         try (BufferedWriter writer = config.isStatsEnabled()
                 ? Files.newBufferedWriter(gamesJsonl, StandardCharsets.UTF_8,
                         StandardOpenOption.CREATE, StandardOpenOption.APPEND)
                 : null) {
             for (int i = 0; i < config.getGames(); i++) {
-                final long gameSeed = seedForGame(config.getSeed(), i);
+                final long gameSeed = seedForGame(baseSeed, i);
                 MyRandom.setRandom(new Random(gameSeed));
                 final GameRules rules = new GameRules(format);
                 rules.setAppliedVariants(EnumSet.of(format));
@@ -103,7 +106,7 @@ public final class SimulateStats {
                 // still bounds total game length.
                 game.AI_TIMEOUT = config.getAiDecisionTimeoutSeconds();
 
-                final SimStatsGameContext context = new SimStatsGameContext(config.getRunName(), i, config.getSeed(),
+                final SimStatsGameContext context = new SimStatsGameContext(config.getRunName(), i, baseSeed,
                         gameSeed, config.getHash(), format, playerCount, deckNames, aiProfiles,
                         config.getBattleboxMonarch());
                 final GameStatsCollector collector = config.isStatsEnabled()

@@ -6,12 +6,14 @@ if [[ $# -lt 1 ]]; then
   exit 2
 fi
 
-config="$1"
 jar="${FORGE_JAR:-}"
 
 # Locate the repo root (the directory containing this script's tools/ parent)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# Resolve config to absolute path before any cd changes working directory
+config="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
 
 if [[ -z "$jar" ]]; then
   jar="$(find "$REPO_ROOT/forge-gui-desktop/target" -maxdepth 1 -type f \( -name '*jar-with-dependencies.jar' -o -name '*-shaded.jar' -o -name 'forge*.jar' \) | sort | tail -n 1 || true)"
@@ -60,10 +62,26 @@ echo "Output: $output_dir" | tee -a "$run_log"
 #   per-game timeout. ZGC targets <200ms pauses regardless of heap size.
 JVM_FLAGS="-Xmx8g -XX:+UseZGC -XX:MaxGCPauseMillis=200"
 
+GROOM_SCRIPT="${HOME}/games/forge-testing/groom-battlebox.sh"
+
 overall_exit=0
 for batch_num in $(seq 1 "$repeat"); do
   echo "" | tee -a "$run_log"
   echo "=== BATCH $batch_num/$repeat started at $(date) ===" | tee -a "$run_log"
+
+  # Refresh the BattleBox deck from Cube Cobra before each batch so mid-run
+  # edits to the cube take effect without restarting the sim.
+  if [[ -x "$GROOM_SCRIPT" ]]; then
+    echo "--- Grooming BattleBox deck..." | tee -a "$run_log"
+    if bash "$GROOM_SCRIPT" >> "$run_log" 2>&1; then
+      echo "--- Groom complete." | tee -a "$run_log"
+    else
+      echo "--- Groom FAILED (non-fatal, continuing with existing deck)." | tee -a "$run_log"
+    fi
+  else
+    echo "--- Groom script not found at $GROOM_SCRIPT — skipping." | tee -a "$run_log"
+  fi
+
   cd "$FORGE_GUI"
   java $JVM_FLAGS -jar "$jar" simstats -config "$config" >> "$run_log" 2>&1
   batch_exit=$?

@@ -42,7 +42,14 @@ public final class UltronCardStats {
         }
     }
 
+    private static final Path DEFAULT_PATH =
+            Path.of(System.getProperty("user.home"), ".forge", "ultron-learning", "ultron_card_stats.json");
+
     private static UltronCardStats INSTANCE = new UltronCardStats(new LinkedHashMap<>());
+
+    static {
+        load(DEFAULT_PATH);
+    }
 
     private final Map<String, CardRecord> records;
 
@@ -67,17 +74,34 @@ public final class UltronCardStats {
     /**
      * Score adjustment for a card based on historical win rate.
      * Returns 0 if insufficient data (fewer than MIN_SAMPLE plays).
+     * Penalty scales with plays (capped at 2× MIN_SAMPLE) so cards with
+     * many confirmed losses get penalized harder than freshly-sampled ones.
      */
     public static int scoreAdjustment(String cardName) {
         if (cardName == null) return 0;
         CardRecord rec = INSTANCE.records.get(cardName);
         if (rec == null || rec.plays() < MIN_SAMPLE) return 0;
         double wr = rec.winRate();
-        if (wr < 0.15) return PENALTY_STRONG;
-        if (wr < 0.25) return PENALTY_WEAK;
-        if (wr > 0.55) return BONUS_STRONG;
-        if (wr > 0.40) return BONUS_WEAK;
+        // Scale factor: 1.0 at MIN_SAMPLE, up to 2.0 at 2×MIN_SAMPLE, capped there
+        double scale = Math.min(rec.plays() / (double) MIN_SAMPLE, 2.0);
+        if (wr < 0.15) return (int)(PENALTY_STRONG * scale);  // -20 to -40
+        if (wr < 0.25) return (int)(PENALTY_WEAK   * scale);  // -10 to -20
+        if (wr > 0.55) return (int)(BONUS_STRONG   * scale);  // +15 to +30
+        if (wr > 0.40) return (int)(BONUS_WEAK     * scale);  // +8 to +16
         return 0;
+    }
+
+    /**
+     * True if this card has been conclusively identified as a losing play:
+     * at least MIN_SAMPLE plays and zero wins.
+     * Hard-vetoed cards are skipped entirely in main-phase scoring rather than
+     * just penalized — prevents them from being chosen even when everything
+     * else scores negative.
+     */
+    public static boolean isHardVetoed(String cardName) {
+        if (cardName == null) return false;
+        CardRecord rec = INSTANCE.records.get(cardName);
+        return rec != null && rec.wins() == 0 && rec.plays() >= MIN_SAMPLE;
     }
 
     // ---------------------------------------------------------------------------

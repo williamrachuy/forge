@@ -121,8 +121,29 @@ public final class UltronTurnIntentBuilder {
             }
         }
 
-        // Escalate to PRESSURING when we can kill a player (elimination priority)
-        if (b.role != UltronRuntimeRole.DESPERATE && b.role != UltronRuntimeRole.STABILIZING) {
+        // STABILIZING: re-evaluate once we have board data.
+        // If we're flagged as in-danger (life pressure) but our board value matches or
+        // exceeds opponents', we're not truly losing — escalate to AHEAD so we don't
+        // stall on conservative play.
+        if (b.role == UltronRuntimeRole.STABILIZING && turn >= 5) {
+            int avgOppBV = table.opponents.isEmpty() ? 0
+                    : table.opponents.stream().mapToInt(p -> p.boardValue).sum() / table.opponents.size();
+            if (table.ultronBoardValue >= avgOppBV) {
+                b.role = UltronRuntimeRole.AHEAD;
+                b.interactionThreshold    = 55;
+                b.counterspellThreshold   = 70;
+                b.removalThreshold        = 65;
+                b.reserveCounterspellMana = table.ultronHasCounterspell;
+                b.reserveRemovalMana      = false;
+                b.avoidTappingOut         = false;
+                b.holdBoardWipe           = false;
+            }
+        }
+
+        // Escalate to PRESSURING when we can kill a player (elimination priority).
+        // Also applies to STABILIZING: if a player is nearly dead, finish the job
+        // even while under life pressure — eliminating an opponent relieves threat.
+        if (b.role != UltronRuntimeRole.DESPERATE) {
             if (table.mostVulnerable != null && table.mostVulnerable.life <= 8
                     && table.ultronBoardValue > 0) {
                 b.role = UltronRuntimeRole.PRESSURING;

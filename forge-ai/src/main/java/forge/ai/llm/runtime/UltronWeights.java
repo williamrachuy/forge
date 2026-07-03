@@ -57,7 +57,14 @@ public final class UltronWeights {
     // Singleton
     // -----------------------------------------------------------------------
 
+    private static final Path DEFAULT_PATH =
+            Path.of(System.getProperty("user.home"), ".forge", "ultron-learning", "weights.json");
+
     private static UltronWeights INSTANCE = new UltronWeights(new LinkedHashMap<>());
+
+    static {
+        load(DEFAULT_PATH);
+    }
 
     private final Map<String, Double> multipliers;
 

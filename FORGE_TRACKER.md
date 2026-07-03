@@ -17,6 +17,13 @@ Update the relevant ticket when work is done, or add a discussion note when you 
 # PROJECT: ULTRON-AI
 **Status:** ACTIVE
 **Branch:** `ultron-fast-ai-remodel`
+
+> AGENT NOTE [2026-07-03]: Ultron v3 reapproach plan written (search + learned value
+> function + belief state, full PlayerController ownership). Plan doc:
+> `/home/william/agents/brainstorm/plans/ultron-v3-search-and-learning.md`.
+> Latest adaptive run verdict: 41/250 games, 14.7% win rate on completed — per-card
+> learning approach declared a dead end. v2 runtime components slated for staged
+> retirement per plan §9 once v3 gates pass.
 **Goal:** Make Ultron competitive in 4-player free-for-all Battlebox Monarch without requiring an
 LLM API key. LLM infrastructure (DeepSeek advisor, strategic plans) is preserved but demoted to
 an optional enhancement layer. The runtime AI must make good decisions in < 10ms per priority pass.

@@ -170,6 +170,8 @@ public final class UltronRuntimeController {
 
         for (SpellAbility sa : pruned) {
             if (ctx.isOverDeadline()) break;
+            // Skip cards the learner has conclusively identified as losing plays
+            if (UltronCardStats.isHardVetoed(sa.getHostCard().getName())) continue;
             UltronScore score = UltronActionScorer.score(sa, ctx, reservation);
             if (bestScore == null || score.value > bestScore.value) {
                 bestScore = score;
@@ -180,6 +182,10 @@ public final class UltronRuntimeController {
         // Always capture best score seen — even for PASS/FALLBACK this tells us what was rejected.
         if (bestScore != null) lastChoiceScore = bestScore.value;
 
+        // Threshold 0: only choose when the scorer is confident the play is correct.
+        // Negatively-scored candidates (e.g. engines in fast roles, penalized cards) fall
+        // back to Default AI rather than being forced — the scorer's negative signal is
+        // real and should be respected.
         if (bestSa != null && bestScore != null && bestScore.value > 0) {
             String reason = "main-phase score=" + bestScore.value + " " + bestScore.reason;
             UltronDecisionLog.log(player, UltronDecisionLog.MAIN,
