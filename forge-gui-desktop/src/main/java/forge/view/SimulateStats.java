@@ -17,6 +17,8 @@ import forge.ai.llm.runtime.UltronAdaptiveLearner;
 import forge.ai.llm.runtime.UltronRuntimeController;
 import forge.ai.llm.runtime.UltronSimStats;
 import forge.ai.llm.runtime.UltronWeights;
+import forge.ai.ultron.UltronDecisionTelemetry;
+import forge.ai.ultron.UltronPlayerController;
 import forge.deck.Deck;
 import forge.game.Game;
 import forge.game.GameEndReason;
@@ -160,6 +162,16 @@ public final class SimulateStats {
                             record.put("ultronWeights", wts);
                         }
                     }
+                    // P1.2 (TICKET-V3-102): UltronPlayerController's own decision-coverage telemetry.
+                    // Independent of the legacy UltronSimStats above -- that pipeline only populates
+                    // when something still routes through UltronRuntimeController, which Phase 1's
+                    // UltronPlayerController deliberately never does. This is the coverage signal
+                    // that actually reflects the new controller: total decisions and the split
+                    // between Ultron-authored and inherited-default answers.
+                    final UltronDecisionTelemetry ultronCoverage = findUltronCoverage(game);
+                    if (ultronCoverage != null) {
+                        record.put("ultronCoverage", ultronCoverage.toMap());
+                    }
                     writer.write(SimStatsJson.toJson(record));
                     writer.newLine();
                     writer.flush();
@@ -235,6 +247,16 @@ public final class SimulateStats {
         for (final Player player : game.getRegisteredPlayers()) {
             if (UltronConfig.isUltronPlayer(player)) {
                 return UltronRuntimeController.getSimStats(game, player);
+            }
+        }
+        return null;
+    }
+
+    private static UltronDecisionTelemetry findUltronCoverage(final Game game) {
+        for (final Player player : game.getRegisteredPlayers()) {
+            if (UltronConfig.isUltronPlayer(player)
+                    && player.getController() instanceof UltronPlayerController upc) {
+                return upc.getTelemetry();
             }
         }
         return null;
