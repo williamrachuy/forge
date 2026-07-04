@@ -1738,6 +1738,68 @@ rm -f ~/.forge/ultron-learning/ultron_card_stats.json
 
 ---
 
+### TICKET-V3-207: OOM crash — uncached AiDeckStatistics.fromPlayer() in nested simulation [BLOCKING, OPEN 2026-07-04]
+**Discovered by:** the deferred Phase 1/2 real-game smoke test (`v3_ultron_smoke`, 6 games,
+2 workers) — the exact scenario unit tests on synthetic states cannot exercise. This is why
+that smoke test was mandatory before any statistical gate run; it caught what 230/230 unit
+tests missed.
+
+**Symptom:** both shards crashed with `java.lang.OutOfMemoryError: Java heap space` at
+`-Xmx3g`. Shard 0 crashed almost immediately, inside recursive spell-sequence planning.
+Shard 1's Game 1 first **timed out at the full 1200s budget**, then a separate decision threw
+a `NullPointerException` (correctly caught and logged as a fallback to inherited behavior —
+the existing safety net in `UltronPlayerController` worked as designed), and shortly after
+that the JVM OOM'd. **Both crashed JVMs then sat stuck at ~99% CPU for over 6 hours**
+(discovered and killed by the orchestrator, not self-terminating) — the OOM did not cleanly
+exit the process, silently wasting significant wall-clock time before anyone noticed.
+
+**Root cause:** `GameStateEvaluator.getScoreForGameStateImpl()` calls
+`AiDeckStatistics.fromPlayer(aiPlayer)` (`forge-ai/src/main/java/forge/ai/AiDeckStatistics.java`)
+as part of `evalManaBase()`. `fromPlayer()`/`fromDeck()` re-parses **every card in the deck
+from scratch** via `Card.fromPaperCard()` → `CardFactory.getCard()` → full card-script/trigger
+parsing — expensive, and with zero caching/memoization. This was tolerable in Forge's
+original 2-player simulation design (one evaluation call per real decision point). Ultron's
+new nested-simulation architecture defeats that assumption: main-phase planning
+(`SpellAbilityPicker.formulatePlanWithPhase`, P2.4) recursively sequences multiple simulated
+spells, and each step's evaluation (P2.3) triggers `simulateUpcomingCombatThisTurn`
+(P2.5's combat-in-eval hook), which itself calls `declareAttackers` →
+`chooseAttackPlanViaSimulation` → `scoreAttackCandidate` → `GameStateEvaluator.getScoreForGameState`
+→ `AiDeckStatistics.fromPlayer()` **again**. Each layer of simulation nesting multiplies calls
+to this uncached, expensive full-deck-reparse — combinatorial allocation blowup, heap
+exhaustion.
+
+**Why unit tests missed it:** the P2.1–P2.6 unit tests construct small, targeted synthetic
+game states to prove specific behavioral claims (attack profitable, block declined, etc.) —
+they exercise the decision *logic* but never run enough real turns/decisions in sequence for
+the uncached-reparse cost to compound. Real games, with real decks, across real turns, are
+what exposed this.
+
+**Status: BLOCKING.** No further sim runs (smoke, gate, or otherwise) should be launched
+against the current `UltronPlayerController` decision surface until this is fixed — every
+real game currently at risk of either timing out at 1200s or OOM-crashing its JVM, which
+would corrupt any statistical gate run's data (timeouts are already excluded from win-rate
+by `gate.py`, but a crashed shard loses all its games, not just the one in flight, and
+silently wastes compute exactly as it did here for 6+ hours unattended).
+
+**Recommended fix (next session):** cache `AiDeckStatistics` per (player, decision-point) —
+the player's deck composition does not change mid-simulation-tree for a single real decision,
+so it should be computed at most once per real (non-copied) top-level call and reused across
+every recursive simulated sub-call within that decision, rather than recomputed by identity
+of the copied `Player` object each time. Needs care: `GameCopier` copies produce new `Player`
+objects per candidate, so a naive per-Player-identity cache would still miss — the cache key
+needs to be something stable across copies (e.g. keyed by original player + game turn number,
+or computed once and threaded through the call chain as a parameter rather than recomputed
+inside `GameStateEvaluator`). Also worth auditing whether `AiDeckStatistics` is called anywhere
+else inside a hot simulation path with the same issue.
+
+**Also needed:** a hard sub-process watchdog for any future orchestrator-launched sim run —
+this session's smoke test had no wall-clock backstop independent of the harness's own
+per-command monitoring, and a hung/OOM'd JVM burned CPU for 6+ hours before a human-initiated
+check caught it. `run_parallel.sh`/its caller should verify liveness (e.g. periodic `wc -l` on
+the output file actually advancing) and kill+report on a stall, not just wait indefinitely.
+
+---
+
 # AGENT ORIENTATION
 
 If you're a fresh agent session reading this:
