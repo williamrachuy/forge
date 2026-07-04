@@ -297,7 +297,7 @@ reference `UltronWeights`/`UltronCardStats` in a future change, the guard would 
 ---
 
 ## EPIC: ULTRON-V3 / PHASE-2
-**Status:** IN PROGRESS (P2.1 done; P2.2 data point collected; P2.3 done; P2.4 done; P2.5-P2.6 not started)
+**Status:** IN PROGRESS (P2.1 done; P2.2 data point collected; P2.3 done; P2.4 done; P2.5 done -- attacker-only, see below; P2.6 not started)
 **Branch:** `ultron-v3`
 **Goal:** Simulation-based big-3 decisions per plan §7 Phase 2. Plan doc:
 `/home/william/agents/brainstorm/plans/ultron-v3-search-and-learning.md` §6, §7 P2.1-P2.6.
@@ -541,6 +541,136 @@ attacker subsets (singleton/all-in/threat-model-suggested per plan §7 P2.5), si
 stack-resolution caveat found in this session (single weakest-opponent response modeling) will
 likely also matter for combat-trick simulation during block evaluation — worth checking early in
 that session rather than rediscovering it.
+
+### TICKET-V3-204: Combat via simulation (P2.5) [DONE — attacker declaration only; blocker declaration deferred, 2026-07-04]
+Files: `forge-ai/src/main/java/forge/ai/ultron/UltronPlayerController.java`,
+`forge-ai/src/main/java/forge/ai/ultron/UltronDecisionTelemetry.java`,
+`forge-gui-desktop/src/test/java/forge/ai/ultron/UltronCombatSimulationTest.java` (new).
+
+**Scope actually completed:** `declareAttackers` now runs a pruned-candidate simulation search
+instead of delegating to `AiAttackController` via `super`. `declareBlockers` was **not** attempted
+this session — the attacker-side work plus the multiplayer-combat investigation (task-mandated,
+see below) filled the session; block enumeration is left for the next Phase 2 session, described
+under Recommendations.
+
+**Candidate generation (pruned, not full 2^N enumeration, per plan §7 P2.5's own "singleton ±
+all-in ± threat-model-suggested sets" wording):**
+1. Attack with nothing — always evaluated as the honest baseline.
+2. All legal attackers vs. `AiAttackController.choosePreferredDefenderPlayer` — reuses the default
+   AI's own opponent-targeting heuristic rather than reinventing it; P2.5 is about *which
+   creatures* attack, not rebuilding opponent selection.
+3. "Survivors only" vs. the same preferred defender — a rough evasion/toughness heuristic
+   (attacker unblockable by anything the defender controls, or tougher than every creature that
+   could actually block it). Deliberately not full combat math (no tricks/first-strike/multi-block
+   awareness) — a pruning heuristic, not an outcome predictor; the simulation itself scores the
+   real outcome.
+4. All legal attackers vs. the single lowest-life alive opponent, when that differs from the
+   preferred defender — a cheap "threat-model-suggested" variant.
+
+Duplicate candidates (identical attacker-set + defender) are deduplicated before scoring, so this
+session's fixtures typically evaluated 2-4 unique candidates, comfortably inside the plan's "3-6
+candidates" target.
+
+**Simulation mechanism:** for each candidate, `GameCopier` copies the game at the current (still
+building, empty) `Combat` state — `GameCopier` already copies a non-null `PhaseHandler` combat
+object via `Combat`'s `(Combat, IEntityMap)` copy constructor (confirmed by reading `GameCopier.
+makeCopy`, line ~170) — the candidate's attacker/defender pairs are added directly to the *copy's*
+`Combat` object (no controller re-entry: this is a hard requirement, see the recursion note below),
+and the state is scored via `GameStateEvaluator.getScoreForGameState`, which *already* internally
+drives the copy through `DECLARE_BLOCKERS` and `COMBAT_DAMAGE` via its pre-existing
+`simulateUpcomingCombatThisTurn` before scoring (no new combat-advancement code was needed — this
+reuses TICKET-V3-202/203-verified machinery directly). The highest-`Score.value` candidate's
+assignments are applied to the real `combat` argument via `combat.addAttacker(...)`.
+
+**Task-mandated check: does the P2.4-discovered single-weakest-opponent landmine leak into combat?
+Answer: partially, and the part that matters most does NOT have the bug.** Read
+`PhaseHandler.declareAttackersTurnBasedAction`/`declareBlockersTurnBasedAction` closely (not just
+grepped) before writing any code, per this session's instructions. Finding:
+- **Attack/block declaration itself is NOT affected.** `declareBlockersTurnBasedAction` loops
+  `p = getNextPlayerAfter(p)` over every attacked defending player and calls
+  `whoDeclaresBlockers.getController().declareBlockers(p, combat)` — i.e. **each defending player's
+  own controller** decides its own blocks. In a 4-player Battlebox game where three different
+  opponents each have creatures, attacking each of them correctly consults *that* opponent's board,
+  not a single "weakest opponent" stand-in. This is the multiplayer combat correctness the plan's
+  §6 risk section worried about, and it turns out to already be correct — `PhaseHandler`'s
+  turn-based-action loop was never opponent-count-limited, only `GameSimulator`/`GameStateEvaluator`'s
+  own helper functions were.
+- **The landmine does still exist one layer down**, in the exact place TICKET-V3-203 already found
+  it: `GameStateEvaluator.simulateUpcomingCombatThisTurn` drives its copy via
+  `GameSimulator.resolveStack(gameCopy, aiPlayer.getWeakestOpponent())` — so any *triggered-ability
+  choice* needed while combat-phase triggers resolve (not the block/attack declarations themselves,
+  which are unaffected as above) is answered using only the weakest opponent's controller context.
+  Same shape of gap as TICKET-V3-203's main-phase finding, correctly **not fixed here** for the
+  same reason: modeling "which of N opponents would actually respond to a mid-combat trigger" is
+  the belief-state/determinization work Phase 4 already plans (`UltronBeliefState`/§7 P4.2), not a
+  small contained fix. Documented as a known input to that future work. Practical impact: no
+  crashes/illegal states (verified by this ticket's tests); a possible narrow optimism gap in a
+  candidate's score only when a mid-combat trigger specifically needed a non-weakest opponent's
+  choice — most combat-relevant decisions are the block/attack declarations themselves, which this
+  session confirmed are unaffected.
+- **Regression-style proof, not just code-reading:** `testMultiplayerCombatConsidersNonWeakestOpponentsBlocker`
+  builds a 4-player state where seat 1 is the lowest-life ("weakest") opponent with *no* creatures,
+  and seat 2 (higher life, not weakest) holds the only blocker in the game. Attacking seat 2 scores
+  strictly *lower* than an otherwise-identical control state where seat 2 has no blocker — proving
+  seat 2's own board was actually consulted during simulated combat resolution, not silently
+  dropped in favor of the weakest opponent's (empty) board.
+
+**Recursion-safety note (found while designing the simulation mechanism, worth flagging for the
+next session before attempting P2.5's blocker side):** in a self-play/mirror game where a defending
+opponent is *also* running an `UltronPlayerController`, `GameCopier`'s `clonePlayer` reuses the same
+`LobbyPlayerAi` (and thus the same AI profile) for the copy, so the copy's phase machinery would
+construct a **fresh `UltronPlayerController`** for that opponent. Because `declareBlockers` was
+*not* given simulation logic this session (still inherited/`super`), no recursion is possible today
+— but the moment a future session makes `declareBlockers` simulation-based, an opponent's simulated
+block decision inside *this* ticket's attacker-side simulation would itself trigger a full nested
+`GameCopier`+`GameStateEvaluator` search. Bounded (one level, small candidate counts, ~100
+copies/sec per TICKET-V3-201), not exponential, but worth budgeting for explicitly rather than
+discovering via a slow test.
+
+**Verified — real 4-player Battlebox states.** New `UltronCombatSimulationTest` (4 tests):
+  - `testDeclareAttackersReturnsLegalSubsetWithoutCrashing` — sanity + coverage: simulation-based
+    declaration doesn't crash/fall back on ordinary 4p board state; every declared attacker is
+    actually controlled by the attacking player; `candidateCount`/`chosenScore` telemetry detail is
+    recorded (see telemetry change below).
+  - `testProfitableUnblockableAttackIsChosen` — a risk-free unblockable flyer (2-player-shaped
+    fixture, to keep the profitable/bad-attack proof isolated from the multiplayer life-averaging
+    interaction that the dedicated multiplayer test below exercises on purpose) is attacked with.
+  - `testBadTradeAttackIsDeclined` — a 2/2 attacking into a guaranteed-available 6/4 blocker on
+    every possible opponent (no benefit either way) is declined regardless of which opponent the
+    preferred-defender/weakest-opponent heuristics would have picked.
+  - `testMultiplayerCombatConsidersNonWeakestOpponentsBlocker` — the multiplayer-correctness proof
+    described above.
+
+Full `forge.ai.simulation.*` + `forge.ai.ultron.*` aggregate `TestSuite` — **222/222 pass** (218
+prior baseline + 4 new, 0 failures, 0 regressions). Baseline `forge.ai.llm.runtime.Ultron*` suite —
+**34/42 pass**, identical 8 pre-existing "Ahead-state ..." failures as TICKET-V3-005/201/202/203,
+unchanged. `mvn -pl forge-ai,forge-gui-desktop -am clean package -DskipTests -q` succeeds. Coverage:
+**2/114 methods now Ultron-answered** (`chooseSpellAbilityToPlay` from P2.4, `declareAttackers` from
+this ticket), up from 1/114. Control run (`ultron_v3_control` tmux session, `v3_control_default_4p`
+shard_0/shard_1 PIDs 643469/643495, unchanged from session start) confirmed still running throughout
+this session at 422/500 combined games by session end — left completely undisturbed; only `mvn test`
+(unit tests) ran, no `run_parallel.sh`/`run_simstats.sh`/batch run was launched.
+
+**Telemetry change:** `UltronDecisionTelemetry` gained `recordDetail(String, Map<String,Object>)` /
+`getLastDetail(String)` — a cheap "most-recent detail snapshot per method" (not a history), used
+here to carry `declareAttackers`' `candidateCount`/`chosenScore` per the task's "if cheaply
+available" instruction. Surfaced in `toMap()`'s per-method JSONL output under `lastDetail` when
+present. Purely additive; does not change `record()`'s existing counters/coverage-ratio semantics.
+
+**Not attempted this session (honest scope note):** `declareBlockers` (P2.5's stretch goal) remains
+100% inherited — the attacker-side implementation plus the mandated multiplayer-combat
+investigation filled the session. Recommended next-session approach for blocker declaration: reuse
+the same copy-and-score mechanism (it composes directly — `Combat.addBlocker` instead of
+`addAttacker`, scored the same way), enumerate a similarly small candidate set (no blocks /
+block-the-biggest-threats / chump-if-lethal-is-on-the-table / clean-trade blocks) for the *actual*
+attackers being faced, and budget explicitly for the recursion-safety note above before shipping it
+(a quick copies/sec sanity check with a mirrored-Ultron opponent would be cheap insurance).
+
+**Recommended next steps for Phase 2:** either (a) attempt `declareBlockers` in a dedicated session
+using the plan above, or (b) treat P2.5 as functionally complete (attacker declaration is the
+higher-value half of combat, and default-AI blocking is a reasonable inherited fallback for now)
+and move to **P2.6 stack response**, which will need to grapple with the same weakest-opponent
+resolution gap directly rather than being able to route around it as P2.4/P2.5 did.
 
 ---
 

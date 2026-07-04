@@ -2,9 +2,12 @@ package forge.ai.ultron;
 
 import com.google.common.collect.*;
 import forge.LobbyPlayer;
+import forge.ai.AiAttackController;
 import forge.ai.PlayerControllerAi;
 import forge.ai.llm.runtime.UltronTableThreatSummary;
 import forge.ai.llm.runtime.UltronThreatModel;
+import forge.ai.simulation.GameCopier;
+import forge.ai.simulation.GameStateEvaluator;
 import forge.card.ColorSet;
 import forge.card.ICardFace;
 import forge.card.mana.ManaCost;
@@ -15,6 +18,7 @@ import forge.game.*;
 import forge.game.ability.effects.RollDiceEffect;
 import forge.game.card.*;
 import forge.game.combat.Combat;
+import forge.game.combat.CombatUtil;
 import forge.game.cost.*;
 import forge.game.keyword.KeywordInterface;
 import forge.game.mana.Mana;
@@ -74,11 +78,16 @@ import java.util.function.Predicate;
  * improve against (plan §11 secondary success criterion: coverage rising from ~20% today under
  * v2's measurement to a Phase-3-and-beyond target of 80%+).
  *
- * <p>Phase 2 P2.4 (TICKET-V3-203) is the first method to move off that 0% baseline:
- * {@link #chooseSpellAbilityToPlay()} now answers via the simulation-based
+ * <p>Phase 2 P2.4 (TICKET-V3-203) was the first method to move off that 0% baseline:
+ * {@link #chooseSpellAbilityToPlay()} answers via the simulation-based
  * {@code SpellAbilityPicker}/{@code Plan} machinery instead of delegating straight to
- * {@code super}, recorded as {@code answeredBy=ultron} in {@link UltronDecisionTelemetry}. All
- * other 113 methods remain pure inherited plumbing pending future phases/sessions.
+ * {@code super}. P2.5 (TICKET-V3-204) adds {@link #declareAttackers}: a pruned-candidate
+ * simulation search over attacker subsets, scored with {@code GameStateEvaluator} after
+ * simulating through {@code COMBAT_DAMAGE}. Both are recorded as {@code answeredBy=ultron} in
+ * {@link UltronDecisionTelemetry} — coverage is now 2/114. {@code declareBlockers} remains pure
+ * inherited plumbing pending a future session (see FORGE_TRACKER TICKET-V3-204's "not attempted
+ * this session" note); all other 112 methods remain pure inherited plumbing pending future
+ * phases/sessions.
  */
 public class UltronPlayerController extends PlayerControllerAi {
 
@@ -514,11 +523,248 @@ public class UltronPlayerController extends PlayerControllerAi {
         return __result;
     }
 
+    /**
+     * P2.5 (FORGE_TRACKER TICKET-V3-204) -- attack declaration now runs a pruned-candidate
+     * simulation search instead of delegating to {@code AiAttackController} via {@code super}.
+     *
+     * <p><b>Candidate generation (per plan §7 P2.5 "singleton ± all-in ± threat-model-suggested
+     * sets", kept to a handful of subsets, not full 2^N enumeration):</b>
+     * <ol>
+     *   <li>Attack with nothing (always a candidate -- the honest baseline).</li>
+     *   <li>All legal attackers vs. {@link AiAttackController#choosePreferredDefenderPlayer}
+     *       (the default AI's own opponent-selection heuristic, reused rather than
+     *       reinvented -- P2.5 is about *which creatures* attack, not rebuilding opponent
+     *       targeting).</li>
+     *   <li>"Survivors only" vs. the same preferred defender: attackers that are either
+     *       unblockable in practice by anything the defender controls, or whose toughness beats
+     *       every creature that could actually block them (a rough evasion/toughness heuristic,
+     *       per the plan's own wording -- not full combat-trick-aware combat math).</li>
+     *   <li>All legal attackers vs. the single weakest-life alive opponent, if that differs from
+     *       the preferred defender (a cheap "threat-model-suggested" variant: redirect the whole
+     *       attack at whoever is lowest on life instead of the default AI's board-position-based
+     *       pick).</li>
+     * </ol>
+     * Duplicate candidates (identical attacker-set + defender) are only scored once.
+     *
+     * <p><b>Simulation mechanism:</b> for each candidate, copies the game with {@link GameCopier}
+     * at the current (still-empty) {@code combat} state -- {@code GameCopier} already copies a
+     * non-null {@code PhaseHandler} combat via its {@code Combat(Combat, IEntityMap)} copy
+     * constructor -- adds the candidate's attacker/defender pairs directly to the copy's
+     * {@code Combat} object (no controller re-entry), then scores with
+     * {@link GameStateEvaluator#getScoreForGameState}, which internally drives the copy through
+     * {@code DECLARE_BLOCKERS} (each defending player's *own*, correctly-multiplayer-safe copied
+     * controller decides its own blocks -- see the class-level P2.5 note below) and
+     * {@code COMBAT_DAMAGE} before scoring the resulting state. The candidate with the highest
+     * {@code Score.value} wins; its assignments are applied to the real {@code combat} argument.
+     *
+     * <p><b>Multiplayer combat finding (task-mandated check for the P2.4-discovered
+     * single-weakest-opponent landmine leaking into combat):</b> {@code declareAttackersTurnBasedAction}
+     * / {@code declareBlockersTurnBasedAction} in {@code PhaseHandler} already call each
+     * attacking/defending player's *own* controller (see the {@code do { p = getNextPlayerAfter(p);
+     * ... whoDeclaresBlockers.getController().declareBlockers(p, combat); }} loop) -- so which
+     * creatures attack whom, and who blocks with what, is NOT affected by the single-weakest-opponent
+     * assumption; that part of multiplayer combat already works correctly today. The landmine DOES
+     * still apply one layer down: {@code GameStateEvaluator.simulateUpcomingCombatThisTurn} advances
+     * the copy via {@code GameSimulator.resolveStack(gameCopy, aiPlayer.getWeakestOpponent())}, so
+     * any *triggered-ability choice* that needs to be made by a player while combat-phase triggers
+     * resolve (not the block/attack declarations themselves) is answered using only the weakest
+     * opponent's controller context -- the identical shape of gap TICKET-V3-203 found and correctly
+     * deferred for main-phase spell simulation. Not fixed here for the same reason: properly modeling
+     * "which of N opponents would actually respond" is the belief-state/determinization work Phase 4
+     * already plans (not a small, contained fix), so this is left as a known, documented input to that
+     * future work rather than patched. Practical impact: no crashes/illegal states (verified by this
+     * ticket's tests below); a possible optimism gap in a candidate's score whenever a triggered
+     * ability mid-combat needed a non-weakest opponent's decision -- narrow in practice since most
+     * combat-relevant decisions are the block/attack declarations themselves, which are unaffected.
+     *
+     * <p>Fails safe like {@link #chooseSpellAbilityToPlay()}: any {@code RuntimeException} anywhere
+     * in the simulation path falls back to {@code super.declareAttackers} and is recorded as
+     * {@code answeredBy=inherited}.
+     */
     @Override
     public void declareAttackers(Player attacker, Combat combat) {
         final long __start = System.nanoTime();
-        super.declareAttackers(attacker, combat);
-        telemetry.record("declareAttackers", System.nanoTime() - __start);
+        boolean __answeredByUltron;
+        int __candidateCount = 0;
+        Integer __chosenScore = null;
+        try {
+            AttackPlan __chosen = chooseAttackPlanViaSimulation(attacker, combat);
+            __candidateCount = __chosen.candidatesEvaluated;
+            __chosenScore = __chosen.chosenScore;
+            for (Pair<Card, GameEntity> assignment : __chosen.assignments) {
+                combat.addAttacker(assignment.getLeft(), assignment.getRight());
+            }
+            __answeredByUltron = true;
+        } catch (RuntimeException __ex) {
+            Logger.warn("[Ultron] simulation-based declareAttackers() threw " + __ex
+                    + "; falling back to inherited behavior (see FORGE_TRACKER TICKET-V3-204)");
+            super.declareAttackers(attacker, combat);
+            __answeredByUltron = false;
+        }
+        Map<String, Object> __detail = new LinkedHashMap<>();
+        __detail.put("candidateCount", __candidateCount);
+        __detail.put("chosenScore", __chosenScore);
+        telemetry.recordDetail("declareAttackers", __detail);
+        telemetry.record("declareAttackers", __answeredByUltron, System.nanoTime() - __start);
+    }
+
+    /** Simple holder: the winning candidate's attacker/defender assignments plus search stats. */
+    private static final class AttackPlan {
+        final List<Pair<Card, GameEntity>> assignments;
+        final int candidatesEvaluated;
+        final int chosenScore;
+
+        AttackPlan(List<Pair<Card, GameEntity>> assignments, int candidatesEvaluated, int chosenScore) {
+            this.assignments = assignments;
+            this.candidatesEvaluated = candidatesEvaluated;
+            this.chosenScore = chosenScore;
+        }
+    }
+
+    /**
+     * Builds the pruned candidate set described in {@link #declareAttackers}'s javadoc, simulates
+     * each one through combat damage, and returns the highest-scoring plan. Never returns null --
+     * "attack with nothing" is always at least one of the evaluated candidates, so a legitimate
+     * "don't attack" decision is a normal winning result, not a fallback.
+     */
+    private AttackPlan chooseAttackPlanViaSimulation(Player attacker, Combat combat) {
+        Game game = attacker.getGame();
+        List<Player> aliveOpponents = Lists.newArrayList();
+        for (Player p : attacker.getOpponents()) {
+            if (!p.hasLost()) {
+                aliveOpponents.add(p);
+            }
+        }
+
+        List<List<Pair<Card, GameEntity>>> candidates = Lists.newArrayList();
+        Set<String> seenSignatures = Sets.newHashSet();
+
+        // Candidate 1: attack with nothing -- always evaluated as the honest baseline.
+        addCandidateIfNew(candidates, seenSignatures, Collections.emptyList());
+
+        if (!aliveOpponents.isEmpty()) {
+            Player preferredDefender = AiAttackController.choosePreferredDefenderPlayer(attacker);
+
+            List<Card> allInVsPreferred = legalAttackersAgainst(attacker, preferredDefender);
+            addCandidateIfNew(candidates, seenSignatures, toAssignments(allInVsPreferred, preferredDefender));
+
+            List<Card> survivorsVsPreferred = filterLikelySurvivors(allInVsPreferred, preferredDefender);
+            addCandidateIfNew(candidates, seenSignatures, toAssignments(survivorsVsPreferred, preferredDefender));
+
+            Player weakestOpponent = attacker.getWeakestOpponent();
+            if (weakestOpponent != null && !weakestOpponent.equals(preferredDefender) && !weakestOpponent.hasLost()) {
+                List<Card> allInVsWeakest = legalAttackersAgainst(attacker, weakestOpponent);
+                addCandidateIfNew(candidates, seenSignatures, toAssignments(allInVsWeakest, weakestOpponent));
+            }
+        }
+
+        List<Pair<Card, GameEntity>> bestAssignments = Collections.emptyList();
+        int bestScore = Integer.MIN_VALUE;
+        for (List<Pair<Card, GameEntity>> candidate : candidates) {
+            int score = scoreAttackCandidate(game, attacker, combat, candidate);
+            if (score > bestScore) {
+                bestScore = score;
+                bestAssignments = candidate;
+            }
+        }
+        return new AttackPlan(bestAssignments, candidates.size(), bestScore);
+    }
+
+    private static void addCandidateIfNew(List<List<Pair<Card, GameEntity>>> candidates, Set<String> seenSignatures,
+            List<Pair<Card, GameEntity>> candidate) {
+        String signature = candidateSignature(candidate);
+        if (seenSignatures.add(signature)) {
+            candidates.add(candidate);
+        }
+    }
+
+    private static String candidateSignature(List<Pair<Card, GameEntity>> candidate) {
+        List<String> parts = Lists.newArrayList();
+        for (Pair<Card, GameEntity> p : candidate) {
+            parts.add(p.getLeft().getId() + "->" + p.getRight().getId());
+        }
+        Collections.sort(parts);
+        return String.join(",", parts);
+    }
+
+    private static List<Card> legalAttackersAgainst(Player attacker, GameEntity defender) {
+        List<Card> result = Lists.newArrayList();
+        for (Card c : attacker.getCreaturesInPlay()) {
+            if (CombatUtil.canAttack(c, defender)) {
+                result.add(c);
+            }
+        }
+        return result;
+    }
+
+    private static List<Pair<Card, GameEntity>> toAssignments(List<Card> attackers, GameEntity defender) {
+        List<Pair<Card, GameEntity>> result = Lists.newArrayList();
+        for (Card c : attackers) {
+            result.add(ImmutablePair.of(c, (GameEntity) defender));
+        }
+        return result;
+    }
+
+    /**
+     * Rough evasion/toughness heuristic (deliberately not full combat math, per plan §7 P2.5's own
+     * wording): a candidate attacker "likely survives" if either no creature the defender controls
+     * could legally block it, or every creature that could block it has less power than the
+     * attacker's toughness (so a straight-up block wouldn't kill it). Ignores combat tricks,
+     * first strike/deathtouch nuance, and multi-blocks by design -- it's a pruning heuristic to keep
+     * candidate count small, not a combat outcome predictor; the actual simulation is what scores
+     * the real outcome.
+     */
+    private static List<Card> filterLikelySurvivors(List<Card> candidates, Player defender) {
+        List<Card> potentialBlockers = defender.getCreaturesInPlay();
+        List<Card> survivors = Lists.newArrayList();
+        for (Card attackerCard : candidates) {
+            boolean anyBlockerThreatens = false;
+            for (Card blocker : potentialBlockers) {
+                if (!CombatUtil.canBlock(attackerCard, blocker)) {
+                    continue;
+                }
+                if (blocker.getNetPower() >= attackerCard.getNetToughness()) {
+                    anyBlockerThreatens = true;
+                    break;
+                }
+            }
+            if (!anyBlockerThreatens) {
+                survivors.add(attackerCard);
+            }
+        }
+        return survivors;
+    }
+
+    /**
+     * Copies the game, applies one candidate attacker/defender assignment set directly to the
+     * copy's {@code Combat} object (bypassing any controller re-entry), and scores the resulting
+     * post-combat-damage state via {@link GameStateEvaluator}. Returns {@code Integer.MIN_VALUE}
+     * on any simulation failure for this specific candidate so one bad candidate doesn't abort the
+     * whole search -- {@link #chooseAttackPlanViaSimulation} still has the "attack with nothing"
+     * candidate as a safety net if every other candidate fails.
+     */
+    private int scoreAttackCandidate(Game game, Player attacker, Combat combat, List<Pair<Card, GameEntity>> candidate) {
+        try {
+            GameCopier copier = new GameCopier(game);
+            Game gameCopy = copier.makeCopy(null, attacker);
+            Player attackerCopy = (Player) copier.find(attacker);
+            Combat combatCopy = gameCopy.getPhaseHandler().getCombat();
+            if (combatCopy == null) {
+                // Defensive: should always be non-null since `combat` is the PhaseHandler's live
+                // combat object at COMBAT_DECLARE_ATTACKERS and GameCopier copies it verbatim.
+                return Integer.MIN_VALUE;
+            }
+            for (Pair<Card, GameEntity> assignment : candidate) {
+                Card cardCopy = (Card) copier.find(assignment.getLeft());
+                GameEntity defenderCopy = (GameEntity) copier.find(assignment.getRight());
+                combatCopy.addAttacker(cardCopy, defenderCopy);
+            }
+            GameStateEvaluator.Score score = new GameStateEvaluator().getScoreForGameState(gameCopy, attackerCopy);
+            return score.value;
+        } catch (RuntimeException ex) {
+            Logger.warn("[Ultron] declareAttackers candidate simulation threw " + ex + "; skipping this candidate");
+            return Integer.MIN_VALUE;
+        }
     }
 
     @Override

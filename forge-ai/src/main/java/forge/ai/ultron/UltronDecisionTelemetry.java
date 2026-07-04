@@ -40,6 +40,15 @@ public final class UltronDecisionTelemetry {
     private static final int IDX_COUNT = 0;
     private static final int IDX_NANOS = 1;
 
+    /**
+     * P2.5 (TICKET-V3-204) — most-recent per-method decision detail (e.g. candidate count, chosen
+     * simulation score) for methods where that's cheaply available. Deliberately only keeps the
+     * latest call's detail, not a history — this is a coverage/debugging aid for per-game JSONL
+     * summaries and tests, not a full decision log (that's {@code UltronThreatModel}/future
+     * per-decision featurizer territory per the plan's §5 Telemetry section).
+     */
+    private final Map<String, Map<String, Object>> lastDetailByMethod = new java.util.concurrent.ConcurrentHashMap<>();
+
     public UltronDecisionTelemetry() {
         this(false);
     }
@@ -103,6 +112,10 @@ public final class UltronDecisionTelemetry {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("count", e.getValue().get(IDX_COUNT));
             m.put("elapsedMs", Math.round(e.getValue().get(IDX_NANOS) / 1_000_000.0 * 100.0) / 100.0);
+            Map<String, Object> detail = lastDetailByMethod.get(e.getKey());
+            if (detail != null) {
+                m.put("lastDetail", detail);
+            }
             perMethod.put(e.getKey(), m);
         }
 
@@ -110,6 +123,16 @@ public final class UltronDecisionTelemetry {
         result.put("summary", summary);
         result.put("perMethod", perMethod);
         return result;
+    }
+
+    /** Records the latest cheaply-available decision detail (e.g. candidate count/score) for a method. */
+    public void recordDetail(String methodName, Map<String, Object> details) {
+        lastDetailByMethod.put(methodName, details);
+    }
+
+    /** The most recently recorded detail map for a method, or null if none was ever recorded. */
+    public Map<String, Object> getLastDetail(String methodName) {
+        return lastDetailByMethod.get(methodName);
     }
 
     public long getTotalDecisions() {
