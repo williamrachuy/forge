@@ -14,7 +14,7 @@ import forge.game.player.Player;
  */
 public final class UltronConfig {
 
-    static final String PROFILE_NAME = "Ultron";
+    public static final String PROFILE_NAME = "Ultron";
 
     private UltronConfig() {}
 

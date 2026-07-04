@@ -3,6 +3,7 @@ package forge.ai;
 import java.util.Set;
 
 import forge.LobbyPlayer;
+import forge.ai.ultron.UltronPlayerController;
 import forge.game.Game;
 import forge.game.player.IGameEntitiesFactory;
 import forge.game.player.Player;
@@ -35,7 +36,14 @@ public class LobbyPlayerAi extends LobbyPlayer implements IGameEntitiesFactory {
     }
 
     private PlayerControllerAi createControllerFor(Player ai) {
-        PlayerControllerAi result = new PlayerControllerAi(ai.getGame(), ai, this);
+        // Ultron gets its own controller subclass (see FORGE_TRACKER TICKET-V3-101) so it owns
+        // its full decision surface directly rather than branching inside the shared
+        // AiController used by every other profile. Checked against `this.aiProfile` directly
+        // (not ai.getLobbyPlayer()) since the player's controller — and therefore
+        // ai.getLobbyPlayer(), which reads through it — isn't wired up yet at this point.
+        PlayerControllerAi result = forge.ai.llm.UltronConfig.PROFILE_NAME.equalsIgnoreCase(aiProfile)
+                ? new UltronPlayerController(ai.getGame(), ai, this)
+                : new PlayerControllerAi(ai.getGame(), ai, this);
         result.setUseSimulation(useSimulation);
         return result;
     }

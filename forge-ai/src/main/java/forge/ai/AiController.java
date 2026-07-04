@@ -26,14 +26,6 @@ import forge.ai.ability.LearnAi;
 import forge.ai.llm.UltronAdvisor;
 import forge.ai.llm.UltronConfig;
 import forge.ai.llm.UltronStrategicPlan;
-import forge.ai.llm.runtime.UltronCombatPolicy;
-import forge.ai.llm.runtime.UltronDecisionLog;
-import forge.ai.llm.runtime.UltronRuntimeController;
-import forge.ai.llm.runtime.UltronRuntimeDecision;
-import forge.ai.llm.runtime.UltronTableThreatSummary;
-import forge.ai.llm.runtime.UltronThreatModel;
-import forge.ai.llm.runtime.UltronTurnIntent;
-import forge.ai.llm.runtime.UltronTurnIntentBuilder;
 import forge.ai.simulation.GameStateEvaluator;
 import forge.ai.simulation.SpellAbilityPicker;
 import forge.card.CardStateName;
@@ -1326,14 +1318,6 @@ public class AiController {
 
         aiAtk.reinforceWithBanding(combat);
 
-        // Runtime combat policy for Ultron (table-aware attacker filtering)
-        if (UltronAdvisor.get().isUltronRuntimeProfile(player) && UltronConfig.enabledForRuntime()) {
-            UltronTableThreatSummary table = UltronThreatModel.analyze(game, player);
-            UltronTurnIntent intent = UltronTurnIntentBuilder.build(table,
-                    game.getPhaseHandler().getTurn());
-            UltronCombatPolicy.filterAttackers(combat, table, intent);
-        }
-
         // LLM plan attacker filter — only when strategic plan is enabled
         if (UltronConfig.enabledForStrategicPlanLlm()) {
             UltronAdvisor.get().filterPlannedAttackers(game, player, combat);
@@ -1613,32 +1597,12 @@ public class AiController {
         }
 
         if (!game.getStack().isEmpty()) {
-            final UltronAdvisor _ua = UltronAdvisor.get();
-            if (_ua.isUltronRuntimeProfile(player) && UltronConfig.enabledForRuntime()) {
-                // Veto approach: let Forge pick the best counterspell, then let Ultron's interaction
-                // policy decide whether the threat actually warrants using it.
-                // This avoids routing through canPlayAndPayFor again (already done by getPlayableCounters).
-                List<SpellAbility> counters = getPlayableCounters(cards);
-                if (!counters.isEmpty()) {
-                    SpellAbility forgeChoice = chooseCounterSpell(counters);
-                    if (forgeChoice != null) {
-                        UltronRuntimeController _runtime = UltronRuntimeController.getOrCreate(game, player, memory);
-                        UltronRuntimeDecision veto = _runtime.choose(
-                                java.util.List.of(forgeChoice), UltronStrategicPlan.GameState.RESPONDING);
-                        if (veto.isPass()) return null;
-                        return veto.hasChoice() ? veto.getSpellAbility() : forgeChoice;
-                    }
-                }
-                SpellAbility counterETB = chooseSpellAbilityToPlayFromList(getPossibleETBCounters(), false);
-                if (counterETB != null) return counterETB;
-            } else {
-                SpellAbility counter = chooseCounterSpell(getPlayableCounters(cards));
-                if (counter != null) return counter;
+            SpellAbility counter = chooseCounterSpell(getPlayableCounters(cards));
+            if (counter != null) return counter;
 
-                SpellAbility counterETB = chooseSpellAbilityToPlayFromList(getPossibleETBCounters(), false);
-                if (counterETB != null)
-                    return counterETB;
-            }
+            SpellAbility counterETB = chooseSpellAbilityToPlayFromList(getPossibleETBCounters(), false);
+            if (counterETB != null)
+                return counterETB;
         }
 
         if (saList.isEmpty()) {
@@ -1702,21 +1666,7 @@ public class AiController {
     }
 
     private SpellAbility chooseSpellAbilityToPlayFromList(final List<SpellAbility> all, boolean skipCounter) {
-        // Hoist Ultron controller init so stats are tracked even when candidate list is empty.
-        final UltronAdvisor ultronAdvisor = UltronAdvisor.get();
-        final boolean isUltronRuntime = ultronAdvisor.isUltronRuntimeProfile(player)
-                && UltronConfig.enabledForRuntime();
-        if (isUltronRuntime) {
-            UltronRuntimeController.getOrCreate(game, player, memory);
-        }
-
         if (all == null || all.isEmpty()) {
-            // Record NO_DECISION for main-phase calls where the candidate list was empty before
-            // scoring — covers loss-game turns where Forge's WillPlay filter blocked everything.
-            if (isUltronRuntime && ultronGameState() == UltronStrategicPlan.GameState.MAIN_PHASE) {
-                UltronRuntimeController.getOrCreate(game, player, memory)
-                        .recordNoDecision(UltronStrategicPlan.GameState.MAIN_PHASE);
-            }
             return null;
         }
 
@@ -1732,16 +1682,9 @@ public class AiController {
         // in case of infinite loop reset below would not be reached
         timeoutReached = false;
 
-        final UltronRuntimeController runtime = isUltronRuntime
-                ? UltronRuntimeController.getOrCreate(game, player, memory)
-                : null;
-        final boolean useUltronAdvisor = ultronAdvisor.isLlmAdvisorEnabledFor(player);
-
         FutureTask<SpellAbility> future = new FutureTask<>(() -> {
             //avoid ComputerUtil.aiLifeInDanger in loops as it slows down a lot.. call this outside loops will generally be fast...
             boolean isLifeInDanger = useLivingEnd && ComputerUtil.aiLifeInDanger(player, true, 0);
-            List<SpellAbility> ultronCandidates = (isUltronRuntime || useUltronAdvisor)
-                    ? Lists.newArrayList() : null;
             for (final SpellAbility sa : ComputerUtilAbility.getOriginalAndAltCostAbilities(all, player)) {
                 // Don't add Counterspells to the "normal" playcard lookups
                 if (skipCounter && sa.getApi() == ApiType.Counter) {
@@ -1814,61 +1757,9 @@ public class AiController {
                 if (opinion != AiPlayDecision.WillPlay)
                     continue;
 
-                if (ultronCandidates != null) {
-                    ultronCandidates.add(sa);
-                    int candidateLimit = isUltronRuntime
-                            ? UltronConfig.maxCandidates()
-                            : ultronAdvisor.getCandidateLimit();
-                    if (ultronCandidates.size() >= candidateLimit) {
-                        break;
-                    }
-                    continue;
-                }
-
                 return sa;
             }
 
-            if (ultronCandidates != null && !ultronCandidates.isEmpty()) {
-                // Phase 15: Ultron fast runtime path (no LLM, no API key required)
-                if (runtime != null) {
-                    UltronRuntimeDecision runtimeDecision = runtime.choose(
-                            ultronCandidates, ultronGameState());
-                    if (runtimeDecision.hasChoice()) {
-                        return runtimeDecision.getSpellAbility();
-                    }
-                    if (runtimeDecision.isPass()) {
-                        return null;
-                    }
-                    // FALLBACK / NO_DECISION: continue to LLM or Forge default below
-                }
-
-                // Phase 16: Optional LLM strategic plan (disabled by default)
-                if (UltronConfig.enabledForStrategicPlanLlm()) {
-                    UltronAdvisor.Decision decision = ultronAdvisor.chooseFromStrategicPlan(
-                            game, player, ultronCandidates, memory, ultronGameState());
-                    // Feed plan hold-hints into the runtime controller for future decisions
-                    if (runtime != null) {
-                        java.util.List<String> holdNames =
-                                ultronAdvisor.getLastPlanHoldInteraction(game, player);
-                        if (!holdNames.isEmpty()) {
-                            runtime.injectPlanHints(new java.util.HashSet<>(holdNames), java.util.Set.of());
-                        }
-                    }
-                    if (decision.hasAdvice()) {
-                        return decision.getSpellAbility();
-                    }
-                }
-
-                // Final fallback: best candidate from Forge's own ordering
-                UltronDecisionLog.fallback(player, "using Forge default ordering");
-                return ultronCandidates.get(0);
-            }
-
-            // Record NO_DECISION for main-phase turns where nothing scored above threshold.
-            // Gated to MAIN_PHASE only — OTHER/RESPOND empty-candidate passes are expected and noisy.
-            if (runtime != null && ultronGameState() == UltronStrategicPlan.GameState.MAIN_PHASE) {
-                runtime.recordNoDecision(UltronStrategicPlan.GameState.MAIN_PHASE);
-            }
             return null;
         });
 
