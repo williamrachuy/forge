@@ -76,6 +76,19 @@ does not use that mechanism).
 `run_simstats.sh` also gained `FORGE_SIM_XMX` (overrides `-Xmx8g`, default unchanged) and
 `FORGE_SKIP_GROOM` (skip the Cube Cobra deck-groom step — avoids every shard worker hitting
 the network / clobbering the deck file concurrently).
+**Smoke run results (2026-07-03):** 12-game all-Default parallel run, 2 workers × 3g:
+12/12 games completed, 0 timeouts, wall time 21m20s (16:05:08→16:26:28), ~1.78 min/game
+effective throughput vs ~3 min/game serial historically. All 12 gameSeeds unique across
+shards (disjoint ranges confirmed), global gameIndex 0–11 correct, merged games.jsonl =
+12 records. Follow-up 3-game Ultron+3xDefault run (1 worker × 4g, rotateSeats=true):
+Ultron seats 0→3→2 across games, exactly per the (s+N) mod 4 design; gate.py credited
+Ultron's game-2 win via profile lookup, not fixed seat. Session total 15 games (the cap).
+**RSS finding:** `ps` reported ~9.3GB RSS per worker at -Xmx3g. Much of that is ZGC
+multi-mapping (colored pointers map the heap multiple times, inflating apparent RSS) plus
+card DB/metaspace/native — but real pressure was also visible: available RAM fell 7g→~1-2g
+and ~1.2g of swap was touched during the 2-worker run. Box stayed responsive, wall times
+sane. Conclusion: budget-by-Xmx alone underestimates footprint; keep workers=2 as the
+practical ceiling on this 15g box until PSS is measured properly (smem) on a longer run.
 
 ### TICKET-V3-002: Seat rotation [DONE 2026-07-03]
 Files: `SimStatsConfig.java`, `SimulateStats.java`.
@@ -122,6 +135,18 @@ plan's §8 power analysis, and withholds PASS/FAIL rather than printing a mislea
 Smoke-tested against the existing 25-game `battlebox_monarch_4p_ultron/games.jsonl` (both
 with and without `run.aiProfiles`, exercising the `--seat` fallback) — see verification
 results below.
+
+### TICKET-V3-006: Ultron loads v2 learned state even with adaptiveWeights=false [OPEN, RISK]
+Observed during the P0 smoke run of `v3_ultron_vs_default_4p.ini` (adaptiveWeights=false):
+startup still logs `[ULTRON-WEIGHTS] Loaded 3 overrides` and `[ULTRON-CARD-STATS] Loaded 416
+card records` from `~/.forge/ultron-learning/`. The load path is not gated on the config flag
+(only the post-game *update* is). Read-only, so parallel workers are safe — but any "clean"
+v3 Ultron eval run is silently contaminated by v2 learned weights (aggression≈2.6 etc.) and
+per-card adjustments unless `~/.forge/ultron-learning/weights.json` and
+`ultron_card_stats.json` are deleted first (see BUILD REFERENCE reset commands).
+**Action for the 500-game runs and all v3 gates:** either clear those files before each run,
+or gate the load on the same flag. Not fixed this session (would touch forge-ai runtime code,
+out of Phase 0 scope).
 
 ### TICKET-V3-005: Pre-existing test failures found during verification [OPEN, NOT CAUSED BY V3 WORK]
 8/42 `forge.ai.llm.runtime.Ultron*` unit tests fail on this branch: `UltronCombatPolicyTest`,
