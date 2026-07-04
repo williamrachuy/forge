@@ -1738,7 +1738,21 @@ rm -f ~/.forge/ultron-learning/ultron_card_stats.json
 
 ---
 
-### TICKET-V3-207: OOM crash — uncached AiDeckStatistics.fromPlayer() in nested simulation [BLOCKING, OPEN 2026-07-04]
+### TICKET-V3-207: OOM crash — uncached AiDeckStatistics.fromPlayer() in nested simulation [BLOCKING, PARTIALLY RESOLVED 2026-07-04]
+
+**Session 2 update (2026-07-04, this session):** Implemented and unit-test-verified the
+`AiDeckStatistics` cache described below (see "Fix implemented, session 2" at the bottom of
+this ticket) — it is correct and does eliminate the specific uncached full-deck-reparse
+pattern this ticket names. **A real-game smoke test with the fix applied still OOM'd**, and
+the crash is in a *different* allocation path (`GameCopier.copyGameState` → `Zone.add` →
+`Game.fireEvent` → Guava `EventBus.post`, not `AiDeckStatistics.fromPlayer()`), and it also
+recurred on the very first decision of game 1, not "after N candidates compound." This means
+the original root-cause diagnosis below was incomplete: `AiDeckStatistics.fromPlayer()` was
+*a* source of combinatorial allocation, not the only one — the sheer volume of full
+`GameCopier.makeCopy()` deep-clones triggered by `SpellAbilityPicker.formulatePlanWithPhase()`'s
+recursive candidate search appears to be a comparably large (or larger) contributor, and needs
+its own investigation. **Ticket remains BLOCKING — do NOT proceed to the deferred Phase 1
+smoke test or the Phase 2 statistical gate.** Full details in "Session 2 findings" below.
 **Discovered by:** the deferred Phase 1/2 real-game smoke test (`v3_ultron_smoke`, 6 games,
 2 workers) — the exact scenario unit tests on synthetic states cannot exercise. This is why
 that smoke test was mandatory before any statistical gate run; it caught what 230/230 unit
@@ -1797,6 +1811,105 @@ this session's smoke test had no wall-clock backstop independent of the harness'
 per-command monitoring, and a hung/OOM'd JVM burned CPU for 6+ hours before a human-initiated
 check caught it. `run_parallel.sh`/its caller should verify liveness (e.g. periodic `wc -l` on
 the output file actually advancing) and kill+report on a stall, not just wait indefinitely.
+
+**Fix implemented, session 2 (2026-07-04):** Added an `equals()`/`hashCode()`-keyed
+`ConcurrentHashMap<Deck, AiDeckStatistics>` cache inside `AiDeckStatistics` itself
+(`forge-ai/src/main/java/forge/ai/AiDeckStatistics.java`), populated in `fromDeck()`. Key
+design points (also documented in-code):
+- **Not identity-keyed.** An identity (`IdentityHashMap`) cache was tried first and is
+  *wrong*: `RegisteredPlayer`'s constructor unconditionally calls `restoreDeck()`, which does
+  `currentDeck = originalDeck.copyTo(...)` — a brand-new `Deck` object every time a
+  `RegisteredPlayer` is constructed, including every `GameCopier#clonePlayer()` call. Deck
+  object identity is therefore NOT preserved across simulation copies (verified by a failing
+  unit test before this was caught and fixed). `Deck#equals()` does a full deep
+  content comparison (name + every `DeckSection`'s `CardPool`, see `Deck.java`), and
+  `copyTo()` preserves content exactly, so an equals-keyed map hits correctly across the
+  simulation tree without risk of aliasing two different decks that happen to share a name.
+- The `deck.isEmpty()` fallback path in `fromPlayer()` (synthetic/test states with no
+  registered deck, reads live hand/library) is intentionally NOT cached — that data changes
+  turn to turn.
+- Added `AiDeckStatistics.{resetInstrumentationCounters, getCallCount, getComputeCount,
+  clearCacheForTests}` — test-only counters proving cache-hit behavior, not used by
+  production code paths.
+- New test `forge-gui-desktop/src/test/java/forge/ai/simulation/AiDeckStatisticsCacheTest.java`
+  (3 tests, all passing): proves (a) cached and uncached computation return numerically
+  identical `AiDeckStatistics` — pure performance fix, no behavior change; (b) 25 repeated
+  calls against the same `Deck` object compute exactly once; (c) — the case that matters —
+  11 `RegisteredPlayer`/`Player` instances all backed by content-equal (but object-distinct,
+  mirroring `GameCopier`) `Deck`s still compute exactly once.
+- Audited all callers: the only `AiDeckStatistics.fromPlayer`/`fromDeck` call anywhere in
+  `forge-ai/src/main/java/forge/ai/simulation/` or `forge-ai/src/main/java/forge/ai/ultron/`
+  is `GameStateEvaluator.getScoreForGameStateImpl()` line 185 (`evalManaBase()`'s input).
+  `ComputerUtilMana.java` calls `AiDeckStatistics.fromCards()` (a different, cheaper method
+  that operates on an already-materialized hand, not a full deck reparse) — out of scope,
+  left untouched.
+- Baseline regression check: `forge.ai.simulation.*` + `forge.ai.ultron.*` = 233/233 passing
+  (230 baseline + 3 new), `forge.ai.llm.runtime.Ultron*` = 34/42 passing — both exactly match
+  the documented pre-existing baselines, zero regressions.
+
+**Session 2 findings — real-game smoke test still OOMs:** Ran
+`tools/simstats/run_simstats.sh` directly (single JVM, watched live, NOT via
+`run_parallel.sh`) against a 3-game config (`Ultron, Default, Default, Default`, Battlebox
+Monarch, same `bannedCards` list as `configs/simstats/v3_ultron_vs_default_4p.ini`,
+`-Xmx3g` to match the original crash) at `/home/william/agents/scratchpad/v3_ticket207_verify.ini`.
+Game 1 OOM'd `java.lang.OutOfMemoryError: Java heap space` **during its very first
+`chooseSpellAbilityToPlay()` call** (`PhaseHandler.startFirstTurn` → `mainGameLoop` →
+`mainLoopStep`), well before the "many candidates × nesting depth compounding over a full
+game" scenario this ticket originally described. Stack:
+```
+forge.ai.simulation.GameCopier.addCard(GameCopier.java:495)
+forge.ai.simulation.GameCopier.copyGameState(GameCopier.java:290)
+forge.ai.simulation.GameCopier.makeCopy(GameCopier.java:130)
+forge.ai.simulation.GameSimulator.<init>(GameSimulator.java:33)
+forge.ai.simulation.SpellAbilityPicker.evaluateSa(SpellAbilityPicker.java:358)
+forge.ai.simulation.SpellAbilityPicker.chooseSpellAbilityToPlayImpl(SpellAbilityPicker.java:172)
+forge.ai.simulation.SpellAbilityPicker.formulatePlanWithPhase(SpellAbilityPicker.java:110)
+forge.ai.simulation.SpellAbilityPicker.createNewPlan(SpellAbilityPicker.java:131)
+forge.ai.simulation.SpellAbilityPicker.chooseSpellAbilityToPlay(SpellAbilityPicker.java:104)
+forge.ai.ultron.UltronPlayerController.chooseSpellAbilityToPlay(UltronPlayerController.java:1282)
+```
+i.e. the OOM fired while allocating during a `GameCopier.makeCopy()` deep-clone itself
+(`Zone.add` → `Game.fireEvent` → Guava `EventBus.post` → `ThreadLocal` allocation), not
+inside `AiDeckStatistics`. As predicted by this ticket's own prior note ("the OOM did not
+cleanly exit the process"), the JVM then hung indefinitely: `jstack` showed the main thread
+stuck in `WAITING` inside `forge.error.BugReportDialog.show()` → AWT `Dialog.show()` →
+`Object.wait()` on an `AWTTreeLock` — the uncaught-exception handler tried to pop a GUI
+dialog in this headless sim environment and deadlocked forever. Killed manually
+(`kill -9`) after confirming via `ps`/`jstack` it was permanently stuck, ~13 minutes into the
+run, rather than letting it burn CPU unattended.
+
+**What this means:** the `AiDeckStatistics` cache fix is real, correct, and worth keeping —
+it removes a genuine combinatorial-allocation source proven by the unit tests above — but it
+is **not sufficient** to resolve the crash this ticket was opened for. The dominant
+contributor in this run was the cost/volume of `GameCopier.makeCopy()`'s full deep-copy of
+game state (all zones, all cards, shared Battlebox zones per TICKET-V3-201) being invoked
+repeatedly by `SpellAbilityPicker`'s recursive candidate search, independent of what each
+copy is then used to evaluate. Not yet investigated (next session should pick this up):
+- How many `GameCopier.makeCopy()` calls actually happen for one `chooseSpellAbilityToPlay()`
+  decision at the start of a real 4-player Battlebox game (add a call counter analogous to
+  `AiDeckStatistics`'s, to `GameCopier.makeCopy()` or `GameSimulator`'s constructor).
+  `SpellAbilityPicker.formulatePlanWithPhase`'s recursion depth/breadth against a full
+  starting hand + shared Battlebox library is a plausible combinatorial source independent of
+  `AiDeckStatistics`.
+- Whether `-Xmx3g` is simply too tight for 4-player Battlebox's shared-zone deep-copy cost
+  regardless of the above (the production default in `run_simstats.sh` is `-Xmx8g`;
+  `run_parallel.sh` computes a RAM-budget-based per-worker heap that could be as low as `2g`).
+  Worth a controlled A/B: same config at `-Xmx8g` to see whether it's a hard leak (OOMs
+  regardless of heap) or a tight-heap-only problem (completes fine at 8g) — not run this
+  session due to time already spent confirming the 3g failure and the priority of reporting
+  this honestly rather than continuing to iterate unsupervised.
+- The uncaught-exception-handler-hangs-forever-in-headless-mode bug
+  (`ExceptionHandler.uncaughtException` → `BugReporter.reportException` →
+  `GuiDesktop.showBugReportDialog` → AWT `Dialog.show()`) is itself worth a fix independent of
+  this ticket: any OOM or uncaught exception in a headless sim run currently hangs the JVM
+  forever instead of exiting, which is exactly the "burned 6+ hours" failure mode this ticket
+  already flagged once. Consider forcing headless/non-interactive error handling
+  (`GraphicsEnvironment.isHeadless()` check, or a config flag) in `SimulateStats`'s entry
+  point so a crash exits promptly instead of hanging.
+
+**Status: still BLOCKING.** Do not run the deferred Phase 1 smoke test or the Phase 2
+600-game statistical gate until the `GameCopier`/recursive-candidate-search allocation volume
+is characterized and addressed (or proven benign at production `-Xmx8g`).
 
 ---
 
