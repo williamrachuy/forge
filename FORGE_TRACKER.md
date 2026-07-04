@@ -297,7 +297,7 @@ reference `UltronWeights`/`UltronCardStats` in a future change, the guard would 
 ---
 
 ## EPIC: ULTRON-V3 / PHASE-2
-**Status:** IN PROGRESS (P2.1 done; P2.2 data point collected; P2.3-P2.6 not started)
+**Status:** IN PROGRESS (P2.1 done; P2.2 data point collected; P2.3 done; P2.4-P2.6 not started)
 **Branch:** `ultron-v3`
 **Goal:** Simulation-based big-3 decisions per plan §7 Phase 2. Plan doc:
 `/home/william/agents/brainstorm/plans/ultron-v3-search-and-learning.md` §6, §7 P2.1-P2.6.
@@ -387,6 +387,84 @@ routing (P2.4), combat/block enumeration (P2.5), or stack-response simulation (P
 any `run_parallel.sh`/`run_simstats.sh` batch — the `v3_control_default_4p` control run
 (`ultron_v3_control` tmux session, 2 workers) was active throughout this session and was left
 undisturbed.
+
+### TICKET-V3-202: Multiplayer interim evaluator (P2.3) [DONE 2026-07-04]
+Files: `forge-ai/src/main/java/forge/ai/simulation/GameStateEvaluator.java`,
+`forge-gui-desktop/src/test/java/forge/ai/simulation/GameStateEvaluatorMultiplayerTest.java` (new).
+
+**What changed:** fixed the literal `// TODO: more than 2 players` gap in
+`getScoreForGameStateImpl` — three changes, all interim/hand-tuned per the plan (Phase 3's learned
+value function replaces this file's constants entirely; nothing here is meant to be precise).
+
+1. **Per-opponent life term, not averaged.** The old code summed every opponent's life and divided
+   by `(players.size() - 1)`, so "one opponent at 20 life, two at 5" (sum 30, avg 10) scored
+   identically to "three opponents at 10 life each" (sum 30, avg 10) — the AI literally could not
+   tell a concentrated table leader from an evenly matched table. Replaced with: collect each alive
+   opponent's life, then combine as `0.65 * maxLife + 0.35 * avgLife` (still multiplied by the
+   existing `2` weight) — the single highest-life (hardest-to-kill) opponent now dominates the term
+   without fully hiding the rest of the table. 65/35 is a hand-picked split, not derived from data;
+   it's an interim heuristic. Board-state threat per opponent (creature/permanent value) did *not*
+   need a separate per-opponent term — the existing per-card battlefield loop already scores every
+   enemy permanent individually (never averaged), so only the life computation needed fixing.
+2. **Monarch scoring** (previously absent entirely). New `MONARCH_VALUE = 8` constant: `+8` if
+   `aiPlayer` holds `game.getMonarch()`, `-8` if a (non-eliminated) opponent holds it, `0` if no
+   monarch in play. Chosen as ~1.5x the file's existing "card in hand" unit (`5 * myCards` above:
+   `5 * 1.5 = 7.5`, rounded up to `8`) — reasoning: holding Monarch guarantees a recurring extra
+   draw each of your turns (worth more than one static card in hand) but it's contestable via
+   combat (an opponent can take it away), so it stays far below the hundreds-scale
+   board-development terms (`evalCard`/`evaluateLand`) elsewhere in the file.
+3. **Dead/eliminated player handling.** `aiPlayer.getOpponents()` does not filter by `hasLost()` —
+   a defeated player's stale life total was previously still summed into the (now removed)
+   average. Fixed by skipping any opponent with `hasLost() == true` before collecting alive-opponent
+   life, and defensively checking `!monarch.hasLost()` before scoring the Monarch term (the engine
+   clears `game.getMonarch()` to `null` when the holder loses — see `Game.java`'s onLoseGame path —
+   but TICKET-V3-201 already found one silent `GameCopier` state-copying bug this session's plan
+   builds on, so the extra guard costs nothing). No NPE risk was found in the battlefield loop
+   itself (eliminated players' permanents leave the battlefield through normal game rules), so the
+   only actual bug was the life-total corruption.
+
+**Verified:** new `GameStateEvaluatorMultiplayerTest` (3 tests, all in `PhaseType.MAIN2` with empty
+battlefields so `simulateUpcomingCombatThisTurn` short-circuits and the direct scoring path is
+exercised):
+  - `testConcentratedOpponentThreatScoresWorseThanEvenTable` — proves the old averaging bug is
+    actually fixed, not just recompiled: a table with opponent life 20/5/5 (leader) scores strictly
+    worse for the AI than 10/10/10 (even), same sum/avg, and asserts the exact expected delta from
+    the documented 65/35 formula so a silent constant drift would fail loudly.
+  - `testAiHoldingMonarchScoresHigherThanOpponentHoldingIt` — AI-holds > no-monarch > opponent-holds,
+    with the AI-vs-opponent delta asserted to equal exactly `2 * MONARCH_VALUE`.
+  - `testEliminatedOpponentDoesNotCrashOrCorruptScore` — an opponent eliminated via
+    `loseConditionMet(GameLossReason.LifeReachedZero, ...)` with a stale life total of 2 produces
+    the *identical* score to a reference game where that opponent doesn't exist at all (i.e., fully
+    excluded, not just "didn't crash").
+
+Full `forge.ai.simulation.*` package + `forge.ai.ultron.UltronPlayerControllerTest` (TestNG groups
+all classes into one `TestSuite` aggregate rather than per-class) — **215/215 pass, 0 failures, 0
+errors** (breakdown: `GameCopierBattleboxFidelityTest` 2, `GameSimulationTest` 69,
+`GameStateEvaluatorMultiplayerTest` 3 new, `SpellAbilityPickerSimulationTest` 135,
+`UltronPlayerControllerTest` 6 — no regressions, net +3 new tests vs. the TICKET-V3-201 baseline).
+Baseline `forge.ai.llm.runtime.Ultron*` suite — **34/42 pass**, identical 8 pre-existing
+"Ahead-state ..." failures as TICKET-V3-005/TICKET-V3-201, unchanged (this suite doesn't touch
+`forge.ai.simulation.GameStateEvaluator` at all — confirmed no other live AI path calls into this
+class besides the dormant `USE_SIMULATION`-gated simulation controller; `forge.ai.llm.runtime.
+UltronGameStateEvaluator` is an unrelated, separate v2 evaluator class that this ticket did not
+touch). `mvn -pl forge-ai,forge-gui-desktop -am clean package -DskipTests -q` succeeds. Control run
+(`v3_control_default_4p`, PIDs unchanged) confirmed still running throughout this session, left
+undisturbed.
+
+**Risks/follow-ups for the next Phase 2 session (P2.4 main-phase, P2.5 combat, P2.6 stack
+response):**
+  - The 65/35 opponent-weighting split and the `MONARCH_VALUE = 8` constant are both hand-picked,
+    not tuned against real game outcomes — expect Phase 3's learned value function to override both
+    once training data exists; don't invest further tuning effort here.
+  - This evaluator still treats board-development value (`evalManaBase`, `evalCard`) as a single
+    aiPlayer-vs-everyone-else subtraction rather than per-opponent — reasonable for now since P2.4's
+    main-phase routing and P2.5's combat enumeration will be the actual decision-making consumers of
+    per-opponent granularity; this evaluator only needed to stop the two specific gaps the plan
+    named (life averaging, missing monarch).
+  - Not investigated: whether `GameStateEvaluator`'s single aiPlayer-perspective scoring composes
+    correctly when P2.5's block-assignment enumeration needs to score a state from a *different*
+    seat's perspective mid-search (the method already takes `aiPlayer` as a parameter, so it should,
+    but this session only exercised it from one seat's perspective in tests).
 
 ---
 

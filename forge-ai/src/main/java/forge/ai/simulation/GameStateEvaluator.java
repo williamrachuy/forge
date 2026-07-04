@@ -14,8 +14,11 @@ import forge.game.spellability.SpellAbility;
 import forge.game.staticability.StaticAbility;
 import forge.game.zone.ZoneType;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import static java.lang.Math.max;
@@ -24,6 +27,16 @@ import static java.lang.Math.min;
 public class GameStateEvaluator {
     private boolean debugging = false;
     private SimulationCreatureEvaluator eval = new SimulationCreatureEvaluator();
+
+    // TICKET-V3-202 (Ultron v3 Phase 2, P2.3): interim multiplayer evaluator constant.
+    // Holding the Monarch guarantees an extra card draw at the end of each of your turns
+    // until someone takes it away in combat -- more valuable than a single static card in
+    // hand (valued at 5 points via "5 * myCards" below), but contestable, so it stays well
+    // under the hundreds-scale board-development terms elsewhere in this file. Valued at
+    // ~1.5x the hand-card unit, rounded up (5 * 1.5 = 7.5 -> 8). This is a hand-tuned
+    // constant for the interim heuristic evaluator only -- Phase 3's learned value function
+    // replaces it with a trained weight.
+    static final int MONARCH_VALUE = 8;
 
     public void setDebugging(boolean debugging) {
         this.debugging = debugging;
@@ -95,7 +108,6 @@ public class GameStateEvaluator {
 
     private Score getScoreForGameStateImpl(Game game, Player aiPlayer) {
         int score = 0;
-        // TODO: more than 2 players
         // TODO: try and reuse evaluateBoardPosition
         int myCards = 0;
         int theirCards = 0;
@@ -117,14 +129,57 @@ public class GameStateEvaluator {
         score += 5 * myCards - 4 * theirCards;
         debugPrint("  My life: " + aiPlayer.getLife());
         score += 2 * aiPlayer.getLife();
+
+        // Multiplayer-aware opponent life term (TICKET-V3-202 / plan P2.3).
+        // The old code summed every opponent's life and divided by (players - 1), which scores
+        // "one opponent at 20 life, two at 5" identically to "three opponents at 10 each" -- the
+        // exact information loss flagged by the old `// TODO: more than 2 players` comment. We
+        // instead weight the single most dangerous (highest-life / hardest-to-kill) opponent more
+        // heavily than a flat average, so the AI reacts to *who* at the table is actually
+        // threatening rather than a smeared table-wide number. The 65/35 split lets the leader
+        // dominate the term without fully hiding the rest of the table. (Per-opponent board-state
+        // threat is already captured granularly -- not averaged -- by the per-card battlefield
+        // loop below, since every enemy permanent is scored individually; this term only needed to
+        // stop smearing life totals across opponents.)
+        //
+        // Eliminated opponents are excluded: a 4-player Battlebox game routinely has 1-3 players
+        // still alive at any decision point after eliminations, and a defeated player's stale life
+        // total must not count as a live threat.
+        List<Integer> aliveOpponentLife = new ArrayList<>();
         int opponentIndex = 1;
-        int opponentLife = 0;
         for (Player opponent : aiPlayer.getOpponents()) {
+            if (opponent.hasLost()) {
+                debugPrint("  Opponent " + opponentIndex + " eliminated, excluded from threat scoring");
+                opponentIndex++;
+                continue;
+            }
             debugPrint("  Opponent " + opponentIndex + " life: -" + opponent.getLife());
-            opponentLife += opponent.getLife();
+            aliveOpponentLife.add(opponent.getLife());
             opponentIndex++;
         }
-        score -= 2* opponentLife / (game.getPlayers().size() - 1);
+        if (!aliveOpponentLife.isEmpty()) {
+            int maxLife = Collections.max(aliveOpponentLife);
+            double avgLife = aliveOpponentLife.stream().mapToInt(Integer::intValue).average().orElse(0);
+            double weightedOpponentLife = 0.65 * maxLife + 0.35 * avgLife;
+            score -= (int) Math.round(2 * weightedOpponentLife);
+        }
+
+        // Monarch scoring (TICKET-V3-202 / plan P2.3). See MONARCH_VALUE's javadoc for the
+        // constant's justification. A defensive hasLost() check guards against any stale monarch
+        // reference surviving a GameCopier copy of an already-eliminated player (the engine itself
+        // clears monarch to null when the holder loses, see Game.java's onLoseGame path, but
+        // TICKET-V3-201 found that this fork's GameCopier has previously mis-copied state silently,
+        // so we don't trust a non-null reference alone).
+        Player monarch = game.getMonarch();
+        if (monarch != null && !monarch.hasLost()) {
+            if (monarch.equals(aiPlayer)) {
+                debugPrint("  AI player holds the Monarch: +" + MONARCH_VALUE);
+                score += MONARCH_VALUE;
+            } else {
+                debugPrint("  Opponent holds the Monarch: -" + MONARCH_VALUE);
+                score -= MONARCH_VALUE;
+            }
+        }
 
         // evaluate mana base quality
         score += evalManaBase(game, aiPlayer, AiDeckStatistics.fromPlayer(aiPlayer));
