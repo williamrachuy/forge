@@ -162,6 +162,140 @@ session before Phase 1 starts — Phase 1's gate requires all unit tests green.
 
 ---
 
+## EPIC: ULTRON-V3 / PHASE-1
+**Status:** DONE (2026-07-04)
+**Branch:** `ultron-v3`
+**Goal:** `UltronPlayerController` owns the full decision surface, per plan §7 Phase 1. Pure
+plumbing — no Ultron-specific decision logic yet. Plan doc:
+`/home/william/agents/brainstorm/plans/ultron-v3-search-and-learning.md` §7 P1.1-P1.3.
+
+### TICKET-V3-101: UltronPlayerController + AiController cleanup [DONE 2026-07-04]
+Files: `forge-ai/src/main/java/forge/ai/ultron/UltronPlayerController.java` (new),
+`forge-ai/src/main/java/forge/ai/AiController.java`, `forge-ai/src/main/java/forge/ai/LobbyPlayerAi.java`,
+`forge-ai/src/main/java/forge/ai/llm/UltronConfig.java`.
+
+**Mechanism found (corrects a possibly-stale reading of `ULTRON_RUNTIME_REMODEL_NOTES.md`):**
+`AiController` is a per-player decision-logic helper held by `PlayerControllerAi` (field `brains`,
+accessor `getAi()`) — it is not itself a `PlayerController`. `PlayerControllerAi extends
+PlayerController` and overrides all ~121 decision methods (114 counted directly via `@Override`
+scan of `PlayerControllerAi.java`, plus the constructor and a few non-`@Override` helper methods);
+most of those overrides just delegate straight into `AiController` (e.g.
+`declareAttackers`/`declareBlockers`/`chooseSpellAbilityToPlay` call `brains.xxx()`), but the bulk
+of the ~121 methods are answered directly in `PlayerControllerAi` itself without touching
+`AiController` at all (mana payment, target selection, scry/surveil ordering, etc.). So "the hooks
+live in AiController" was correct for the specific 3 decisions the remodel notes named
+(main-phase spell choice, attack declaration, stack response) but incomplete as a description of
+the decision surface — the other ~110+ methods Ultron needs to eventually own live directly on
+`PlayerControllerAi`, which is exactly why subclassing `PlayerControllerAi` (not `AiController`)
+is the correct fix.
+
+**What was done:**
+- New `UltronPlayerController extends PlayerControllerAi`. All 114 `@Override` decision methods
+  from `PlayerControllerAi` are re-overridden here (signatures extracted programmatically from
+  `PlayerControllerAi.java` to guarantee exact fidelity — hand-transcribing 114 signatures by eye
+  invites a subtle override mismatch that only shows up at runtime). Every override times a call
+  to `super.method(...)` and records it via `UltronDecisionTelemetry` as "inherited" — Phase 1 has
+  zero Ultron-authored decision logic, by design (see plan §7 P1 gate: "Ultron-with-all-inherited-
+  behavior ≡ Default within noise").
+- `LobbyPlayerAi.createControllerFor` now instantiates `UltronPlayerController` when
+  `this.aiProfile` (checked directly — not `ai.getLobbyPlayer()`, which reads through the player's
+  controller and isn't wired up yet at this call site) equals `UltronConfig.PROFILE_NAME` (made
+  `public`, was package-private). `rotateProfileEachGame` timing is untouched — profile rotation
+  still happens after controller creation, exactly as before.
+- `AiController` stripped of all `isUltronRuntime`/`isUltronRuntimeProfile` branches: removed the
+  `UltronCombatPolicy` filter from `declareAttackers`, the dual-flag (`isUltronRuntime` /
+  `useUltronAdvisor`) candidate-routing block from `chooseSpellAbilityToPlayFromList` (collapsed
+  back to the same "return first WillPlay candidate" loop every other profile already used), and
+  the runtime-controller veto branch from `getSpellAbilityToPlay`'s stack-response path (collapsed
+  to the single stock branch that used to be the `else`). 8 now-dead imports removed
+  (`UltronCombatPolicy`, `UltronDecisionLog`, `UltronRuntimeController`, `UltronRuntimeDecision`,
+  `UltronTableThreatSummary`, `UltronThreatModel`, `UltronTurnIntent`, `UltronTurnIntentBuilder`).
+  The v2 runtime classes under `forge.ai.llm.runtime` are not deleted — orphaned per plan §9,
+  retired in later stages.
+- **Deviation (documented, not fixed):** left two LLM-strategic-plan hooks in `AiController`
+  untouched — the plan-filter call in `declareAttackers` and the land-selection path in
+  `chooseSpellAbilityToPlay`, both gated behind `UltronConfig.enabledForStrategicPlanLlm()`
+  (default `false`). These are not `isUltronRuntime`/`isUltronRuntimeProfile` branches (the
+  literal thing this ticket's scope named) and are off by default; flagging as residual
+  non-profile-agnostic surface for a future ticket if full `AiController` purity is wanted before
+  those hooks are themselves retired (LLM strategic plan is a separate, still-preserved feature
+  per plan §9, not part of the runtime-flag cleanup).
+
+### TICKET-V3-102: Decision telemetry [DONE 2026-07-04]
+Files: `forge-ai/src/main/java/forge/ai/ultron/UltronDecisionTelemetry.java` (new),
+`forge-gui-desktop/src/main/java/forge/view/SimulateStats.java`.
+One `UltronDecisionTelemetry` instance per `UltronPlayerController` (no shared/static state —
+safe across parallel sim workers and repeated games in one JVM). `record(methodName,
+answeredByUltron, elapsedNanos)` is a handful of atomic-counter increments (`AtomicLong` totals +
+a `ConcurrentHashMap<String, AtomicLongArray>` per-method breakdown) — no string formatting or
+allocation unless a `verboseLogging` flag (off by default) is set, per the "keep it cheap for hot
+loops" requirement. `toMap()` produces `{summary: {totalDecisions, answeredByUltron,
+answeredByInherited, coverageRatio, totalElapsedMs}, perMethod: {...}}`.
+`SimulateStats.java` embeds this under a new `ultronCoverage` JSONL key (added
+`findUltronCoverage(Game)`, mirroring the existing `findUltronSimStats`/`findUltronPlayer`
+pattern) — separate from the pre-existing `ultron`/`UltronSimStats` key, which only populates
+when something still calls into `UltronRuntimeController` (nothing does, post-101, for a v3
+Ultron game). Verified via the new unit test: after game setup + one explicit decision call,
+`totalDecisions` increments by exactly 1 and `answeredByUltron` stays 0.
+
+### TICKET-V3-103: Threat model as feature provider [DONE 2026-07-04]
+File: `forge-ai/src/main/java/forge/ai/ultron/UltronPlayerController.java`
+(`refreshThreatSummary()`). Thin wrapper over the existing `UltronThreatModel.analyze(Game,
+Player)` → `UltronTableThreatSummary` (v2 class, unchanged). Deliberately not called from any
+decision override in Phase 1 — proven callable (unit test constructs a 4-player game, calls it
+twice in a row) but not consumed anywhere; Phase 2/3 wires its output into
+search/value-function features per plan §5.
+
+### TICKET-V3-104: v2 state contamination guard [DONE 2026-07-04]
+No code change beyond what TICKET-V3-101 already did — the fix is architectural. `UltronWeights`
+and `UltronCardStats` (`forge-ai/src/main/java/forge/ai/llm/runtime/`) both eagerly load
+`~/.forge/ultron-learning/{weights.json,ultron_card_stats.json}` from a `static { load(DEFAULT_PATH); }`
+block the instant either class is first touched by the JVM — independent of the `adaptiveWeights`
+config flag (this is the exact mechanism behind TICKET-V3-006). Before this session, a live
+Ultron game touched those classes indirectly: `AiController` routed through
+`UltronRuntimeController`, which calls `UltronActionScorer`/`UltronCandidatePruner`, both of which
+reference `UltronWeights.get(...)` — first touch triggers the static load regardless of any flag.
+TICKET-V3-101 already severed that entire call chain (`AiController` no longer references
+`UltronRuntimeController` at all), and `UltronPlayerController` was written to never import
+anything from `forge.ai.llm.runtime` except the read-only `UltronThreatModel`/
+`UltronTableThreatSummary` pair (P1.3), which do not touch `UltronWeights`/`UltronCardStats`. Net
+effect: an Ultron v3 game's decision path never triggers either static initializer, so
+`~/.forge/ultron-learning/` is never touched — v3 runs start clean of v2 learned state without
+needing a new opt-in flag. Verified by a unit test that reads `UltronPlayerController.class`'s
+raw bytes and asserts the constant pool contains no reference to `UltronWeights`,
+`UltronCardStats`, `UltronRuntimeController`, `UltronActionScorer`, or `UltronCandidatePruner` —
+deterministic (checks the compiled class's actual references) rather than relying on a runtime
+side effect that JVM/test-ordering could mask. Old `~/.forge/ultron-learning/` files (if any exist
+from prior v2 sessions) are left in place — TICKET-V3-006's original ask was to stop new v3 runs
+from loading them, not to delete pre-existing data; deletion (if wanted for a fully clean gate
+run) remains a manual/runbook step.
+**Residual risk:** this guard only covers `UltronPlayerController`'s own code. If the LLM
+strategic-plan hooks left in place per TICKET-V3-101's documented deviation ever get extended to
+reference `UltronWeights`/`UltronCardStats` in a future change, the guard would need re-verifying
+— they don't today (checked: `forge.ai.llm.*` package has zero references to either class).
+
+### Build / test verification (2026-07-04)
+- `mvn -pl forge-ai,forge-gui-desktop -am clean package -DskipTests -q` — **BUILD SUCCESS**
+  (checkstyle included, not skipped; new files required trimming several unused wildcard-covered
+  imports to pass).
+- `mvn test -pl forge-gui-desktop -am -Dcheckstyle.skip=true -Dtest="forge.ai.llm.runtime.Ultron*" -Dsurefire.failIfNoSpecifiedTests=false`
+  — **34/42 pass**, identical to the TICKET-V3-005 baseline. The same 8 "Ahead-state ..." tests
+  fail with the same assertions, unchanged; no regression, no accidental fix.
+- New `forge-gui-desktop/src/test/java/forge/ai/ultron/UltronPlayerControllerTest.java` — 6/6
+  pass: construction/wiring (Ultron profile → `UltronPlayerController`; every other profile →
+  plain `PlayerControllerAi`, unaffected), telemetry (0% Ultron-authored, +1 decision recorded per
+  explicit call), threat-summary callability (twice, proving it's read-only/idempotent), and the
+  TICKET-V3-104 bytecode contamination-guard check.
+- **Sim smoke test: DEFERRED.** At verification time, the P0.3 500-game
+  `v3_control_default_4p` run was still active in tmux session `ultron_v3_control`
+  (`shard_0`/`shard_1` each at ~131/250 games — 2 workers, the box's measured RAM ceiling per
+  TICKET-V3-001). Per this session's instructions, no additional sim games were launched while
+  both worker slots are in use. Phase 1's plumbing is verified by build + unit tests only; the
+  4-6 game `v3_ultron_vs_default_4p.ini` smoke run (confirm games complete without crashing, new
+  `ultronCoverage` field appears in JSONL) is still owed once a worker slot frees up.
+
+---
+
 ## EPIC: ULTRON-AI / CORE-RUNTIME
 Fast non-LLM runtime AI layer. All under `forge-ai/src/main/java/forge/ai/llm/runtime/`.
 
