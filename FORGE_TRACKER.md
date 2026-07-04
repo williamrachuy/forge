@@ -1738,7 +1738,7 @@ rm -f ~/.forge/ultron-learning/ultron_card_stats.json
 
 ---
 
-### TICKET-V3-207: OOM crash — uncached AiDeckStatistics.fromPlayer() in nested simulation [BLOCKING, PARTIALLY RESOLVED 2026-07-04]
+### TICKET-V3-207: OOM crash — uncached AiDeckStatistics.fromPlayer() in nested simulation [BLOCKING, NEEDS-FOLLOWUP 2026-07-04]
 
 **Session 2 update (2026-07-04, this session):** Implemented and unit-test-verified the
 `AiDeckStatistics` cache described below (see "Fix implemented, session 2" at the bottom of
@@ -1910,6 +1910,86 @@ copy is then used to evaluate. Not yet investigated (next session should pick th
 **Status: still BLOCKING.** Do not run the deferred Phase 1 smoke test or the Phase 2
 600-game statistical gate until the `GameCopier`/recursive-candidate-search allocation volume
 is characterized and addressed (or proven benign at production `-Xmx8g`).
+
+**Session 3 update (2026-07-04): headless-hang fix landed; heap-sizing diagnostic supports
+hypothesis (b) — real allocation problem, not a heap-sizing problem. Ticket remains BLOCKING.**
+
+**(1) Headless-crash-hang fix (independent of the OOM root cause, landed and verified):**
+`ExceptionHandler.uncaughtException`/`.handle()` (`forge-gui/src/main/java/forge/error/ExceptionHandler.java`)
+now check `GraphicsEnvironment.isHeadless()` before calling `BugReporter.reportException(ex)`.
+When headless, a new `handleHeadlessCrash()` prints the full stack trace to stderr (already
+tee'd to the active per-process log file by `registerErrorHandling()`'s `MultiplexOutputStream`)
+and calls `System.exit(1)` instead of letting `BugReporter` reach
+`GuiDesktop.showBugReportDialog` → `BugReportDialog.show()`, which blocks forever on
+`Object.wait()` against the AWT tree lock with no display and no user to dismiss it — the exact
+mechanism behind both multi-hour silent hangs this ticket has now hit. Same pattern precedent as
+BUG-005's `GraphicsEnvironment.isHeadless()` guard in `GuiDesktop.initializeScreenScale()`.
+Verified with a standalone harness (`HeadlessCrashTest`, not committed — ad hoc, run from
+`/tmp`): initializes `GuiBase`/`ExceptionHandler` exactly like `Main.main()`, throws an
+uncaught `OutOfMemoryError` on a background thread named `sim-worker-thread` (mirroring the
+real OOM's thread), and confirms under `-Djava.awt.headless=true` with a bounded 30s `timeout`
+that the JVM logs the full stack trace and exits with code 1 in under a second — no hang. Before
+this fix, the equivalent scenario (session 2) required a human to `jstack`/`kill -9` a wedged
+JVM after 13+ minutes; now it self-terminates immediately. This fix does **not** cover every
+possible hang mode (see finding 2's JVM-signal-dispatch case below) but eliminates the specific,
+previously-proven `BugReportDialog` mechanism entirely, for any uncaught exception on any thread.
+
+**(2) Heap-sizing diagnostic — hypothesis (b) (real leak/inefficiency) is supported, not
+hypothesis (a) (just needs more heap):** Re-ran the identical 3-game
+Ultron-vs-3xDefault config (`/home/william/agents/scratchpad/v3_ticket207_verify.ini`, same
+seed 910123, same `bannedCards`) at `-Xmx8g` — 2.67x the `-Xmx3g` that OOM'd in session 2, and
+matching `run_simstats.sh`'s own production default heap size. Single JVM, watched live, no
+parallel workers. **Result: the JVM still exhausted its 8g heap before completing even game 1**
+(`games.jsonl` remained at 0 lines for the entire run) and ended up in a state markedly worse
+than session 2's clean `OutOfMemoryError`: the log shows only
+`OpenJDK 64-Bit Server VM warning: Exception java.lang.OutOfMemoryError occurred dispatching
+signal SIGTERM to handler - the VM may need to be forcibly terminated` — meaning the heap was so
+completely exhausted that the JVM couldn't even service a `SIGTERM` cleanly (this is a
+JVM-internal signal-dispatch failure, a level below anything an application `UncaughtExceptionHandler`
+can intercept, so finding (1)'s fix does not — and structurally cannot — catch this particular
+failure mode; it required a manual `kill -9`, confirmed via `jstack` failing to attach within
+10.5s and `ps` showing the process alive 26+ minutes past the point the outer `timeout 1500`
+wrapper had already given up waiting on it — `timeout` only signals its direct child, the
+`run_simstats.sh` bash script, and does not forward the signal to the java grandchild, which
+was silently orphaned and kept running/thrashing well past the intended 25-minute bound. No
+kernel OOM-killer entries appeared in `dmesg`/`journalctl -k` for this window, and `MemAvailable`
+never fully bottomed out to zero — so this was a Java-heap-space exhaustion within the JVM's own
+`-Xmx8g` ceiling, not the host running out of physical RAM. **This is the key evidence against
+hypothesis (a):** if the problem were merely "Ultron's nested `GameCopier` search needs more
+than 3g," 8g (nearly 3x) should have given ample headroom to clear 3 short Battlebox games,
+especially since the control lane (500 games, all-Default, no Ultron) completed cleanly at the
+*tighter* `-Xmx3g`. Instead, 8g wasn't enough to finish even one game's first decision cleanly.
+**This points to hypothesis (b): `GameCopier.makeCopy()`'s call volume or its copies' lifecycle
+(not being released/GC'd promptly) is the dominant cost, and no reasonable heap size will fix it
+without also bounding the call count** — an unbounded or excessively wide `SpellAbilityPicker`
+recursive candidate search is the leading suspect, consistent with session 2's stack trace
+showing the OOM firing from inside `GameCopier.copyGameState`'s own allocation, not from
+whatever the copy was being used to evaluate.
+**Caveat on environmental confound:** this diagnostic ran on a workstation with several other
+concurrent agent sessions active (visible in `ps aux` throughout: opencode, multiple `claude`
+processes), and system-wide `MemAvailable` was thin (2.6-3.4 GB) for parts of the run. The
+kernel-level evidence above (no `dmesg`/`journalctl` OOM-killer hits) argues this was a genuine
+Java-heap exhaustion rather than host-level memory starvation, but a fully idle-machine rerun
+would be the cleanest possible confirmation and is recommended before fully closing this out.
+**Instrumentation for a concrete "N copies per decision" count (the next planned step if
+hypothesis (b) held) was not added this session** — the 8g run itself already demonstrated the
+heap fills before even one clean game completes, which is sufficient evidence for the
+hypothesis-(a)-vs-(b) question this session was scoped to answer; a call-count instrumentation
+pass is left for the follow-up session that takes on the `GameCopier` allocation-volume
+characterization/redesign this ticket has been deferring.
+**Regression baseline unaffected:** `forge.ai.simulation.*` + `forge.ai.ultron.*` = 233/233
+(unchanged), `forge.ai.llm.runtime.Ultron*` = 34/42 (unchanged) — the `ExceptionHandler` change
+is isolated to uncaught-exception delivery and touches no simulation/AI logic.
+
+**Status: still BLOCKING — hypothesis (b) supported, not resolved by heap sizing.** Do
+**not** proceed to the deferred Phase 1 smoke test or the Phase 2 600-game statistical gate at
+any heap size tested so far. This is now NEEDS-FOLLOWUP: a future session should (a) add the
+`GameCopier.makeCopy()` call-count instrumentation described in session 2's findings and compare
+against the P2.4-P2.6 candidate-pruning design targets (3-6 main-phase / 3-6 attack / 3-5 block
+candidates), and (b) consider whether copies are being retained/leaked rather than promptly
+GC'd. The headless-hang fix (finding 1) is DONE and safe to keep regardless of how the
+GameCopier investigation resolves — it is a strict safety improvement with no dependency on the
+OOM root cause.
 
 ---
 

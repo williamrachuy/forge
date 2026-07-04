@@ -23,6 +23,7 @@ import forge.gui.error.BugReporter;
 import forge.localinstance.properties.ForgeConstants;
 import forge.util.MultiplexOutputStream;
 
+import java.awt.GraphicsEnvironment;
 import java.io.*;
 import java.lang.Thread.UncaughtExceptionHandler;
 import java.nio.channels.Channels;
@@ -189,17 +190,47 @@ public class ExceptionHandler implements UncaughtExceptionHandler {
     /** {@inheritDoc} */
     @Override
     public final void uncaughtException(final Thread t, final Throwable ex) {
+        if (GraphicsEnvironment.isHeadless()) {
+            handleHeadlessCrash(t, ex);
+            return;
+        }
         BugReporter.reportException(ex);
     }
 
     /**
      * This Method is called by AWT when an error is thrown in the event
      * dispatching thread and not caught.
-     * 
+     *
      * @param ex
      *            a {@link java.lang.Throwable} object.
      */
     public final void handle(final Throwable ex) {
+        if (GraphicsEnvironment.isHeadless()) {
+            handleHeadlessCrash(Thread.currentThread(), ex);
+            return;
+        }
         BugReporter.reportException(ex);
+    }
+
+    /**
+     * In a headless environment (e.g. a simstats sim run with no display) {@link BugReporter#reportException}
+     * ultimately calls {@code GuiDesktop.showBugReportDialog} -> {@code BugReportDialog.show()}, which pops an
+     * AWT dialog and blocks forever on {@code Object.wait()} against the AWT tree lock — there is no display to
+     * render it and no user to dismiss it. The JVM then sits at ~99% CPU indefinitely instead of exiting, silently
+     * burning wall-clock time (this exact mechanism produced two multi-hour silent hangs during TICKET-V3-207).
+     * <p>
+     * Headless callers of this handler are, by construction, genuinely uncaught crashes (thread death or an
+     * unhandled AWT-dispatch-thread exception) rather than the recoverable errors other {@code BugReporter}
+     * call sites report — so unlike {@link BugReporter#reportException}, it is always correct here to log and
+     * exit rather than attempt to keep the process alive. Log the full stack trace to stderr (already tee'd to
+     * the active per-process log file by {@link #registerErrorHandling()}'s {@code MultiplexOutputStream}) and
+     * force a non-zero exit so a headless crash fails fast and visibly instead of hanging.
+     */
+    private static void handleHeadlessCrash(final Thread t, final Throwable ex) {
+        System.err.println("Uncaught exception on thread \"" + t.getName()
+                + "\" in a headless environment - exiting instead of showing a crash dialog (see TICKET-V3-207):");
+        ex.printStackTrace();
+        System.err.flush();
+        System.exit(1);
     }
 }
