@@ -136,6 +136,31 @@ Smoke-tested against the existing 25-game `battlebox_monarch_4p_ultron/games.jso
 with and without `run.aiProfiles`, exercising the `--seat` fallback) — see verification
 results below.
 
+### TICKET-V3-007: 500-game all-Default control run — baseline win-rate distribution [DONE 2026-07-04]
+Run: `configs/simstats/v3_control_default_4p.ini`, 500 games, seed 910123, seat rotation on,
+2 workers x 3g heap via `run_parallel.sh` (`ultron_v3_control` tmux session). Started
+2026-07-03 18:13:43, finished 2026-07-04 08:13:20 — **13h59m wall time**, ~35.7 games/hour
+combined (2 workers). Output: `simstats/out/v3_control_default_4p/games.jsonl` (500 records,
+merged cleanly from 2 shards of 250).
+
+**Results (via `tools/simstats/gate.py`):**
+- Timeouts: 10/500 (2.0%), excluded from win-rate denominator per design. 0 errors.
+- Games counted: 490. Overall win rate: **24.7%** (Wilson 95% CI: [21.1%, 28.7%]).
+- Per-seat win rates — no detectable seat/turn-order bias at this sample size:
+
+  | Seat | Win rate | 95% CI |
+  |---|---|---|
+  | 0 | 24.7% | [21.1%, 28.7%] |
+  | 1 | 25.3% | [21.7%, 29.3%] |
+  | 2 | 24.7% | [21.1%, 28.7%] |
+  | 3 | 24.9% | [21.3%, 28.9%] |
+
+**Conclusion:** the flat 25% baseline assumption (used throughout the v3 plan's power
+analysis, §8) is confirmed accurate at n=500. The small-sample seat-3 disadvantage hinted at
+by pre-v3 25-game runs was noise — fully washed out here. This is the trustworthy control
+baseline every future Ultron candidate win rate gets compared against (paired same-seed
+control runs per the plan's statistical protocol, §8).
+
 ### TICKET-V3-006: Ultron loads v2 learned state even with adaptiveWeights=false [OPEN, RISK]
 Observed during the P0 smoke run of `v3_ultron_vs_default_4p.ini` (adaptiveWeights=false):
 startup still logs `[ULTRON-WEIGHTS] Loaded 3 overrides` and `[ULTRON-CARD-STATS] Loaded 416
