@@ -296,6 +296,100 @@ reference `UltronWeights`/`UltronCardStats` in a future change, the guard would 
 
 ---
 
+## EPIC: ULTRON-V3 / PHASE-2
+**Status:** IN PROGRESS (P2.1 done; P2.2 data point collected; P2.3-P2.6 not started)
+**Branch:** `ultron-v3`
+**Goal:** Simulation-based big-3 decisions per plan §7 Phase 2. Plan doc:
+`/home/william/agents/brainstorm/plans/ultron-v3-search-and-learning.md` §6, §7 P2.1-P2.6.
+
+### TICKET-V3-201: GameCopier Battlebox fidelity harness (P2.1) [DONE 2026-07-04]
+Files: `forge-ai/src/main/java/forge/ai/simulation/GameCopier.java`,
+`forge-gui-desktop/src/test/java/forge/ai/simulation/GameCopierBattleboxFidelityTest.java` (new).
+
+**Verdict: GameCopier did NOT correctly copy Battlebox shared zones — confirmed the plan's #1
+predicted hazard — and has now been fixed.**
+
+**What the harness does:** builds a real 4-player Battlebox Monarch mid-game-shaped `Game`
+(`GameRules(GameType.Constructed)` + `addAppliedVariant(GameType.Battlebox)`, 4 `RegisteredPlayer`s),
+wires real `SharedPlayerZone` instances for Library/Command/Graveyard the same way
+`Match.prepareBattleboxSharedLibrary/Command/Graveyard` do it (see
+`forge.game.MatchBattleboxSharedZoneTest` for the established convention this harness follows),
+populates all zones with real named cards owned by different players, adds a commander (exercises
+`Player.addCommander`/`createCommanderEffect`), gives one player +1/+1 counters on a permanent,
+sets monarch (moved hands once), and sets distinct life totals + turn/phase via `devModeSet`. It
+then calls `GameCopier.makeCopy()` and asserts a structural snapshot (zone contents by name as a
+multiset, per-player life totals, monarch holder, counter counts, commander flag/owner, and —
+critically — *whether the shared zone is still the same object instance across all 4 players in
+each game*) matches between original and copy.
+
+Note on test-setup style: the fixture is built directly via Game/Player/Card APIs rather than
+by driving a live turn-by-turn game loop from a real Battlebox deck (`BattleboxConfig`/land-station
+decklists) — this exercises the exact same `GameCopier` code paths with far less flakiness, and
+matches the existing convention `forge.game.MatchBattleboxSharedZoneTest` already uses for testing
+this exact shared-zone subsystem. Documented as a deliberate choice, not a shortcut of convenience.
+
+**Bug found (thrown or silent? SILENT — the actual failure mode the plan's risk section warned
+about):** `GameCopier.makeCopy()` clones each `RegisteredPlayer`/`Player` independently and never
+re-establishes `SharedPlayerZone` linkage for the copy. `Player.getZone(ZoneType)` falls back to a
+private per-player zone whenever `sharedLibraryZone`/`sharedCommandZone`/`sharedGraveyardZone` is
+null, and the copy's freshly-constructed `Player`s all start with those fields null. Net effect:
+`addCard()`'s `zoneOwner.getZone(zone).add(newCard)` silently routed every shared-zone card into
+each card's individual *owner's* now-private zone instead of one zone shared by all 4 players —
+no exception, wrong game state. Verified directly: before the fix, the harness's
+"is Library shared across all 4 players in the copy" check was `false` (it's `true` in the
+original) while the copy's card-name contents still matched by coincidence (all library cards
+happened to route to the correct-looking zone per owner in this particular fixture) — i.e. this
+is exactly the "an incorrect silent copy... will NOT throw" failure mode flagged in the plan's §6.
+
+**Fix applied (small, contained to `GameCopier.java`):** new `copySharedZones(Game)` /
+`copySharedZoneIfPresent(Game, ZoneType)` private methods, called after the new `Player`s are
+constructed and player-mapped but before `copyGameState()` (which is what actually invokes
+`addCard()`). For each of Library/Command/Graveyard: groups the *original* players by the
+identity of the `PlayerZone` instance they use for that zone type (an `IdentityHashMap`); any
+group with 2+ members is treated as an actual shared zone, and a fresh `SharedPlayerZone` is
+constructed for the copy and wired onto the corresponding mapped new players via the existing
+public `setSharedLibraryZone`/`setSharedCommandZone`/`setSharedGraveyardZone` setters — mirroring
+exactly what `Match.prepareBattleboxSharedLibrary/Command/Graveyard` do for a real game start,
+minus the `BattleboxConfig`-driven population (cards are populated by the existing `addCard()`
+loop right after). Non-Battlebox (2-player Constructed) copies are unaffected: every group has
+size 1, so the loop body never runs and no `SharedPlayerZone` is created — this only activates
+when a real shared zone existed in the original game.
+
+**Verified:** new harness test passes 2/2 after the fix (`testGameCopierPreservesBattleboxShared-
+ZonesMonarchAndCounters`, `benchmarkGameCopierThroughputOnBattleboxMidGameState`). Monarch holder,
+per-player life totals, +1/+1 counter count, and commander flag/owner all matched even before the
+fix — only the shared-zone-identity check failed; the fix does not touch those paths and they
+remain green. Full existing `forge.ai.simulation.*` suite (`GameSimulationTest`,
+`SpellAbilityPickerSimulationTest`) plus `forge.ai.ultron.UltronPlayerControllerTest` — 210/210
+pass, no regression from the `GameCopier` change. Baseline `forge.ai.llm.runtime.Ultron*` suite —
+34/42 pass, same 8 pre-existing "Ahead-state ..." failures as TICKET-V3-005, unchanged.
+
+**P2.2 data point (copies/sec, single thread, same 4p Battlebox mid-game fixture, 200 iterations
+after 20-iteration warm-up):** **~97-106 copies/sec** (two runs: 105.7/sec, 97.1/sec) on this box —
+comfortably above the plan's §6 budget target of ≥30/sec, and above the §7 P2.5/Phase 5
+stretch-goal threshold of ~50/sec too. This is a single fixed fixture (not turn-1/8/15 as the full
+P2.2 ticket calls for) — a real P2.2 session should still benchmark across game-progress stages,
+but this number says search-based simulation is very unlikely to be throughput-blocked on this
+hardware.
+
+**Recommendation for Phase 2 scoping:** proceed as planned. The gating risk (GameCopier fidelity)
+is resolved, not just narrowed-around — Battlebox multiplayer simulation can now be built on top of
+`GameCopier`/`GameSimulator` directly rather than needing the "purpose-built lightweight combat
+model" fallback the plan's §10 risk-mitigation contemplated. Recommend the next Phase 2 session
+start with **P2.3 (multiplayer interim evaluator)** since `GameStateEvaluator`'s 2-player-centric
+TODO is the next-most load-bearing gap, now that copies of the state it evaluates are trustworthy.
+A full P2.2 benchmark (turn-1/8/15 states, possibly multi-thread) remains open but is now a
+nice-to-have data point rather than a gate, given the margin above 30/sec.
+
+**Residual/out-of-scope for this session (left for later Phase 2 sessions per this session's
+instructions):** did not touch `GameStateEvaluator` (P2.3), `SpellAbilityPicker`/`Plan` main-phase
+routing (P2.4), combat/block enumeration (P2.5), or stack-response simulation (P2.6). Did not run
+any `run_parallel.sh`/`run_simstats.sh` batch — the `v3_control_default_4p` control run
+(`ultron_v3_control` tmux session, 2 workers) was active throughout this session and was left
+undisturbed.
+
+---
+
 ## EPIC: ULTRON-AI / CORE-RUNTIME
 Fast non-LLM runtime AI layer. All under `forge-ai/src/main/java/forge/ai/llm/runtime/`.
 

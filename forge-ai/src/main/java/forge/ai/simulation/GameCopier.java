@@ -24,11 +24,14 @@ import forge.game.spellability.SpellAbility;
 import forge.game.spellability.SpellAbilityStackInstance;
 import forge.game.staticability.StaticAbility;
 import forge.game.trigger.TriggerType;
+import forge.game.zone.PlayerZone;
 import forge.game.zone.PlayerZoneBattlefield;
+import forge.game.zone.SharedPlayerZone;
 import forge.game.zone.ZoneType;
 import forge.item.PaperCard;
 
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -123,6 +126,7 @@ public class GameCopier {
             ((PlayerZoneBattlefield) p.getZone(ZoneType.Battlefield)).setTriggers(false);
         }
 
+        copySharedZones(newGame);
         copyGameState(newGame, aiPlayer);
 
         for (Player origPlayer : playerMap.keySet()) {
@@ -212,6 +216,48 @@ public class GameCopier {
         }
         clone.setPlayer(lp);
         return clone;
+    }
+
+    // Battlebox (this fork's invention) lets several players share a single Library/Command/
+    // Graveyard PlayerZone instance (see SharedPlayerZone / Match.prepareBattleboxSharedLibrary
+    // et al.). The plain player-by-player clone loop below has no notion of this: each new Player
+    // starts with its own private zone objects, so without this step, cards that belong in a
+    // shared zone would each land in whichever cloned player happens to own that particular card
+    // -- silently turning one shared zone into several private ones. Must run before
+    // copyGameState(), since addCard() resolves the destination zone via zoneOwner.getZone(zone).
+    private void copySharedZones(Game newGame) {
+        copySharedZoneIfPresent(newGame, ZoneType.Library);
+        copySharedZoneIfPresent(newGame, ZoneType.Command);
+        copySharedZoneIfPresent(newGame, ZoneType.Graveyard);
+    }
+
+    private void copySharedZoneIfPresent(Game newGame, ZoneType zoneType) {
+        // Group the original players by the identity of the PlayerZone instance they use for this
+        // zone type. Any group with more than one member is an actual shared zone (Battlebox);
+        // singleton groups are normal per-player zones and are left untouched.
+        Map<PlayerZone, List<Player>> groups = new IdentityHashMap<>();
+        for (Player origPlayer : origGame.getPlayers()) {
+            PlayerZone zone = origPlayer.getZone(zoneType);
+            groups.computeIfAbsent(zone, k -> new ArrayList<>()).add(origPlayer);
+        }
+        for (List<Player> sharers : groups.values()) {
+            if (sharers.size() < 2) {
+                continue;
+            }
+            Player newHost = playerMap.get(sharers.get(0));
+            SharedPlayerZone newSharedZone = new SharedPlayerZone(zoneType, newHost);
+            for (Player origSharer : sharers) {
+                Player newSharer = playerMap.get(origSharer);
+                newSharedZone.addPlayer(newSharer);
+                if (zoneType == ZoneType.Library) {
+                    newSharer.setSharedLibraryZone(newSharedZone);
+                } else if (zoneType == ZoneType.Command) {
+                    newSharer.setSharedCommandZone(newSharedZone);
+                } else if (zoneType == ZoneType.Graveyard) {
+                    newSharer.setSharedGraveyardZone(newSharedZone);
+                }
+            }
+        }
     }
 
     private void copyGameState(Game newGame, Player aiPlayer) {
