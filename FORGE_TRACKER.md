@@ -817,6 +817,144 @@ recursion proof. Two reasonable next steps:
 
 ---
 
+### TICKET-V3-206: Stack response (P2.6) [DONE, 2026-07-04]
+Files: `forge-ai/src/main/java/forge/ai/ultron/UltronPlayerController.java` (javadoc + telemetry
+only, no new decision logic), `forge-gui-desktop/src/test/java/forge/ai/ultron/
+UltronStackResponseSimulationTest.java` (new, 4 tests).
+
+**Scope actually completed: verification + telemetry, not new decision-routing code — confirmed by
+reading, not assumed.** `PhaseHandler.mainLoopStep` (`PhaseHandler.java:1078`) is the *only*
+priority-pass entrypoint in the engine: `pPlayerPriority.getController().chooseSpellAbilityToPlay()`
+is called identically whether it's a player's own main phase or a response window during someone
+else's turn/stack. There is no separate "should I respond to the stack" override point to add.
+P2.4 (TICKET-V3-203) already routed 100% of these calls through `SpellAbilityPicker`, whose
+candidate generation naturally narrows to instant-speed plays when the stack is non-empty (via
+`SpellAbility.isLegalAfterStack()`/timing checks in `canPlayAndPayForSim`) and always treats "pass"
+as the implicit baseline (`chooseSpellAbilityToPlayImpl` only replaces `bestSa` when a candidate's
+simulated score beats `origGameScore`). This session's job was therefore to *verify* that path
+behaves sensibly for stack-response-shaped decisions and wire in the telemetry detail the plan
+asked for — which is exactly what happened, plus one real, previously-undocumented gap found along
+the way (below).
+
+**Telemetry added:** `chooseSpellAbilityToPlay()` now records a `recordDetail` snapshot
+(`stackNonEmpty`, `candidateCount`, `chosenScore`) alongside its existing `record()` call, matching
+the pattern `declareAttackers`/`declareBlockers` already established in TICKET-V3-204/205.
+`stackNonEmpty` is the key new signal — it lets per-game JSONL analysis distinguish main-phase
+decisions from stack-response ones without any decision-routing change.
+
+**A real, previously-undocumented gap found while building this session's verification tests
+(distinct from the already-known weakest-opponent gap): responses that legally target something ON
+the stack — chiefly true countermagic — can never be chosen today, full stop.** `GameCopier.
+makeCopy` only preserves the actual `SpellAbilityStackInstance` queue (`game.getStack()`) when the
+static `GameSimulator.COPY_STACK` flag is true, and it defaults to `false` (`GameSimulator.java:20`,
+`GameCopier.java:177-178`) — that flag is only flipped on transiently inside `GameSimulator`'s own
+constructor to resolve the *original* game's stack once for a baseline comparison score, never for
+the copies actually used to simulate a candidate spell. So when `SpellAbilityPicker` simulates
+"what if I cast Counterspell right now," the copy's `Stack` card zone still shows the opposing
+spell's card (that part of `GameCopier` is unconditional), but there is no ability-stack entry for
+`MultiTargetSelector` to offer `Counterspell` as a legal `TargetType$ Spell` target —
+`hasPossibleTargets()` is false, no target is ever chosen, `SpellAbility.isTargetNumberValid()`
+fails, `ComputerUtil.handlePlayingSpellAbility` returns `false`, and `GameSimulator.
+simulateSpellAbility` unconditionally scores that candidate as `Integer.MIN_VALUE` — worse than
+passing, always, regardless of how severe the countered threat actually is. **Confirmed by direct
+instrumentation this session (temporary debug prints in `ComputerUtil.handlePlayingSpellAbility`
+and `SpellAbilityPicker`, reverted before commit — not left in the tree), not just code-reading:** a
+Counterspell candidate against an unanswered Serra Angel evaluated to exactly `MIN_VALUE` every
+time; `chooseSpellAbilityToPlay()` returned `null` (declined to respond) even though countering was
+obviously correct. This is a *harder* failure than the weakest-opponent gap — not a fidelity/optimism
+margin, a permanent structural inability to ever counter anything — but it is **not fixed here**:
+this session's constraints explicitly forbid touching `GameCopier.java`, and the real fix
+(`GameCopier` unconditionally preserving the ability-stack queue, not just the zone's cards) is
+squarely that file. Anything targeting the battlefield/players instead of the stack (removal,
+combat tricks, burn) is unaffected and works correctly through this same path today — confirmed by
+`testStackResponseKillsLethalAttackerBeforeBlockers` below.
+
+**Verified — real 4-player Battlebox states.** New `UltronStackResponseSimulationTest` (4 tests):
+  - `testStackResponseKillsLethalAttackerBeforeBlockers` — Ultron at 4 life facing an unblocked
+    4-power attacker (no blockers available) holds Doom Blade; passing is lethal, killing the
+    attacker survives. The pre-existing (non-Ultron-specific) `Plan`/"phase bloom" heuristic
+    legitimately defers the decision to the declare-blockers priority window first (since nothing
+    changes the outcome by waiting in this fixture); the test drives the phase forward to where the
+    plan is waiting, exactly as the real priority loop's next pass would, and confirms Doom Blade is
+    then chosen.
+  - `testStackResponseDeclinesWhenNoLegalResponseExists` — stack non-empty (opponent casts
+    Divination, zero board impact), Ultron's only instant has no legal target anywhere in the game
+    (0 candidates) — passing is correct and reached via the simulation path, not a fallback.
+  - `testCounterspellCandidateCannotBeEvaluatedDueToUncopiedStack` — regression-guarding
+    documentation of the gap above: asserts *today's actual* (unfortunate) behavior — Counterspell
+    against a serious, board-relevant threat still evaluates to `null` — labeled explicitly as a
+    known gap to revisit/invert if `GameCopier` is ever fixed to copy the stack, not a false-positive
+    "correct decline."
+  - `testUltronVsUltronStackResponseDoesNotRecurseOrHang` — mandatory recursion-safety check even
+    though the analysis below concludes there's no new recursion surface: a mirror game (both seats
+    Ultron) with a non-empty stack completes in well under 30s.
+
+**Recursion analysis — no new guard needed, confirmed by tracing the actual call paths (not
+assumed) per this session's mandate.** Unlike `declareAttackers`/`declareBlockers` (re-entered
+mid-simulation because `GameStateEvaluator.simulateUpcomingCombatThisTurn`'s `devAdvanceToPhase`
+runs real combat turn-based-actions that call `getController().declareBlockers(...)` on a copy's
+players — TICKET-V3-205), `chooseSpellAbilityToPlay()` is never invoked on a copied/simulated
+game's players. `devAdvanceToPhase` only runs phase-transition turn-based actions (never the
+interactive priority loop in `mainLoopStep`), so a copy's `chooseSpellAbilityToPlay()` is never
+called that way. `GameSimulator`'s own internal recursion for "what would I play after this"
+(`SpellAbilityPicker sim = new SpellAbilityPicker(simGame, aiPlayer); sim.
+chooseSpellAbilityToPlay(controller)`) calls the picker object directly, never
+`aiPlayer.getController()` — so it can never construct or invoke a fresh `UltronPlayerController`.
+And `GameSimulator.resolveStack` (the same weakest-opponent-gap mechanism TICKET-V3-203/204/205
+already documented) explicitly constructs a plain `new PlayerControllerAi(...)` for the responding
+opponent rather than looking up that seat's real profile — so even that path can never reach
+`UltronPlayerController`. `SIMULATION_IN_PROGRESS` is therefore correctly left unused by this
+method — there is no cross-controller nesting for it to guard against here, only for the combat
+overrides.
+
+**The weakest-opponent gap (`GameSimulator.simulateSpellAbility`'s `resolveStack(simGame,
+aiPlayer.getWeakestOpponent())`, TICKET-V3-203/204/205) is now directly load-bearing for
+correctness, not just an optimism margin — still correctly deferred to Phase 4 per this session's
+instructions, not fixed.** For P2.4's main-phase case it only affected the score of "what happens
+after my own spell resolves." For stack response, the same call resolves the game state
+*immediately after Ultron's own simulated response* — so a third, non-weakest opponent's
+interaction (a second counterspell, a trick that changes whether Ultron's removal actually saves
+it) is invisible to the simulated score. This session's decision to leave both this gap and the
+newly-found stack-copy gap unfixed follows the same pattern TICKET-V3-203/204/205 established:
+documented precisely, deferred to Phase 4 (or an earlier dedicated fix session for the stack-copy
+one specifically, since it isn't really a "hidden information" problem the way the weakest-opponent
+one is), not patched inline.
+
+Full `forge.ai.simulation.*` + `forge.ai.ultron.*` aggregate `TestSuite` — **230/230 pass** (226
+prior baseline + 4 new, 0 failures, 0 regressions). Baseline `forge.ai.llm.runtime.Ultron*` suite —
+**34/42 pass**, identical 8 pre-existing "Ahead-state ..." failures, unchanged.
+`mvn -pl forge-ai,forge-gui-desktop -am clean package -DskipTests -q` succeeds. Coverage note:
+`chooseSpellAbilityToPlay` was already Ultron-answered since P2.4 — this session did not add a new
+method to the coverage count (still 3/114: `chooseSpellAbilityToPlay`, `declareAttackers`,
+`declareBlockers`), but meaningfully expanded *what* that one method's coverage represents (stack
+response as well as main-phase play) and made that distinction visible via the new
+`stackNonEmpty` telemetry field. Control run (`ultron_v3_control` tmux session,
+`v3_control_default_4p` shard_0/shard_1, same PIDs 643469/643495 as session start) confirmed still
+running throughout this session (437→461/500 combined games) — left completely undisturbed; no
+`run_parallel.sh`/`run_simstats.sh`/batch run was launched this session, only `mvn test`/`mvn
+package`. It had not finished by session end; RAM stayed at 3-5GB free throughout (per the task's
+own >2GB bar a smoke test would have been permissible if the control run had finished, but it did
+not), so no additional direct `SimulateStats` invocation was attempted.
+
+**Phase 2 core decision-surface assessment (main-phase, attack, block, stack response all
+simulation-driven): ready for the 600-game statistical gate, with one caveat worth noting rather
+than blocking on.** The plan's P2.1-P2.6 scope is now functionally complete: fidelity-verified
+copying (P2.1/TICKET-V3-201), copy/simulate benchmark headroom (P2.2), a multiplayer-aware interim
+evaluator (P2.3/TICKET-V3-202), and all four decision points (main phase, attacks, blocks, stack
+response) route through simulation with telemetry proving it (not silent fallback). The caveat: the
+countermagic gap found this session means Ultron will never actually counter anything in the
+600-game gate run — this understates Ultron's true ceiling (countermagic is a real, if secondary,
+tool in Battlebox) but does **not** invalidate the gate as a measurement of the current
+decision-surface's strength, since the gate is explicitly meant to measure what's built *now*, not a
+hypothetical future version. Recommendation: proceed straight to scheduling the N=600 seat-rotated
+gate run (plan §7/§8) rather than spending another session chasing the `GameCopier` stack-copy fix
+first — that fix is real, valuable work, but it's better sequenced as a fast-follow after the gate
+establishes a baseline number for what P2.1-P2.6 achieves today, rather than as a blocking
+prerequisite. If the gate result comes back surprisingly weak, revisit this recommendation and
+consider whether the counter-magic gap contributed enough to justify fixing it before Phase 3.
+
+---
+
 ## EPIC: ULTRON-AI / CORE-RUNTIME
 Fast non-LLM runtime AI layer. All under `forge-ai/src/main/java/forge/ai/llm/runtime/`.
 

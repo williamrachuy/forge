@@ -8,6 +8,7 @@ import forge.ai.llm.runtime.UltronTableThreatSummary;
 import forge.ai.llm.runtime.UltronThreatModel;
 import forge.ai.simulation.GameCopier;
 import forge.ai.simulation.GameStateEvaluator;
+import forge.ai.simulation.SpellAbilityPicker;
 import forge.card.ColorSet;
 import forge.card.ICardFace;
 import forge.card.mana.ManaCost;
@@ -1185,15 +1186,103 @@ public class UltronPlayerController extends PlayerControllerAi {
      * <p>Fails safe: any {@code RuntimeException} from the simulation path falls back to inherited
      * ({@code super}) behavior and is recorded as {@code answeredBy=inherited} so telemetry/coverage
      * never lies about an exception-driven fallback.
+     *
+     * <p><b>P2.6 (FORGE_TRACKER TICKET-V3-206) finding -- stack response is this same method, not a
+     * separate decision point.</b> {@code PhaseHandler.mainLoopStep} (the game's only priority-pass
+     * entrypoint, {@code PhaseHandler.java:1078}) calls
+     * {@code pPlayerPriority.getController().chooseSpellAbilityToPlay()} identically whenever a
+     * player has priority -- during their own main phase <em>and</em> during any other player's turn
+     * with a non-empty stack. Forge has no separate "should I respond to the current stack object"
+     * override point; "stack response" is simply this method invoked while
+     * {@code game.getStack()} happens to be non-empty. {@code SpellAbilityPicker} (see its own
+     * class) already handles that case correctly without any main-phase-vs-response special-casing:
+     * it explicitly declines to act on its own spell ({@code "Pass if top of stack is owned by
+     * me"}), its candidate list ({@link SpellAbilityPicker#getCandidateSpellsAndAbilities()}) is
+     * naturally restricted to instant-speed abilities whenever the stack is non-empty (sorcery-speed
+     * candidates fail {@code SpellAbility#isLegalAfterStack()}/timing checks in
+     * {@code canPlayAndPayForSim}), and "pass" is always an implicit candidate -- the search only
+     * ever returns something other than {@code null} if simulating it scores strictly better than
+     * doing nothing. This is exactly the "respond vs pass" search P2.6 asked for; no new
+     * candidate-enumeration or decision-routing code was needed. See
+     * {@code UltronStackResponseSimulationTest} for the verification (countering a lethal-relevant
+     * threat, declining to waste removal/counters on a low-value target, and killing an attacker in
+     * response before blockers to survive lethal combat -- all routed through this one method).
+     *
+     * <p><b>No new recursion surface.</b> Unlike {@link #declareAttackers}/{@link #declareBlockers}
+     * (which get re-entered mid-simulation because {@code GameStateEvaluator.
+     * simulateUpcomingCombatThisTurn}'s {@code devAdvanceToPhase} runs real combat turn-based-actions
+     * that call {@code getController().declareBlockers(...)} on a copy's players -- see
+     * TICKET-V3-205), this method is never invoked on a copied/simulated game's players at all.
+     * {@code devAdvanceToPhase} only runs phase-transition turn-based actions (never the interactive
+     * priority loop in {@code mainLoopStep}), so a copy's {@code chooseSpellAbilityToPlay()} is never
+     * called that way. {@code GameSimulator}'s own internal recursion for "what would I play after
+     * this" ({@code SpellAbilityPicker sim = new SpellAbilityPicker(simGame, aiPlayer); sim.
+     * chooseSpellAbilityToPlay(controller)}) calls the picker object directly, never
+     * {@code aiPlayer.getController()} -- so it can never construct or invoke a fresh
+     * {@code UltronPlayerController}. And {@code GameSimulator.resolveStack} (used to resolve
+     * responses during scoring, the same {@code // TODO: Support multiple opponents.} weakest-
+     * opponent gap TICKET-V3-203/204/205 already documented) explicitly constructs a plain
+     * {@code new PlayerControllerAi(...)} for the responding opponent rather than looking up that
+     * seat's real profile -- so even that path can never reach {@code UltronPlayerController}.
+     * {@link #SIMULATION_IN_PROGRESS} is therefore correctly left unused by this method: there is no
+     * cross-controller nesting for it to guard against here, only for the combat overrides.
+     *
+     * <p><b>The weakest-opponent gap is now directly load-bearing for correctness, not just an
+     * optimism margin (still correctly deferred to Phase 4 per this session's instructions).</b> For
+     * P2.4's main-phase case, the gap only affected the score of "what happens after I resolve my
+     * own spell" lookahead. For stack response, the exact same {@code resolveStack(simGame,
+     * aiPlayer.getWeakestOpponent())} call is what resolves the game state *immediately after*
+     * Ultron's own simulated response -- so if a third, non-weakest opponent also held interaction
+     * relevant to the outcome (e.g. a second counterspell, or a trick that changes whether Ultron's
+     * removal actually saves it), the simulated score won't reflect it. This is a real, direct input
+     * to the "should I respond" decision now (not fixed here -- Phase 4's belief-state/determinization
+     * work is still the right place, per the plan and prior tickets' precedent).
+     *
+     * <p><b>A second, previously-undocumented gap found while building this session's verification
+     * tests (distinct from the weakest-opponent one above): responses that legally target something
+     * on the stack itself -- chiefly true countermagic -- can never be chosen today.</b>
+     * {@code GameCopier.makeCopy} only preserves the actual {@code SpellAbilityStackInstance} queue
+     * ({@code game.getStack()}) when the static {@code GameSimulator.COPY_STACK} flag is true, which
+     * it is not by default (see {@code GameSimulator.java:20}, {@code GameCopier.java:177-178}) --
+     * that flag only gets flipped on transiently, inside {@code GameSimulator}'s own constructor, to
+     * resolve the *original* game's stack once for a comparable baseline score, never for the copies
+     * actually used to simulate a candidate. So when scoring "what if I cast Counterspell now," the
+     * copy's card-zone view of {@code Stack} still shows the opposing spell's card (that part of
+     * {@code GameCopier} is unconditional), but there is no ability-stack entry for
+     * {@code MultiTargetSelector} to offer as a legal {@code TargetType$ Spell} target --
+     * {@code hasPossibleTargets()} is false, no target is ever chosen, {@code SpellAbility.
+     * isTargetNumberValid()} fails, and {@code ComputerUtil.handlePlayingSpellAbility} returns
+     * {@code false} -- {@code GameSimulator.simulateSpellAbility} then unconditionally scores that
+     * candidate as {@code Integer.MIN_VALUE}, regardless of how severe the countered threat actually
+     * is. Confirmed by direct instrumentation this session (not just code-reading): a Counterspell
+     * candidate against an unanswered Serra Angel evaluates to {@code MIN_VALUE} every time, so
+     * {@code chooseSpellAbilityToPlay()} always returns {@code null} rather than countering it -- see
+     * {@code UltronStackResponseSimulationTest#testCounterspellCandidateCannotBeEvaluatedDueToUncopiedStack()}.
+     * This is a harder failure than the weakest-opponent gap (a permanent, not probabilistic,
+     * inability to ever counter anything) but is <b>not fixed here</b>: this session's constraints
+     * explicitly forbid touching {@code GameCopier.java}, and a real fix means
+     * {@code GameCopier} unconditionally preserving the ability-stack queue (not just the zone's
+     * cards), which is squarely that file. Recommended as an early Phase 3/4 prerequisite --
+     * countermagic is common enough in Battlebox that this caps Ultron's ceiling independent of the
+     * belief-state/hidden-information work Phase 4 already plans. Anything targeting the
+     * battlefield/players instead of the stack (removal, combat tricks, burn) is unaffected and works
+     * correctly through this same path today.
      */
     @Override
     public List<SpellAbility> chooseSpellAbilityToPlay() {
         final long __start = System.nanoTime();
         List<SpellAbility> __result;
         boolean __answeredByUltron;
+        boolean __stackNonEmpty = !getGame().getStack().isEmpty();
+        int __candidateCount = 0;
+        Integer __chosenScore = null;
         try {
-            SpellAbility __chosen = getAi().getSimulationPicker().chooseSpellAbilityToPlay(null);
+            SpellAbilityPicker __picker = getAi().getSimulationPicker();
+            __candidateCount = __picker.getCandidateSpellsAndAbilities().size();
+            SpellAbility __chosen = __picker.chooseSpellAbilityToPlay(null);
             __result = __chosen == null ? null : Lists.newArrayList(__chosen);
+            GameStateEvaluator.Score __score = __picker.getScoreForChosenAbility();
+            __chosenScore = __score == null ? null : __score.value;
             __answeredByUltron = true;
         } catch (RuntimeException __ex) {
             Logger.warn("[Ultron] simulation-based chooseSpellAbilityToPlay() threw " + __ex
@@ -1201,6 +1290,11 @@ public class UltronPlayerController extends PlayerControllerAi {
             __result = super.chooseSpellAbilityToPlay();
             __answeredByUltron = false;
         }
+        Map<String, Object> __detail = new LinkedHashMap<>();
+        __detail.put("stackNonEmpty", __stackNonEmpty);
+        __detail.put("candidateCount", __candidateCount);
+        __detail.put("chosenScore", __chosenScore);
+        telemetry.recordDetail("chooseSpellAbilityToPlay", __detail);
         telemetry.record("chooseSpellAbilityToPlay", __answeredByUltron, System.nanoTime() - __start);
         return __result;
     }
