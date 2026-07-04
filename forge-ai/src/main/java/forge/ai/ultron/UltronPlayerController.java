@@ -767,11 +767,393 @@ public class UltronPlayerController extends PlayerControllerAi {
         }
     }
 
+    /**
+     * Guards against nested simulation recursion (see FORGE_TRACKER TICKET-V3-205 and the
+     * recursion-safety note left by TICKET-V3-204). {@code ThreadLocal}, not an instance field:
+     * a nested call during simulation lands on a <em>different</em> {@code UltronPlayerController}
+     * instance (a fresh one constructed for the opponent inside the copied game -- see
+     * {@link #declareBlockers}'s javadoc for why), so an instance flag on {@code this} would never
+     * be seen by that other instance. A thread-local is exactly the right shape: it is shared by
+     * every {@code UltronPlayerController} touched on this call stack/thread (parallel sim workers
+     * each run on their own thread, so this never leaks across games), and it is naturally reset
+     * because the try/finally around the outer simulation call always clears it back to false, even
+     * on exception.
+     */
+    private static final ThreadLocal<Boolean> SIMULATION_IN_PROGRESS = ThreadLocal.withInitial(() -> Boolean.FALSE);
+
+    /**
+     * P2.5 continuation (FORGE_TRACKER TICKET-V3-205) -- block declaration now runs the same
+     * pruned-candidate simulation search as {@link #declareAttackers}, instead of delegating to
+     * {@code AiBlockController} via {@code super}.
+     *
+     * <p><b>Candidate generation (pruned, per plan §7 P2.5's "(a) no blocks, (b) block to prevent
+     * lethal damage only, (c) block the biggest threat(s) for value, (d) block everything blockable
+     * if that's clearly correct", roughly 3-5 candidates):</b>
+     * <ol>
+     *   <li>No blocks -- always evaluated as the honest baseline.</li>
+     *   <li>Lethal-prevention chumps -- if the unblocked incoming damage from this defender's
+     *       attackers would be lethal, greedily chump/trade the biggest attackers with the
+     *       <em>cheapest</em> available legal blocker (by combined power+toughness) until incoming
+     *       damage drops below the defender's life. A no-op (identical to "no blocks") when damage
+     *       isn't lethal -- naturally deduplicated by {@link #addCandidateIfNew}, no special-casing
+     *       needed.</li>
+     *   <li>Value blocks on the biggest threat(s) -- for up to the two highest-power attackers,
+     *       assign a blocker only if it is a <em>clean kill</em> (blocker's power &gt;= attacker's
+     *       toughness, and the blocker itself survives the attacker's power). Chumps and even trades
+     *       are deliberately excluded here -- this candidate is specifically "kill it for free."</li>
+     *   <li>Block everything with a favorable outcome -- greedily assign a legal blocker to every
+     *       attacker that has one, preferring clean kills first, falling back to even trades (both
+     *       die) second, leaving attackers with no non-bad block unblocked. This is the "all trades
+     *       favorable" case from the plan's own wording.</li>
+     * </ol>
+     * Deliberately not full combat math (no first strike/deathtouch/multi-block/trick-awareness --
+     * same spirit as {@link #filterLikelySurvivors}); the simulation scores the real outcome, these
+     * are just pruning heuristics to keep candidate count small.
+     *
+     * <p><b>Simulation mechanism:</b> identical in shape to {@link #declareAttackers} -- for each
+     * candidate, {@link GameCopier} copies the game at the current (blocks-not-yet-declared) combat
+     * state, the candidate's blocker/attacker pairs are added directly to the <em>copy's</em>
+     * {@code Combat} via {@code Combat.addBlocker} (no controller re-entry), and the result is
+     * scored with {@link GameStateEvaluator#getScoreForGameState}, which internally drives the copy
+     * through {@code COMBAT_DAMAGE} before scoring. Highest-scoring candidate's assignments are
+     * applied to the real {@code combat} argument.
+     *
+     * <p><b>Recursion-safety (task-mandated; see FORGE_TRACKER TICKET-V3-204's note and TICKET-V3-205
+     * below for the full answer): confirmed real, and guarded.</b> Reading {@code GameCopier.
+     * clonePlayer} directly (not assuming): for a player whose {@code LobbyPlayer} is already a
+     * {@code LobbyPlayerAi} (true for every AI-controlled seat, including Ultron's), the clone
+     * reuses the exact same {@code LobbyPlayerAi} instance -- it is only replaced with a fresh
+     * {@code LobbyPlayerAi} for non-AI lobby players. Since {@code LobbyPlayerAi.createControllerFor}
+     * decides {@code UltronPlayerController} vs {@code PlayerControllerAi} purely from that instance's
+     * {@code aiProfile} field, and the field is untouched by cloning, every copied game constructs a
+     * <em>fresh</em> {@code UltronPlayerController} for any player whose real seat uses the Ultron
+     * profile. Tracing an actual call path confirms this recurses: when this method's own candidate
+     * scoring calls {@code GameStateEvaluator.getScoreForGameState}, it internally re-copies the
+     * (already-blocks-assigned) game and calls {@code PhaseHandler.devAdvanceToPhase(COMBAT_DAMAGE,
+     * ...)}; because the inner copy's phase field was set via {@code devModeSet} (which does not run
+     * phase-begin side effects) at whatever phase the outer copy was already sitting at, the
+     * <em>next</em> phase's turn-based action is the first one actually executed -- for a
+     * {@code declareAttackers} candidate at {@code COMBAT_DECLARE_ATTACKERS}, that is
+     * {@code COMBAT_DECLARE_BLOCKERS}, whose {@code declareBlockersTurnBasedAction} unconditionally
+     * calls {@code whoDeclaresBlockers.getController().declareBlockers(p, combat)} for every
+     * defending player -- including one running a freshly-constructed {@code UltronPlayerController}
+     * if that seat's profile is Ultron. (The same phase-skip means a controller can never recurse
+     * into *itself* one level down -- confirmed for both {@link #declareAttackers} and this method --
+     * but a *different* Ultron-controlled seat reached mid-combat is a different controller instance
+     * and is not protected by that.) Concretely: in a 4-player Battlebox self-play game where two or
+     * more seats run Ultron, evaluating an attack candidate against an Ultron-controlled defender (or
+     * evaluating a block candidate where the surrounding combat also attacks a *different*
+     * Ultron-controlled defender) would, without a guard, trigger that defender's full pruned-search
+     * {@code declareBlockers} nested one level inside the outer search -- bounded (not exponential;
+     * the phase-skip prevents any *further* nesting inside that nested call) but real, and not free
+     * (each nested candidate is its own {@code GameCopier} + {@code GameStateEvaluator} pass).
+     *
+     * <p>The guard: {@link #SIMULATION_IN_PROGRESS} is set true for the duration of this method's
+     * own simulation search (the try/finally in the body below) and checked at the very top of this
+     * override. If a nested call lands here while the thread-local is already true -- i.e. this
+     * {@code UltronPlayerController} instance was constructed inside another Ultron controller's
+     * in-progress simulation, on the same thread -- it skips the simulation search entirely and
+     * falls straight through to {@code super.declareBlockers}, recorded as {@code answeredBy=
+     * inherited} (a deliberate, cheap, correctness-preserving fallback: a nested opponent-in-a-
+     * simulation only needs *a* legal, sane block decision to keep the outer search's damage/score
+     * math right, not its own full search). This bounds recursion to exactly one level no matter how
+     * many Ultron seats a self-play game has, and keeps nested-simulation cost from compounding
+     * across every candidate the outer search evaluates.
+     *
+     * <p>Fails safe like {@link #declareAttackers}: any {@code RuntimeException} anywhere in the
+     * simulation path falls back to {@code super.declareBlockers} and is recorded as
+     * {@code answeredBy=inherited}.
+     */
     @Override
     public void declareBlockers(Player defender, Combat combat) {
         final long __start = System.nanoTime();
-        super.declareBlockers(defender, combat);
-        telemetry.record("declareBlockers", System.nanoTime() - __start);
+        if (Boolean.TRUE.equals(SIMULATION_IN_PROGRESS.get())) {
+            // Nested call inside another Ultron controller's in-progress simulation (see javadoc
+            // above) -- fall back to cheap inherited behavior rather than recursing into our own
+            // full search. Recorded as inherited, not ultron: telemetry must not lie about this.
+            super.declareBlockers(defender, combat);
+            telemetry.record("declareBlockers", false, System.nanoTime() - __start);
+            return;
+        }
+
+        boolean __answeredByUltron;
+        int __candidateCount = 0;
+        Integer __chosenScore = null;
+        SIMULATION_IN_PROGRESS.set(Boolean.TRUE);
+        try {
+            BlockPlan __chosen = chooseBlockPlanViaSimulation(defender, combat);
+            __candidateCount = __chosen.candidatesEvaluated;
+            __chosenScore = __chosen.chosenScore;
+            for (Pair<Card, Card> assignment : __chosen.assignments) {
+                combat.addBlocker(assignment.getLeft(), assignment.getRight());
+            }
+            __answeredByUltron = true;
+        } catch (RuntimeException __ex) {
+            Logger.warn("[Ultron] simulation-based declareBlockers() threw " + __ex
+                    + "; falling back to inherited behavior (see FORGE_TRACKER TICKET-V3-205)");
+            super.declareBlockers(defender, combat);
+            __answeredByUltron = false;
+        } finally {
+            SIMULATION_IN_PROGRESS.set(Boolean.FALSE);
+        }
+        Map<String, Object> __detail = new LinkedHashMap<>();
+        __detail.put("candidateCount", __candidateCount);
+        __detail.put("chosenScore", __chosenScore);
+        telemetry.recordDetail("declareBlockers", __detail);
+        telemetry.record("declareBlockers", __answeredByUltron, System.nanoTime() - __start);
+    }
+
+    /** Simple holder: the winning candidate's blocker/attacker assignments plus search stats. */
+    private static final class BlockPlan {
+        final List<Pair<Card, Card>> assignments;
+        final int candidatesEvaluated;
+        final int chosenScore;
+
+        BlockPlan(List<Pair<Card, Card>> assignments, int candidatesEvaluated, int chosenScore) {
+            this.assignments = assignments;
+            this.candidatesEvaluated = candidatesEvaluated;
+            this.chosenScore = chosenScore;
+        }
+    }
+
+    /**
+     * Builds the pruned candidate set described in {@link #declareBlockers}'s javadoc, simulates
+     * each one through combat damage, and returns the highest-scoring plan. Never returns null --
+     * "no blocks" is always at least one of the evaluated candidates.
+     */
+    private BlockPlan chooseBlockPlanViaSimulation(Player defender, Combat combat) {
+        Game game = defender.getGame();
+        List<Card> attackersOfDefender = combat.getAttackersOf(defender);
+
+        List<List<Pair<Card, Card>>> candidates = Lists.newArrayList();
+        Set<String> seenSignatures = Sets.newHashSet();
+
+        // Candidate 1: no blocks -- always evaluated as the honest baseline.
+        addBlockCandidateIfNew(candidates, seenSignatures, Collections.emptyList());
+
+        if (!attackersOfDefender.isEmpty()) {
+            List<Card> potentialBlockers = defender.getCreaturesInPlay();
+
+            addBlockCandidateIfNew(candidates, seenSignatures,
+                    buildLethalPreventionBlocks(attackersOfDefender, potentialBlockers, defender.getLife()));
+            addBlockCandidateIfNew(candidates, seenSignatures,
+                    buildValueBlocksOnBiggestThreats(attackersOfDefender, potentialBlockers));
+            addBlockCandidateIfNew(candidates, seenSignatures,
+                    buildAllFavorableBlocks(attackersOfDefender, potentialBlockers));
+        }
+
+        List<Pair<Card, Card>> bestAssignments = Collections.emptyList();
+        int bestScore = Integer.MIN_VALUE;
+        for (List<Pair<Card, Card>> candidate : candidates) {
+            int score = scoreBlockCandidate(game, defender, candidate);
+            if (score > bestScore) {
+                bestScore = score;
+                bestAssignments = candidate;
+            }
+        }
+        return new BlockPlan(bestAssignments, candidates.size(), bestScore);
+    }
+
+    private static void addBlockCandidateIfNew(List<List<Pair<Card, Card>>> candidates, Set<String> seenSignatures,
+            List<Pair<Card, Card>> candidate) {
+        String signature = blockCandidateSignature(candidate);
+        if (seenSignatures.add(signature)) {
+            candidates.add(candidate);
+        }
+    }
+
+    private static String blockCandidateSignature(List<Pair<Card, Card>> candidate) {
+        List<String> parts = Lists.newArrayList();
+        for (Pair<Card, Card> p : candidate) {
+            parts.add(p.getLeft().getId() + "<-" + p.getRight().getId());
+        }
+        Collections.sort(parts);
+        return String.join(",", parts);
+    }
+
+    /** "Cost" of sacrificing a blocker for chump purposes -- lower is a cheaper chump. */
+    private static int chumpCost(Card blocker) {
+        return blocker.getNetPower() + blocker.getNetToughness();
+    }
+
+    /**
+     * Candidate (b): if the unblocked incoming damage from {@code attackers} would be lethal for
+     * this defender, greedily chump/trade the biggest attackers with the cheapest available legal
+     * blocker until incoming damage drops below the defender's life total. A no-op (empty list,
+     * naturally deduplicated against "no blocks") when the incoming damage isn't lethal.
+     */
+    private static List<Pair<Card, Card>> buildLethalPreventionBlocks(List<Card> attackers, List<Card> potentialBlockers, int defenderLife) {
+        List<Card> byPowerDesc = Lists.newArrayList(attackers);
+        byPowerDesc.sort((a, b) -> Integer.compare(b.getNetPower(), a.getNetPower()));
+
+        int incoming = 0;
+        for (Card a : byPowerDesc) {
+            incoming += a.getNetPower();
+        }
+        if (incoming < defenderLife) {
+            return Collections.emptyList();
+        }
+
+        List<Pair<Card, Card>> result = Lists.newArrayList();
+        Set<Card> usedBlockers = Sets.newHashSet();
+        for (Card attackerCard : byPowerDesc) {
+            if (incoming < defenderLife) {
+                break;
+            }
+            Card cheapest = null;
+            for (Card blocker : potentialBlockers) {
+                if (usedBlockers.contains(blocker) || !CombatUtil.canBlock(attackerCard, blocker)) {
+                    continue;
+                }
+                if (cheapest == null || chumpCost(blocker) < chumpCost(cheapest)) {
+                    cheapest = blocker;
+                }
+            }
+            if (cheapest != null) {
+                result.add(ImmutablePair.of(attackerCard, cheapest));
+                usedBlockers.add(cheapest);
+                incoming -= attackerCard.getNetPower();
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Candidate (c): for up to the two highest-power attackers, block only if there is a clean
+     * kill available -- a legal blocker whose power kills the attacker while itself surviving.
+     * Chumps and even trades are intentionally excluded; this candidate is "kill it for free," not
+     * "trade with it."
+     */
+    private static List<Pair<Card, Card>> buildValueBlocksOnBiggestThreats(List<Card> attackers, List<Card> potentialBlockers) {
+        List<Card> byPowerDesc = Lists.newArrayList(attackers);
+        byPowerDesc.sort((a, b) -> Integer.compare(b.getNetPower(), a.getNetPower()));
+        int limit = Math.min(2, byPowerDesc.size());
+
+        List<Pair<Card, Card>> result = Lists.newArrayList();
+        Set<Card> usedBlockers = Sets.newHashSet();
+        for (int i = 0; i < limit; i++) {
+            Card attackerCard = byPowerDesc.get(i);
+            Card cleanKiller = null;
+            for (Card blocker : potentialBlockers) {
+                if (usedBlockers.contains(blocker) || !CombatUtil.canBlock(attackerCard, blocker)) {
+                    continue;
+                }
+                boolean killsAttacker = blocker.getNetPower() >= attackerCard.getNetToughness();
+                boolean blockerSurvives = attackerCard.getNetPower() < blocker.getNetToughness();
+                if (killsAttacker && blockerSurvives) {
+                    if (cleanKiller == null || chumpCost(blocker) < chumpCost(cleanKiller)) {
+                        cleanKiller = blocker;
+                    }
+                }
+            }
+            if (cleanKiller != null) {
+                result.add(ImmutablePair.of(attackerCard, cleanKiller));
+                usedBlockers.add(cleanKiller);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Candidate (d): greedily assign a legal blocker to every attacker that has a non-bad one
+     * available -- clean kills first, then even trades (both die) -- leaving attackers with no
+     * favorable/neutral block unblocked. Represents "block everything blockable if that's clearly
+     * correct" from the plan's own wording.
+     */
+    private static List<Pair<Card, Card>> buildAllFavorableBlocks(List<Card> attackers, List<Card> potentialBlockers) {
+        List<Card> byPowerDesc = Lists.newArrayList(attackers);
+        byPowerDesc.sort((a, b) -> Integer.compare(b.getNetPower(), a.getNetPower()));
+
+        List<Pair<Card, Card>> result = Lists.newArrayList();
+        Set<Card> usedBlockers = Sets.newHashSet();
+
+        // Pass 1: clean kills (blocker survives).
+        for (Card attackerCard : byPowerDesc) {
+            Card best = null;
+            for (Card blocker : potentialBlockers) {
+                if (usedBlockers.contains(blocker) || !CombatUtil.canBlock(attackerCard, blocker)) {
+                    continue;
+                }
+                boolean killsAttacker = blocker.getNetPower() >= attackerCard.getNetToughness();
+                boolean blockerSurvives = attackerCard.getNetPower() < blocker.getNetToughness();
+                if (killsAttacker && blockerSurvives
+                        && (best == null || chumpCost(blocker) < chumpCost(best))) {
+                    best = blocker;
+                }
+            }
+            if (best != null) {
+                result.add(ImmutablePair.of(attackerCard, best));
+                usedBlockers.add(best);
+            }
+        }
+
+        // Pass 2: even trades (both die) for attackers still unblocked.
+        for (Card attackerCard : byPowerDesc) {
+            boolean alreadyBlocked = result.stream().anyMatch(p -> p.getLeft().equals(attackerCard));
+            if (alreadyBlocked) {
+                continue;
+            }
+            Card best = null;
+            for (Card blocker : potentialBlockers) {
+                if (usedBlockers.contains(blocker) || !CombatUtil.canBlock(attackerCard, blocker)) {
+                    continue;
+                }
+                boolean killsAttacker = blocker.getNetPower() >= attackerCard.getNetToughness();
+                boolean blockerDies = attackerCard.getNetPower() >= blocker.getNetToughness();
+                if (killsAttacker && blockerDies
+                        && (best == null || chumpCost(blocker) < chumpCost(best))) {
+                    best = blocker;
+                }
+            }
+            if (best != null) {
+                result.add(ImmutablePair.of(attackerCard, best));
+                usedBlockers.add(best);
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * Copies the game, applies one candidate blocker/attacker assignment set directly to the
+     * copy's {@code Combat} object (bypassing any controller re-entry), and scores the resulting
+     * post-combat-damage state via {@link GameStateEvaluator}. Returns {@code Integer.MIN_VALUE} on
+     * any simulation failure for this specific candidate so one bad candidate doesn't abort the
+     * whole search -- {@link #chooseBlockPlanViaSimulation} still has "no blocks" as a safety net.
+     */
+    private int scoreBlockCandidate(Game game, Player defender, List<Pair<Card, Card>> candidate) {
+        try {
+            GameCopier copier = new GameCopier(game);
+            Game gameCopy = copier.makeCopy(null, defender);
+            Player defenderCopy = (Player) copier.find(defender);
+            Combat combatCopy = gameCopy.getPhaseHandler().getCombat();
+            if (combatCopy == null) {
+                return Integer.MIN_VALUE;
+            }
+            for (Pair<Card, Card> assignment : candidate) {
+                Card attackerCopy = (Card) copier.find(assignment.getLeft());
+                Card blockerCopy = (Card) copier.find(assignment.getRight());
+                combatCopy.addBlocker(attackerCopy, blockerCopy);
+            }
+            // Normally set by PhaseHandler.declareBlockersTurnBasedAction's own post-loop call to
+            // Combat.fireTriggersForUnblockedAttackers once every defending player has declared --
+            // but (by design, same as declareAttackers' candidate scoring) this candidate's blocks
+            // are applied directly to the copy's Combat, bypassing that turn-based action entirely,
+            // so nothing else sets the per-band "blocked" flag. Leaving it null crashes downstream
+            // combat-damage assignment (AttackingBand.isBlocked() unboxed without a null check).
+            // Deliberately not calling fireTriggersForUnblockedAttackers itself here: it also fires
+            // AttackerUnblocked triggers, which would be premature/duplicated once the outer
+            // simulation's own devAdvanceToPhase runs (or, for other already-declared defenders'
+            // bands whose flag was copied as non-null, would be flat-out wrong to refire).
+            for (Card attackerCard : combatCopy.getAttackers()) {
+                combatCopy.setBlocked(attackerCard, !combatCopy.getBlockers(attackerCard).isEmpty());
+            }
+            GameStateEvaluator.Score score = new GameStateEvaluator().getScoreForGameState(gameCopy, defenderCopy);
+            return score.value;
+        } catch (RuntimeException ex) {
+            Logger.warn("[Ultron] declareBlockers candidate simulation threw " + ex + "; skipping this candidate");
+            return Integer.MIN_VALUE;
+        }
     }
 
     /**

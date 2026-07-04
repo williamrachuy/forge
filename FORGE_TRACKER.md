@@ -542,7 +542,7 @@ stack-resolution caveat found in this session (single weakest-opponent response 
 likely also matter for combat-trick simulation during block evaluation — worth checking early in
 that session rather than rediscovering it.
 
-### TICKET-V3-204: Combat via simulation (P2.5) [DONE — attacker declaration only; blocker declaration deferred, 2026-07-04]
+### TICKET-V3-204: Combat via simulation (P2.5) [DONE — attacker declaration; blocker declaration completed as TICKET-V3-205, 2026-07-04]
 Files: `forge-ai/src/main/java/forge/ai/ultron/UltronPlayerController.java`,
 `forge-ai/src/main/java/forge/ai/ultron/UltronDecisionTelemetry.java`,
 `forge-gui-desktop/src/test/java/forge/ai/ultron/UltronCombatSimulationTest.java` (new).
@@ -666,11 +666,154 @@ block-the-biggest-threats / chump-if-lethal-is-on-the-table / clean-trade blocks
 attackers being faced, and budget explicitly for the recursion-safety note above before shipping it
 (a quick copies/sec sanity check with a mirrored-Ultron opponent would be cheap insurance).
 
-**Recommended next steps for Phase 2:** either (a) attempt `declareBlockers` in a dedicated session
-using the plan above, or (b) treat P2.5 as functionally complete (attacker declaration is the
-higher-value half of combat, and default-AI blocking is a reasonable inherited fallback for now)
-and move to **P2.6 stack response**, which will need to grapple with the same weakest-opponent
-resolution gap directly rather than being able to route around it as P2.4/P2.5 did.
+**Recommended next steps for Phase 2 (superseded by TICKET-V3-205 below):** ~~either (a) attempt
+`declareBlockers` in a dedicated session using the plan above, or (b) treat P2.5 as functionally
+complete...~~ — option (a) was taken this session.
+
+---
+
+### TICKET-V3-205: Block declaration via pruned simulation search (P2.5 continuation) [DONE, 2026-07-04]
+Files: `forge-ai/src/main/java/forge/ai/ultron/UltronPlayerController.java`,
+`forge-gui-desktop/src/test/java/forge/ai/ultron/UltronCombatSimulationTest.java` (extended, +4 tests).
+
+**Scope:** `declareBlockers` now runs the pruned-candidate simulation search TICKET-V3-204 left as
+the recommended next step, mirroring `declareAttackers`'s architecture exactly
+(`GameCopier`-copy → apply candidate directly to the copy's `Combat` → `GameStateEvaluator.
+getScoreForGameState` → apply winning candidate to the real `Combat`).
+
+**Candidate generation (pruned, per the plan's own "(a) no blocks, (b) prevent lethal only, (c)
+block the biggest threat(s) for value, (d) block everything blockable if clearly correct"; 2-4
+unique candidates after dedup in this session's fixtures, comfortably inside the "3-5 candidates"
+target):**
+1. No blocks — always the honest baseline.
+2. Lethal-prevention chumps — if total unblocked incoming damage from this defender's attackers
+   would be lethal, greedily chump/trade the biggest attackers with the *cheapest* available legal
+   blocker (lowest power+toughness) until incoming damage drops below the defender's life. A no-op
+   (empty list) when not lethal — naturally deduplicates against candidate 1, no special-casing
+   needed.
+3. Value blocks on the biggest threat(s) — for up to the two highest-power attackers, assign a
+   blocker only if it's a clean kill (blocker's power kills the attacker; blocker itself survives).
+   Chumps/even-trades deliberately excluded — this candidate is "kill it for free" specifically.
+4. Block everything with a favorable outcome — greedily assign a legal blocker to every attacker
+   that has one, clean kills first, even trades (both die) second; attackers with no non-bad block
+   stay unblocked. The "all trades favorable" case from the plan's wording.
+
+Deliberately not full combat math (no first strike/deathtouch/multi-block/trick-awareness) — same
+spirit as `declareAttackers`'s `filterLikelySurvivors`; these are pruning heuristics, the simulation
+scores the real outcome.
+
+**A real, previously-undiscovered bug found and fixed while building this:** applying a candidate's
+blocks directly to the copy's `Combat` (bypassing controller re-entry, exactly like the attacker
+side) leaves each `AttackingBand`'s `blocked` flag `null` — that flag is normally only set by
+`PhaseHandler.declareBlockersTurnBasedAction`'s post-loop call to `Combat.
+fireTriggersForUnblockedAttackers`, which never runs for a directly-mutated copy (the phase-skip
+mechanism explained below means that turn-based action is never re-invoked). A null flag crashes
+combat-damage assignment (`AttackingBand.isBlocked()` unboxed without a null check) deep inside
+`GameStateEvaluator`'s own nested advance. Fixed by explicitly setting `combat.setBlocked(attacker,
+!combat.getBlockers(attacker).isEmpty())` for every attacker in the copy right after applying a
+candidate's blocks, before scoring — cheap, and correct for already-declared bands copied from
+other defending players too (their `blocked`/`blockedBands` state is preserved by `GameCopier`
+verbatim, confirmed by reading `Combat`'s copy constructor directly). This is the same shape of
+"machinery gap that only bites once you actually drive it," not caught in TICKET-V3-204 because that
+ticket never added blockers directly to a copy's `Combat`.
+
+**The recursion question — resolved precisely, per this session's mandate, by reading the code
+rather than assuming:**
+
+- **Does `GameCopier` preserve real controller classes for simulated opponents? Yes, confirmed.**
+  `GameCopier.clonePlayer` (line ~210) reuses the *exact same* `LobbyPlayerAi` instance for any
+  player whose real `LobbyPlayer` is already a `LobbyPlayerAi` (true for every AI seat, Ultron
+  included) — it only constructs a new one for non-AI lobby players. Since `LobbyPlayerAi.
+  createControllerFor` decides `UltronPlayerController` vs. plain `PlayerControllerAi` purely from
+  that (unmodified-by-cloning) instance's `aiProfile` field, every copied game builds a **fresh
+  `UltronPlayerController`** for any player whose real seat runs the Ultron profile.
+- **Does that fresh controller actually get invoked mid-simulation, or is it dead code in the
+  copy? Confirmed invoked, by tracing the actual call path, not just the class wiring.** Both
+  `declareAttackers`'s and `declareBlockers`'s candidate-scoring copy the game with
+  `advanceToPhase=null`, so the copy's `PhaseHandler` phase is set via `devModeSet` (which does
+  *not* run phase-begin side effects) to whatever phase the source game/copy was already sitting
+  at. `GameStateEvaluator.simulateUpcomingCombatThisTurn` then makes a *second-level* copy of that
+  and calls `devAdvanceToPhase(COMBAT_DAMAGE, ...)`; because `devAdvanceToPhase`'s loop treats the
+  starting phase as already-current (its first action is `onPhaseEnd()` for the current phase, not
+  re-running its turn-based action), the **next** phase strictly after the starting one is the
+  first whose turn-based action actually executes. For a `declareAttackers` candidate (copy starts
+  at `COMBAT_DECLARE_ATTACKERS`), that next phase is `COMBAT_DECLARE_BLOCKERS`, whose
+  `declareBlockersTurnBasedAction` unconditionally calls `whoDeclaresBlockers.getController().
+  declareBlockers(p, combat)` for every defending player — including a freshly-constructed
+  `UltronPlayerController` if that seat runs the Ultron profile. Concretely: evaluating an attack
+  candidate against an Ultron-controlled defender now (post-TICKET-V3-205) triggers that defender's
+  full pruned-candidate block search, nested one level inside the outer attacker search.
+- **Same phase-skip mechanism means a controller can never recurse into *itself*** — a
+  `declareBlockers` candidate's own internal `GameStateEvaluator` call makes its own second-level
+  copy starting at `COMBAT_DECLARE_BLOCKERS` (already-current), so the next phase processed is
+  `COMBAT_FIRST_STRIKE_DAMAGE`/`COMBAT_DAMAGE`, never `COMBAT_DECLARE_BLOCKERS` again. This bounds
+  any single controller's own nested search to exactly one level regardless of how deep the outer
+  search's own machinery goes — the risk is strictly cross-controller (a *different* Ultron seat
+  reached mid-combat), never self-recursion.
+- **The guard, given the above is real:** `UltronPlayerController.SIMULATION_IN_PROGRESS`, a
+  `ThreadLocal<Boolean>` (an instance field would not work — the nested call lands on a *different*
+  controller instance, the fresh one constructed for the copy, not `this`). Set true for the
+  duration of `declareBlockers`'s own simulation search (try/finally, cleared even on exception);
+  checked at the top of `declareBlockers`. If a nested call arrives while already true, it skips
+  the simulation search entirely and falls straight to `super.declareBlockers` (recorded as
+  `answeredBy=inherited`, never lying to telemetry about the fallback). This bounds recursion to
+  one level no matter how many Ultron seats a self-play game has, and stops nested-simulation cost
+  from compounding across every candidate the outer search evaluates. `declareAttackers` itself
+  needs no analogous guard — per the phase-skip analysis above, nothing mid-combat-simulation ever
+  calls a *different* player's `declareAttackers` (only the active/turn player is ever asked to
+  declare attackers, and that phase is always already-current/skipped in every nested copy this
+  ticket traced).
+
+**Verified — real 4-player Battlebox states.** `UltronCombatSimulationTest` gained 4 tests (8 total
+in the file now):
+  - `testDeclareBlockersReturnsLegalWithoutCrashing` — sanity + coverage: doesn't crash/fall back on
+    an ordinary 4p state; every declared blocker is actually controlled by the defending player;
+    `candidateCount`/`chosenScore` telemetry detail recorded.
+  - `testProfitableCleanKillBlockIsChosen` — an available 6/4 blocking a 2/2 (clean kill, zero risk)
+    is taken.
+  - `testBadBlockIsDeclined` — a precious 2/2 declines to chump-block a 6/4 with plenty of life and
+    no lethal pressure.
+  - `testUltronVsUltronBlockSimulationDoesNotRecurseUnbounded` — **the mandatory recursion-safety
+    proof.** 4-player Battlebox game, seats 0 *and* 1 both running `UltronPlayerController`. Seat 0
+    attacks seat 1 (who has a blocker), forcing the outer `declareAttackers` candidate-scoring
+    simulation to construct a fresh `UltronPlayerController` for seat 1 inside the copy and invoke
+    its `declareBlockers` per the mechanism traced above. Asserts (1) the outer call completes in
+    under 30s with a normal candidate count (proving the guard prevents runaway/unbounded nesting,
+    not just "didn't crash"), and (2) immediately afterward, seat 1's own *real*, non-nested
+    `declareBlockers` call still runs the full Ultron simulation path (`answeredBy=ultron`) —
+    proving `SIMULATION_IN_PROGRESS` resets correctly and doesn't leak "stuck true" state across
+    calls on the same thread.
+
+Full `forge.ai.simulation.*` + `forge.ai.ultron.*` aggregate `TestSuite` — **226/226 pass** (222
+prior baseline + 4 new, 0 failures, 0 regressions). Baseline `forge.ai.llm.runtime.Ultron*` suite —
+**34/42 pass**, identical 8 pre-existing "Ahead-state ..." failures, unchanged.
+`mvn -pl forge-ai,forge-gui-desktop -am clean package -DskipTests -q` succeeds. Coverage:
+**3/114 methods now Ultron-answered** (`chooseSpellAbilityToPlay`, `declareAttackers`,
+`declareBlockers`), up from 2/114. Control run (`ultron_v3_control` tmux session,
+`v3_control_default_4p` shard_0/shard_1 PIDs 643469/643495, same PIDs as session start) confirmed
+still running throughout this session (422→437/500 combined games during this session) — left
+completely undisturbed; only `mvn test` ran, no batch run was launched. It had not finished by
+session end, so the optional real-game Ultron-vs-Ultron smoke test via direct `SimulateStats`
+invocation was not attempted (RAM headroom was also borderline: ~4-5GB free throughout, per the
+task's own >2GB bar it would have been permissible once the control run finished, but it didn't).
+
+**Recommendation for what's next:** P2.5 (combat) is now functionally complete on both sides
+(attack + block declaration), verified unit-level and with a dedicated multiplayer self-play
+recursion proof. Two reasonable next steps:
+  (a) **P2.6 stack response** — the natural next Phase 2 item per the plan's own ordering, and it
+      will need to grapple with the same weakest-opponent stack-resolution gap (`GameSimulator.
+      simulateSpellAbility`'s `// TODO: Support multiple opponents.`) directly, since there's no
+      "reuse the default AI's own targeting heuristic" escape hatch available the way P2.4/P2.5
+      had — recommended first choice, since it's the last item needed to complete Phase 2's
+      decision-surface scope before the 600-game statistical gate.
+  (b) **Move toward the Phase 2 gate (≥30% over N=600 seat-rotated games, plan §7/§8)** now that
+      main-phase play, attacks, and blocks are all simulation-driven — defensible if P2.6 is judged
+      lower-value than getting a real statistical read on the work so far, but stack response is a
+      meaningfully common decision point (counterspells, removal timing) that the gate's win-rate
+      number would otherwise silently average over an unimplemented decision surface.
+  Recommendation: (a) first — P2.6 is scoped small (reuses the identical GameCopier/
+  GameStateEvaluator/telemetry pattern a third time) and finishes Phase 2's coverage story before
+  spending 600 games' worth of compute measuring a still-partial decision surface.
 
 ---
 
