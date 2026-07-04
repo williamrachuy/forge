@@ -32,6 +32,7 @@ import forge.util.*;
 import forge.util.collect.FCollectionView;
 import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.apache.commons.lang3.tuple.Pair;
+import org.tinylog.Logger;
 
 import java.util.*;
 import java.util.function.Predicate;
@@ -68,10 +69,16 @@ import java.util.function.Predicate;
  * start clean of v2 learned state. See {@code UltronPlayerControllerContaminationGuardTest} for a
  * verification that this class's compiled bytecode contains no reference to those classes.
  *
- * <p>Coverage measured today: 0% Ultron-authored / 100% inherited, across all
+ * <p>Coverage as of Phase 1: 0% Ultron-authored / 100% inherited, across all
  * {@value #DECISION_METHOD_COUNT} overridden methods — the correct baseline for Phase 2 to
  * improve against (plan §11 secondary success criterion: coverage rising from ~20% today under
  * v2's measurement to a Phase-3-and-beyond target of 80%+).
+ *
+ * <p>Phase 2 P2.4 (TICKET-V3-203) is the first method to move off that 0% baseline:
+ * {@link #chooseSpellAbilityToPlay()} now answers via the simulation-based
+ * {@code SpellAbilityPicker}/{@code Plan} machinery instead of delegating straight to
+ * {@code super}, recorded as {@code answeredBy=ultron} in {@link UltronDecisionTelemetry}. All
+ * other 113 methods remain pure inherited plumbing pending future phases/sessions.
  */
 public class UltronPlayerController extends PlayerControllerAi {
 
@@ -521,11 +528,52 @@ public class UltronPlayerController extends PlayerControllerAi {
         telemetry.record("declareBlockers", System.nanoTime() - __start);
     }
 
+    /**
+     * P2.4 (FORGE_TRACKER TICKET-V3-203) -- main-phase spell/land selection now routes through the
+     * existing (previously dormant, opt-in-only-via-{@code AIOption.USE_SIMULATION}) simulation
+     * machinery: {@link forge.ai.simulation.SpellAbilityPicker} + {@link forge.ai.simulation.Plan}.
+     *
+     * <p>Reuses {@code getAi().getSimulationPicker()} rather than constructing a new
+     * {@code SpellAbilityPicker} -- {@code AiController} always builds one in its constructor
+     * regardless of the {@code useSimulation} flag (see {@code AiController#simPicker}), so this
+     * is the exact same object/instance state (its in-progress {@code Plan}, if any) that the
+     * legacy 2-player-oriented lobby flag would have used; no duplicate picker, no divergent state.
+     *
+     * <p>This machinery was verified by prior Phase 2 sessions to be Battlebox/4-player-safe at the
+     * layers it touches directly: {@code GameCopier} now copies shared zones correctly
+     * (TICKET-V3-201), {@code GameStateEvaluator} scores multiplayer state correctly
+     * (TICKET-V3-202), and neither {@code SpellAbilityPicker} nor {@code Plan} itself calls the
+     * single-opponent {@code Player.getOpponent()} anywhere -- {@code GameCopier}/{@code
+     * GameSimulator} already use {@code getWeakestOpponent()} where an opponent reference is
+     * needed. One real 4-player landmine remains, deeper than a small contained fix, and is left
+     * for a future session: {@code GameSimulator.simulateSpellAbility}'s stack-resolution step
+     * (used when scoring "if I play this spell" candidates) resolves responses as if only the
+     * single weakest opponent could respond (see the {@code // TODO: Support multiple opponents.}
+     * comment at {@code GameSimulator.java:228}) -- a stronger opponent's actual interaction (e.g.
+     * removal/counterspells) is never modeled during that lookahead. This under-estimates risk in
+     * 4-player Battlebox but does not produce illegal or crashing output; it is a fidelity gap in
+     * the score, not a correctness bug in the decision path itself.
+     *
+     * <p>Fails safe: any {@code RuntimeException} from the simulation path falls back to inherited
+     * ({@code super}) behavior and is recorded as {@code answeredBy=inherited} so telemetry/coverage
+     * never lies about an exception-driven fallback.
+     */
     @Override
     public List<SpellAbility> chooseSpellAbilityToPlay() {
         final long __start = System.nanoTime();
-        List<SpellAbility> __result = super.chooseSpellAbilityToPlay();
-        telemetry.record("chooseSpellAbilityToPlay", System.nanoTime() - __start);
+        List<SpellAbility> __result;
+        boolean __answeredByUltron;
+        try {
+            SpellAbility __chosen = getAi().getSimulationPicker().chooseSpellAbilityToPlay(null);
+            __result = __chosen == null ? null : Lists.newArrayList(__chosen);
+            __answeredByUltron = true;
+        } catch (RuntimeException __ex) {
+            Logger.warn("[Ultron] simulation-based chooseSpellAbilityToPlay() threw " + __ex
+                    + "; falling back to inherited behavior (see FORGE_TRACKER TICKET-V3-203)");
+            __result = super.chooseSpellAbilityToPlay();
+            __answeredByUltron = false;
+        }
+        telemetry.record("chooseSpellAbilityToPlay", __answeredByUltron, System.nanoTime() - __start);
         return __result;
     }
 

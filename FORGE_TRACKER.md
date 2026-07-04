@@ -297,7 +297,7 @@ reference `UltronWeights`/`UltronCardStats` in a future change, the guard would 
 ---
 
 ## EPIC: ULTRON-V3 / PHASE-2
-**Status:** IN PROGRESS (P2.1 done; P2.2 data point collected; P2.3 done; P2.4-P2.6 not started)
+**Status:** IN PROGRESS (P2.1 done; P2.2 data point collected; P2.3 done; P2.4 done; P2.5-P2.6 not started)
 **Branch:** `ultron-v3`
 **Goal:** Simulation-based big-3 decisions per plan §7 Phase 2. Plan doc:
 `/home/william/agents/brainstorm/plans/ultron-v3-search-and-learning.md` §6, §7 P2.1-P2.6.
@@ -465,6 +465,82 @@ response):**
     correctly when P2.5's block-assignment enumeration needs to score a state from a *different*
     seat's perspective mid-search (the method already takes `aiPlayer` as a parameter, so it should,
     but this session only exercised it from one seat's perspective in tests).
+
+### TICKET-V3-203: Main-phase decisions via SpellAbilityPicker/Plan (P2.4) [DONE 2026-07-04]
+Files: `forge-ai/src/main/java/forge/ai/ultron/UltronPlayerController.java`,
+`forge-gui-desktop/src/test/java/forge/ai/ultron/UltronMainPhaseSimulationTest.java` (new).
+
+**What changed:** `UltronPlayerController.chooseSpellAbilityToPlay()` no longer delegates straight
+to `super`. It now calls `getAi().getSimulationPicker().chooseSpellAbilityToPlay(null)` — reusing
+the exact `SpellAbilityPicker` instance `AiController`'s constructor always builds (regardless of
+the legacy `useSimulation`/`AIOption.USE_SIMULATION` flag; see `AiController#simPicker`), so this
+is the same object/state a 2-player lobby-flag game would have used, not a duplicate picker with
+divergent `Plan` state. A `RuntimeException` from the simulation path falls back to `super`'s
+inherited behavior and is recorded as `answeredBy=inherited`, so telemetry never lies about an
+exception-driven fallback. This is the first of `UltronPlayerController`'s 114 overridden methods
+to move off the Phase 1 baseline: coverage is now **1/114 Ultron-answered** (up from 0/114).
+
+**Investigation into the plan's predicted single-opponent landmine (task instructions specifically
+flagged `getOpponent()` singular as a thing to hunt for): NOT FOUND where expected, but a related,
+real gap WAS found one layer down.** `grep -rn "\.getOpponent(" forge-ai/src/main/java/forge/ai/
+simulation/` returns zero hits — `SpellAbilityPicker.java` and `Plan.java` never reference any
+opponent at all (`Plan` is pure decision-sequence bookkeeping; `SpellAbilityPicker` only reasons
+about the AI player's own hand/candidates and game-state scores). `GameCopier`/`GameSimulator`
+already use `Player.getWeakestOpponent()`, not the singular `getOpponent()`, everywhere an opponent
+reference is needed — so the specific landmine shape named in this session's instructions does not
+exist in this machinery today (P2.1/P2.3's prior sessions evidently already steered clear of it, or
+it was never there). **What IS a real gap, found while checking `resolve` handling in
+`GameSimulator.simulateSpellAbility`:** `GameSimulator.java:227-230` (`// TODO: Support multiple
+opponents.`) resolves the stack after simulating "play this spell" by assuming only the single
+`getWeakestOpponent()` can respond — a stronger opponent's actual available interaction (removal,
+counterspells, combat tricks) is never modeled during that one-ply main-phase lookahead. In 4-player
+Battlebox this means the simulated score for "if I play X" is systematically optimistic about how
+safe X is from the *other* two opponents, not just the weakest one. **Left unfixed, per this
+session's instructions on deeper-redesign items:** properly modeling "which of 3 possible opponents
+would actually have and use an answer" needs either a determinized per-opponent response model (this
+is exactly the belief-state/determinization machinery Phase 4 already plans to build,
+`UltronBeliefState`/§7 P4.2) or at minimum enumerating worst-case response across all opponents
+instead of one — either is a real design decision, not a small contained fix, so it is documented
+here rather than patched. **Practical impact today:** does not produce illegal or crashing output
+(confirmed by this session's tests below) — it is a fidelity/optimism gap in the *score* a candidate
+spell receives, not a correctness bug in the decision path. Recommend Phase 3/4 sessions treat this
+TODO as a known input to the value-function/belief-state work rather than a standalone bug ticket.
+
+**Verified — real 4p Battlebox states, not just unit-level mocking.** New
+`UltronMainPhaseSimulationTest` (3 tests) builds a 4-player Battlebox-variant game with real
+`SharedPlayerZone`s (library/command/graveyard), distinct per-player life totals, and a
+non-Ultron-held monarch — mirroring `GameCopierBattleboxFidelityTest`'s fixture-building
+convention — across 3 distinct board states:
+  - `testMainPhasePlaysAvailableLandWithoutCrashing` — hand has only a land; asserts the pick is
+    `answeredBy=ultron` (not a fallback) and, if non-null, is the land.
+  - `testMainPhasePicksLegalPlayWithManaAndCreatureInHand` — 2 untapped Forests + Grizzly Bears in
+    hand, with opponents holding their own creatures (Runeclaw Bear, Grizzly Bears) so
+    `GameStateEvaluator`'s per-opponent scoring and `GameCopier`'s shared-zone copying are actually
+    exercised during the simulation, not a 1-player-only board; asserts legal pick (land or the
+    only castable creature) or null, never a fallback.
+  - `testMainPhaseReturnsNullRatherThanCrashingWithNoLegalPlay` — empty hand/no mana; asserts a
+    `null` result (pass priority) is reached via the simulation path itself, not treated as an
+    exceptional/fallback condition — matching the pre-existing 2-player `USE_SIMULATION` semantics
+    where `null` from the picker is a legitimate "no beneficial play" signal.
+
+All 3 pass. Full `forge.ai.simulation.*` + `forge.ai.ultron.*` aggregate `TestSuite` —
+**218/218 pass** (215 prior baseline + 3 new, 0 failures, 0 regressions). Baseline
+`forge.ai.llm.runtime.Ultron*` suite — **34/42 pass**, identical 8 pre-existing "Ahead-state ..."
+failures as TICKET-V3-005/201/202, unchanged (this test package doesn't touch
+`forge.ai.simulation.*`/`forge.ai.ultron.*` at all). `mvn -pl forge-ai,forge-gui-desktop -am clean
+package -DskipTests -q` succeeds. Control run (`ultron_v3_control` tmux session, `v3_control_
+default_4p` shard_0/shard_1 PIDs 643469/643495) confirmed still running throughout this session,
+untouched — no `run_parallel.sh`/`run_simstats.sh`/batch run was launched; only `mvn test` (unit
+tests) ran.
+
+**Scope note:** combat (`declareAttackers`/`declareBlockers`, P2.5) and stack-response (P2.6) paths
+were explicitly not touched this session, per instructions — both still delegate straight to
+`super` and remain 100% inherited. Recommended next session: **P2.5 combat** — enumerate plausible
+attacker subsets (singleton/all-in/threat-model-suggested per plan §7 P2.5), simulate through
+`COMBAT_DAMAGE`, score with the now-multiplayer-aware `GameStateEvaluator`. Same `GameSimulator`
+stack-resolution caveat found in this session (single weakest-opponent response modeling) will
+likely also matter for combat-trick simulation during block evaluation — worth checking early in
+that session rather than rediscovering it.
 
 ---
 
