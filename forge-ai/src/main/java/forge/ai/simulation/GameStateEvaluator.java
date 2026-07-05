@@ -20,11 +20,27 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static java.lang.Math.max;
 import static java.lang.Math.min;
 
 public class GameStateEvaluator {
+    // TICKET-V3-207 (session 4): call-count instrumentation, same rationale/thread-safety as
+    // GameCopier.makeCopyCallCount -- counts every top-level entry into getScoreForGameState(),
+    // which is the entrypoint that (via simulateUpcomingCombatThisTurn) can itself trigger a
+    // GameCopier.makeCopy() and, when the copy's active player is Ultron-controlled and combat
+    // gets simulated through, a nested declareAttackers/declareBlockers search of its own.
+    private static final AtomicLong getScoreForGameStateCallCount = new AtomicLong();
+
+    public static long getGetScoreForGameStateCallCount() {
+        return getScoreForGameStateCallCount.get();
+    }
+
+    public static void resetGetScoreForGameStateCallCount() {
+        getScoreForGameStateCallCount.set(0);
+    }
+
     private boolean debugging = false;
     private SimulationCreatureEvaluator eval = new SimulationCreatureEvaluator();
 
@@ -91,6 +107,7 @@ public class GameStateEvaluator {
     }
 
     public Score getScoreForGameState(Game game, Player aiPlayer) {
+        getScoreForGameStateCallCount.incrementAndGet();
         if (game.isGameOver()) {
             return getScoreForGameOver(game, aiPlayer);
         }

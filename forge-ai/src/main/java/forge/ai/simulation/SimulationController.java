@@ -12,7 +12,14 @@ import java.util.List;
 
 public class SimulationController {
     private static boolean DEBUG = false;
-    private static int MAX_DEPTH = 3;
+    // Kept at the original default (3) -- this is shared, profile-agnostic infra and at least one
+    // existing legacy test (SpellAbilityPickerSimulationTest.testPlayRememberedCardsLand) legitimately
+    // depends on a 3-ply-deep sequential plan being found. TICKET-V3-207 (Ultron v3, session 4) needs
+    // a SHALLOWER bound specifically for Ultron's Battlebox usage (see the per-instance
+    // maxRecursionDepth override below and its constructor) rather than lowering this shared default
+    // and regressing that test.
+    private static final int DEFAULT_MAX_DEPTH = 3;
+    private final int maxDepth;
 
     private List<Plan.Decision> currentStack;
     private List<Score> scoreStack;
@@ -39,19 +46,37 @@ public class SimulationController {
     }
 
     public SimulationController(Score score) {
+        this(score, DEFAULT_MAX_DEPTH);
+    }
+
+    /**
+     * TICKET-V3-207 (Ultron v3, session 4): {@code maxDepth} lets a caller bound the recursive
+     * plan search's lookahead depth tighter than {@link #DEFAULT_MAX_DEPTH} without changing that
+     * shared default for every other caller of this profile-agnostic class. See
+     * {@code SpellAbilityPicker}'s constructor overload for how Ultron's Battlebox usage supplies
+     * a shallower value here -- Battlebox's shared-zone architecture (TICKET-V3-201) means every
+     * {@code GameCopier.makeCopy()} call anywhere in the search tree re-parses every card in every
+     * shared zone (including a several-hundred-card shared Library) from scratch, so the node
+     * count this depth bound controls (candidates^depth) had an outsized, previously-uncharacterized
+     * cost multiplier that a real 3-game smoke test at {@code -Xmx3g} still could not survive even
+     * after this session's other two fixes (the combat-lookahead recursion guard in
+     * {@code UltronPlayerController} and the lookahead breadth cap in {@code SpellAbilityPicker}).
+     */
+    public SimulationController(Score score, int maxDepth) {
+        this.maxDepth = maxDepth;
         bestScore = score;
         scoreStack = new ArrayList<>();
         scoreStack.add(score);
         simulatorStack = new ArrayList<>();
         currentStack = new ArrayList<>();
     }
-    
+
     private int getRecursionDepth() {
         return scoreStack.size() - 1;
     }
 
     public boolean shouldRecurse() {
-        return bestScore.value != Integer.MAX_VALUE && getRecursionDepth() < MAX_DEPTH;
+        return bestScore.value != Integer.MAX_VALUE && getRecursionDepth() < maxDepth;
     }
 
     public Plan.Decision getLastDecision() {

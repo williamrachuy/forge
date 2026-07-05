@@ -117,6 +117,24 @@ public final class UltronConfig {
         return intEnv("ULTRON_LLM_MAX_PLANS_PER_TURN", 2);
     }
 
+    /**
+     * TICKET-V3-207 (Ultron v3, session 6): max wall-clock seconds one of Ultron's three
+     * simulation-based decisions ({@code chooseSpellAbilityToPlay}, {@code declareAttackers},
+     * {@code declareBlockers}) is allowed to run before it is abandoned and falls back to
+     * inherited ({@code PlayerControllerAi}/{@code AiController}) behavior for that single
+     * decision. Session 5's live jstack evidence showed a single decision genuinely progressing
+     * through expensive work for 90+ seconds with no backstop of its own short of the whole-game
+     * {@code timeoutSeconds} budget (1200s in production configs, as low as 60-120s in
+     * fast-iteration diagnostic configs) -- this is the per-decision circuit breaker that was
+     * missing. Default 40s: comfortably above the cost of a normal (even Battlebox-sized) decision
+     * post session-6 fixes, comfortably below every real config's whole-game timeout, so a single
+     * pathologically slow decision can no longer consume an entire game's timeout budget
+     * uncontrolled. Configurable via {@code ULTRON_SIM_DECISION_TIMEOUT_SECONDS} for tests/tuning.
+     */
+    public static int maxSimDecisionTimeoutSeconds() {
+        return intEnv("ULTRON_SIM_DECISION_TIMEOUT_SECONDS", 40);
+    }
+
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------

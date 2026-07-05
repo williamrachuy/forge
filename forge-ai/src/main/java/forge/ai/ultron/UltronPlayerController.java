@@ -4,6 +4,7 @@ import com.google.common.collect.*;
 import forge.LobbyPlayer;
 import forge.ai.AiAttackController;
 import forge.ai.PlayerControllerAi;
+import forge.ai.llm.UltronConfig;
 import forge.ai.llm.runtime.UltronTableThreatSummary;
 import forge.ai.llm.runtime.UltronThreatModel;
 import forge.ai.simulation.GameCopier;
@@ -40,6 +41,12 @@ import org.apache.commons.lang3.tuple.Pair;
 import org.tinylog.Logger;
 
 import java.util.*;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Predicate;
 
 /**
@@ -581,15 +588,67 @@ public class UltronPlayerController extends PlayerControllerAi {
      * <p>Fails safe like {@link #chooseSpellAbilityToPlay()}: any {@code RuntimeException} anywhere
      * in the simulation path falls back to {@code super.declareAttackers} and is recorded as
      * {@code answeredBy=inherited}.
+     *
+     * <p><b>TICKET-V3-207 (session 4) recursion guard -- the actual OOM root cause.</b> Unlike
+     * {@link #declareBlockers}, this method originally had NO {@link #SIMULATION_IN_PROGRESS}
+     * guard at all. Instrumented call counts ({@code GameCopier.getMakeCopyCallCount()}, see
+     * {@code UltronGameCopierCallCountTest}) proved this was the dominant multiplier, not just a
+     * theoretical risk: {@link GameStateEvaluator#getScoreForGameState} -- called for EVERY
+     * candidate scored anywhere (main-phase candidates in {@code SpellAbilityPicker}, attack
+     * candidates here, block candidates in {@link #declareBlockers}) -- internally runs
+     * {@code simulateUpcomingCombatThisTurn}, which copies the game and drives it through
+     * {@code COMBAT_DAMAGE} via real turn-based actions. Whenever the copy's active player is
+     * Ultron-controlled (true for the copy's own attacker in the common single-Ultron-seat case,
+     * not just the multi-Ultron-seat case the original TICKET-V3-205 guard was written for), that
+     * turn-based action calls THIS method again on a freshly-constructed {@code
+     * UltronPlayerController} -- which, unguarded, ran its own full {@code
+     * chooseAttackPlanViaSimulation} (its own {@code GameCopier} + nested {@code
+     * GameStateEvaluator.getScoreForGameState} call per candidate, which can recurse into combat
+     * simulation yet again). The result: every single candidate scored anywhere in the decision
+     * tree paid for a full nested attack-candidate search of its own -- a multiplicative blowup on
+     * top of {@code SpellAbilityPicker}'s already-recursive (depth-3) main-phase planning, and the
+     * true explanation for why {@code -Xmx8g} OOM'd worse than {@code -Xmx3g} (more heap just let
+     * the same runaway multiplication run longer before exhausting it). Guarded exactly like
+     * {@link #declareBlockers}: if a nested call lands here while {@link #SIMULATION_IN_PROGRESS}
+     * is already true (this thread is already inside some Ultron simulation search, at any of the
+     * three guarded entry points -- this method, {@link #declareBlockers}, or
+     * {@link #chooseSpellAbilityToPlay()}), skip the search and fall back to cheap {@code super},
+     * recorded as {@code answeredBy=inherited}. This bounds the decision tree to exactly the
+     * pruned candidate counts ({@code chooseAttackPlanViaSimulation}'s own ~4, {@code
+     * chooseBlockPlanViaSimulation}'s own ~4, {@code SpellAbilityPicker}'s depth-3 recursive
+     * search) at the single real top-level decision, without ever neutering the top-level decision
+     * itself -- a nested nested-inside-scoring nested-inside-scoring search added no measurable
+     * decision quality (it was evaluating a candidate's OWN best-response combat, several plies
+     * deeper than the plan's stated design), only runaway cost.
      */
     @Override
     public void declareAttackers(Player attacker, Combat combat) {
         final long __start = System.nanoTime();
+        if (Boolean.TRUE.equals(SIMULATION_IN_PROGRESS.get())) {
+            // Nested call inside another Ultron controller's in-progress simulation search (see
+            // javadoc above) -- fall back to cheap inherited behavior rather than recursing into
+            // our own full search. Recorded as inherited, not ultron: telemetry must not lie.
+            super.declareAttackers(attacker, combat);
+            telemetry.record("declareAttackers", false, System.nanoTime() - __start);
+            return;
+        }
+
         boolean __answeredByUltron;
         int __candidateCount = 0;
         Integer __chosenScore = null;
         try {
-            AttackPlan __chosen = chooseAttackPlanViaSimulation(attacker, combat);
+            // TICKET-V3-207 (session 6): bounded to UltronConfig.maxSimDecisionTimeoutSeconds() --
+            // SIMULATION_IN_PROGRESS is set/cleared INSIDE the worker thread's own work, not here on
+            // the calling thread, since nested recursion (see javadoc above) happens synchronously
+            // on whichever thread actually runs the search. See runWithDecisionTimeout's javadoc.
+            AttackPlan __chosen = runWithDecisionTimeout("declareAttackers", () -> {
+                SIMULATION_IN_PROGRESS.set(Boolean.TRUE);
+                try {
+                    return chooseAttackPlanViaSimulation(attacker, combat);
+                } finally {
+                    SIMULATION_IN_PROGRESS.set(Boolean.FALSE);
+                }
+            });
             __candidateCount = __chosen.candidatesEvaluated;
             __chosenScore = __chosen.chosenScore;
             for (Pair<Card, GameEntity> assignment : __chosen.assignments) {
@@ -598,7 +657,7 @@ public class UltronPlayerController extends PlayerControllerAi {
             __answeredByUltron = true;
         } catch (RuntimeException __ex) {
             Logger.warn("[Ultron] simulation-based declareAttackers() threw " + __ex
-                    + "; falling back to inherited behavior (see FORGE_TRACKER TICKET-V3-204)");
+                    + "; falling back to inherited behavior (see FORGE_TRACKER TICKET-V3-204/207)");
             super.declareAttackers(attacker, combat);
             __answeredByUltron = false;
         }
@@ -607,6 +666,23 @@ public class UltronPlayerController extends PlayerControllerAi {
         __detail.put("chosenScore", __chosenScore);
         telemetry.recordDetail("declareAttackers", __detail);
         telemetry.record("declareAttackers", __answeredByUltron, System.nanoTime() - __start);
+    }
+
+    /**
+     * TICKET-V3-207 (session 6): simple holder returned from {@link #chooseSpellAbilityToPlay()}'s
+     * {@code runWithDecisionTimeout}-wrapped work, so the picker's result (chosen ability, candidate
+     * count, and score) can cross back out of the worker thread as a single value.
+     */
+    private static final class SpellPlanResult {
+        final SpellAbility chosen;
+        final int candidateCount;
+        final Integer chosenScore;
+
+        SpellPlanResult(SpellAbility chosen, int candidateCount, Integer chosenScore) {
+            this.chosen = chosen;
+            this.candidateCount = candidateCount;
+            this.chosenScore = chosenScore;
+        }
     }
 
     /** Simple holder: the winning candidate's attacker/defender assignments plus search stats. */
@@ -769,6 +845,121 @@ public class UltronPlayerController extends PlayerControllerAi {
     }
 
     /**
+     * TICKET-V3-207 (Ultron v3, session 6): JVM-wide gate ensuring at most one Ultron
+     * simulation-decision worker thread (see {@link #runWithDecisionTimeout}) is ever running at a
+     * time. See that method's javadoc for exactly why this is needed (shared mutable state that a
+     * timed-out, abandoned worker could otherwise race with a subsequent decision's worker).
+     */
+    private static final AtomicBoolean SIM_WORKER_BUSY = new AtomicBoolean(false);
+
+    /**
+     * Thrown when a simulation-based decision is abandoned after exceeding its per-decision
+     * wall-clock budget ({@link UltronConfig#maxSimDecisionTimeoutSeconds()}). Deliberately a plain
+     * {@code RuntimeException} subclass: every one of the three guarded methods
+     * ({@link #chooseSpellAbilityToPlay()}, {@link #declareAttackers}, {@link #declareBlockers})
+     * already has a {@code catch (RuntimeException)} block that falls back to {@code super} and
+     * records {@code answeredBy=inherited} -- reusing that exact path means a timeout and a thrown
+     * exception share one honest, already-tested fallback/telemetry mechanism instead of needing a
+     * second parallel one.
+     */
+    private static final class UltronDecisionTimeoutException extends RuntimeException {
+        UltronDecisionTimeoutException(String message) {
+            super(message);
+        }
+    }
+
+    /**
+     * TICKET-V3-207 (Ultron v3, session 6): per-decision timeout backstop, mirroring
+     * {@code AiController}'s existing {@code FutureTask}-based per-decision timeout (see
+     * {@code AiController#chooseSpellAbilityToPlayFromList}, its {@code aiDecisionTimeoutSeconds}/
+     * {@code timeoutReached} volatile-flag mechanism, and the historical BUG-004 note on why
+     * {@code timeoutReached} had to become {@code volatile}). Session 5's live jstack evidence showed
+     * a single Ultron simulation-based decision genuinely progressing through expensive, varied work
+     * (GameCopier deep copies, stack resolution, nested combat prediction) for 90+ seconds without
+     * ever returning, with NO backstop of its own short of the whole-game {@code timeoutSeconds}
+     * budget (1200s in production). This runs {@code work} on a dedicated worker thread and bounds
+     * the wait to {@link UltronConfig#maxSimDecisionTimeoutSeconds()} seconds; on timeout, the caller
+     * gives up and this throws {@link UltronDecisionTimeoutException}, which the caller's existing
+     * {@code catch (RuntimeException)} turns into the same inherited-behavior fallback already used
+     * for a thrown exception.
+     *
+     * <p><b>Thread-safety -- mirroring AiController's own honestly-documented limitation
+     * ("Thread.stop() removed in Java 20+ ... zombie threads accumulate"):</b> a CPU-bound simulation
+     * search has no cooperative checkpoint deep inside {@code GameCopier}/{@code GameSimulator}/
+     * {@code SpellAbilityPicker}'s recursive candidate search to poll a volatile flag the way
+     * {@code AiController}'s simple per-candidate loop does, so a timed-out worker thread cannot be
+     * forcibly, promptly stopped -- {@code future.cancel(true)} is best-effort (interrupts, which most
+     * of the simulation call chain never checks) and the thread may keep running in the background
+     * until its own work naturally completes. Two real hazards follow directly from that, both
+     * mitigated here:
+     * <ol>
+     *   <li>{@code GameSimulator.debugPrint}/{@code debugLines} are JVM-global {@code static} fields,
+     *       and {@code getAi().getSimulationPicker()} returns a single shared, NOT thread-safe
+     *       {@code SpellAbilityPicker} instance per player -- if a second Ultron decision started its
+     *       own worker thread while an earlier timed-out worker was still draining, the two could
+     *       race on that shared mutable state (corrupted debug output at best, silently wrong
+     *       simulation results at worst). {@link #SIM_WORKER_BUSY} is a single JVM-wide
+     *       compare-and-set gate: at most one Ultron simulation worker thread may run at a time,
+     *       across every player and every one of the three guarded methods. If a prior timed-out
+     *       worker is still draining when the next decision arrives, the new decision skips spawning
+     *       a second worker entirely and throws {@link UltronDecisionTimeoutException} immediately --
+     *       a safe degrade (Ultron behaves like a plain AI profile until the backlog clears), never a
+     *       crash or a second concurrent writer.</li>
+     *   <li>An abandoned worker never touches the REAL {@code Game}/{@code Combat} objects directly
+     *       -- {@code chooseAttackPlanViaSimulation}/{@code chooseBlockPlanViaSimulation}/the
+     *       {@code SpellAbilityPicker} search only ever mutate {@code GameCopier}-produced copies; the
+     *       real objects are only mutated by the caller using the worker's result, and only if the
+     *       worker actually returned within the timeout. So an abandoned worker can burn CPU/heap
+     *       uselessly, but cannot corrupt the real game state.</li>
+     * </ol>
+     * {@link #SIMULATION_IN_PROGRESS} is deliberately set/cleared INSIDE {@code work} (i.e. on the
+     * worker thread), not by this method or by the caller on the calling thread -- nested simulation
+     * recursion (declareAttackers/declareBlockers reentered via combat-lookahead scoring, see those
+     * methods' javadoc) happens as ordinary synchronous Java calls on whichever thread is running
+     * {@code work}, so the thread-local must be visible on THAT thread for the existing nested-call
+     * guard at the top of each method to keep working correctly.
+     */
+    private static <T> T runWithDecisionTimeout(String methodName, Callable<T> work) {
+        if (!SIM_WORKER_BUSY.compareAndSet(false, true)) {
+            throw new UltronDecisionTimeoutException("[Ultron] " + methodName + ": a prior timed-out "
+                    + "simulation worker is still draining in the background; skipping simulation for "
+                    + "this decision to avoid a concurrent-access race on shared simulation state "
+                    + "(see FORGE_TRACKER TICKET-V3-207 session 6)");
+        }
+        FutureTask<T> future = new FutureTask<>(() -> {
+            try {
+                return work.call();
+            } finally {
+                SIM_WORKER_BUSY.set(false);
+            }
+        });
+        Thread worker = new Thread(future, "Ultron-Sim-" + methodName);
+        worker.setDaemon(true);
+        worker.start();
+        int timeoutSeconds = UltronConfig.maxSimDecisionTimeoutSeconds();
+        try {
+            return future.get(timeoutSeconds, TimeUnit.SECONDS);
+        } catch (TimeoutException e) {
+            Logger.warn("[Ultron] " + methodName + " exceeded its " + timeoutSeconds + "s per-decision "
+                    + "timeout; abandoning this decision and falling back to inherited behavior. The "
+                    + "worker thread may keep running in the background until it finishes naturally -- "
+                    + "no new Ultron simulation worker will start until then (see FORGE_TRACKER "
+                    + "TICKET-V3-207 session 6).");
+            future.cancel(true);
+            throw new UltronDecisionTimeoutException(methodName + " exceeded " + timeoutSeconds + "s timeout");
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException re) {
+                throw re;
+            }
+            throw new RuntimeException(cause);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new UltronDecisionTimeoutException(methodName + " interrupted while waiting for simulation result");
+        }
+    }
+
+    /**
      * Guards against nested simulation recursion (see FORGE_TRACKER TICKET-V3-205 and the
      * recursion-safety note left by TICKET-V3-204). {@code ThreadLocal}, not an instance field:
      * a nested call during simulation lands on a <em>different</em> {@code UltronPlayerController}
@@ -880,9 +1071,18 @@ public class UltronPlayerController extends PlayerControllerAi {
         boolean __answeredByUltron;
         int __candidateCount = 0;
         Integer __chosenScore = null;
-        SIMULATION_IN_PROGRESS.set(Boolean.TRUE);
         try {
-            BlockPlan __chosen = chooseBlockPlanViaSimulation(defender, combat);
+            // TICKET-V3-207 (session 6): bounded to UltronConfig.maxSimDecisionTimeoutSeconds() --
+            // see runWithDecisionTimeout's javadoc for why SIMULATION_IN_PROGRESS is set/cleared
+            // inside the worker's own work rather than here on the calling thread.
+            BlockPlan __chosen = runWithDecisionTimeout("declareBlockers", () -> {
+                SIMULATION_IN_PROGRESS.set(Boolean.TRUE);
+                try {
+                    return chooseBlockPlanViaSimulation(defender, combat);
+                } finally {
+                    SIMULATION_IN_PROGRESS.set(Boolean.FALSE);
+                }
+            });
             __candidateCount = __chosen.candidatesEvaluated;
             __chosenScore = __chosen.chosenScore;
             for (Pair<Card, Card> assignment : __chosen.assignments) {
@@ -891,11 +1091,9 @@ public class UltronPlayerController extends PlayerControllerAi {
             __answeredByUltron = true;
         } catch (RuntimeException __ex) {
             Logger.warn("[Ultron] simulation-based declareBlockers() threw " + __ex
-                    + "; falling back to inherited behavior (see FORGE_TRACKER TICKET-V3-205)");
+                    + "; falling back to inherited behavior (see FORGE_TRACKER TICKET-V3-205/207)");
             super.declareBlockers(defender, combat);
             __answeredByUltron = false;
-        } finally {
-            SIMULATION_IN_PROGRESS.set(Boolean.FALSE);
         }
         Map<String, Object> __detail = new LinkedHashMap<>();
         __detail.put("candidateCount", __candidateCount);
@@ -1267,26 +1465,69 @@ public class UltronPlayerController extends PlayerControllerAi {
      * belief-state/hidden-information work Phase 4 already plans. Anything targeting the
      * battlefield/players instead of the stack (removal, combat tricks, burn) is unaffected and works
      * correctly through this same path today.
+     *
+     * <p><b>TICKET-V3-207 (session 4) recursion guard, added alongside {@link #declareAttackers}'s
+     * new one.</b> This method's own javadoc claims (correctly, verified above) that it is never
+     * re-entered on a copied/simulated game's players -- {@code devAdvanceToPhase} never runs the
+     * interactive priority loop. But it is very much a SOURCE of nested Ultron recursion for
+     * {@link #declareAttackers}/{@link #declareBlockers}: every candidate this method's own
+     * {@code SpellAbilityPicker} search scores calls {@code GameStateEvaluator.
+     * getScoreForGameState}, whose combat lookahead can invoke this player's OWN {@code
+     * declareAttackers}/{@code declareBlockers} on a copy. Setting {@link #SIMULATION_IN_PROGRESS}
+     * for this method's own duration (not just {@code declareAttackers}/{@code declareBlockers}'s)
+     * ensures that ANY nested combat decision triggered while scoring a main-phase candidate falls
+     * back to the cheap inherited path rather than recursing into Ultron's full pruned-candidate
+     * combat search -- see {@link #declareAttackers}'s javadoc for the full multiplier analysis
+     * this eliminates. Safe to add here: unlike {@code declareAttackers}/{@code declareBlockers},
+     * this method can never itself be a NESTED call (per the paragraph above), so it will never see
+     * the flag already {@code true} on entry in practice -- the check below is defensive symmetry,
+     * not a load-bearing case for this method specifically.
      */
     @Override
     public List<SpellAbility> chooseSpellAbilityToPlay() {
         final long __start = System.nanoTime();
+        if (Boolean.TRUE.equals(SIMULATION_IN_PROGRESS.get())) {
+            List<SpellAbility> __fallback = super.chooseSpellAbilityToPlay();
+            telemetry.record("chooseSpellAbilityToPlay", false, System.nanoTime() - __start);
+            return __fallback;
+        }
         List<SpellAbility> __result;
         boolean __answeredByUltron;
         boolean __stackNonEmpty = !getGame().getStack().isEmpty();
         int __candidateCount = 0;
         Integer __chosenScore = null;
         try {
-            SpellAbilityPicker __picker = getAi().getSimulationPicker();
-            __candidateCount = __picker.getCandidateSpellsAndAbilities().size();
-            SpellAbility __chosen = __picker.chooseSpellAbilityToPlay(null);
-            __result = __chosen == null ? null : Lists.newArrayList(__chosen);
-            GameStateEvaluator.Score __score = __picker.getScoreForChosenAbility();
-            __chosenScore = __score == null ? null : __score.value;
+            // TICKET-V3-207 (session 6): bounded to UltronConfig.maxSimDecisionTimeoutSeconds() --
+            // SIMULATION_IN_PROGRESS is set/cleared INSIDE the worker's own work (not here on the
+            // calling thread) since a nested combat-lookahead call reentering declareAttackers/
+            // declareBlockers during scoring happens synchronously on whichever thread runs the
+            // search. See runWithDecisionTimeout's javadoc for the full thread-safety analysis.
+            SpellPlanResult __planResult = runWithDecisionTimeout("chooseSpellAbilityToPlay", () -> {
+                SIMULATION_IN_PROGRESS.set(Boolean.TRUE);
+                try {
+                    SpellAbilityPicker __picker = getAi().getSimulationPicker();
+                    // TICKET-V3-207 (Ultron v3, session 4): bound recursive lookahead to 1 ply for this
+                    // Battlebox-shaped decision surface -- see SimulationController's and SpellAbilityPicker's
+                    // matching javadoc for why the shared default (3) plus Battlebox's shared-zone GameCopier
+                    // cost was still OOM'ing a real 3-game smoke test at -Xmx3g even after this session's
+                    // other two fixes. Scoped to this picker instance only (does not touch the shared
+                    // SimulationController default any other AI profile/test relies on).
+                    __picker.setMaxRecursionDepth(1);
+                    int candidateCount = __picker.getCandidateSpellsAndAbilities().size();
+                    SpellAbility chosen = __picker.chooseSpellAbilityToPlay(null);
+                    GameStateEvaluator.Score score = __picker.getScoreForChosenAbility();
+                    return new SpellPlanResult(chosen, candidateCount, score == null ? null : score.value);
+                } finally {
+                    SIMULATION_IN_PROGRESS.set(Boolean.FALSE);
+                }
+            });
+            __candidateCount = __planResult.candidateCount;
+            __chosenScore = __planResult.chosenScore;
+            __result = __planResult.chosen == null ? null : Lists.newArrayList(__planResult.chosen);
             __answeredByUltron = true;
         } catch (RuntimeException __ex) {
             Logger.warn("[Ultron] simulation-based chooseSpellAbilityToPlay() threw " + __ex
-                    + "; falling back to inherited behavior (see FORGE_TRACKER TICKET-V3-203)");
+                    + "; falling back to inherited behavior (see FORGE_TRACKER TICKET-V3-203/207)");
             __result = super.chooseSpellAbilityToPlay();
             __answeredByUltron = false;
         }

@@ -18,6 +18,34 @@ import java.util.*;
 
 public class GameSimulator {
     public static boolean COPY_STACK = false;
+
+    /**
+     * TICKET-V3-207 (Ultron v3, session 6): gates {@link #ensureGameCopyScoreMatches}, a debug-only
+     * consistency assertion (recomputes a full {@code GameStateEvaluator.getScoreForGameState} on the
+     * freshly-made copy -- including its own nested {@code simulateUpcomingCombatThisTurn} combat
+     * prediction -- and throws if it disagrees with the original game's score) that legitimately
+     * caught a real {@code GameCopier} fidelity bug once (TICKET-V3-201's Battlebox shared-zone bug)
+     * and is worth KEEPING for development/testing, but was running unconditionally on every single
+     * leaf-candidate {@code GameSimulator} construction, for every AI profile that uses simulation
+     * (not Ultron-specific). Session 5's live jstack evidence caught this directly firing mid-decision
+     * (the 90s dump: {@code GameSimulator.<init>} -> {@code ensureGameCopyScoreMatches} -> ... ->
+     * {@code simulateUpcomingCombatThisTurn}) -- a real, substantial, previously-uncharacterized cost
+     * multiplier on top of session 4's already-fixed recursion issue: for Ultron's depth-1/breadth-6
+     * recursive search against a real Battlebox pool, this doubled the cost of every leaf-level
+     * candidate evaluation and added a full extra nested combat-prediction pass each time.
+     *
+     * <p>Default OFF for real simulated gameplay (matches {@code SimulationController.DEBUG}'s
+     * plain-static-boolean gating convention elsewhere in this package), with a system property for
+     * easily re-enabling it for development/testing without a recompile -- if {@code GameCopier}
+     * fidelity is ever suspect again, set {@code -Dforge.sim.verifyGameCopy=true}. The public setter
+     * exists so tests can flip this at runtime (e.g. via a {@code try/finally} around a single
+     * assertion) without relying on a JVM-wide system property.
+     */
+    public static boolean VERIFY_GAME_COPY = Boolean.getBoolean("forge.sim.verifyGameCopy");
+
+    public static void setVerifyGameCopy(boolean verify) {
+        VERIFY_GAME_COPY = verify;
+    }
     final private SimulationController controller;
     private GameCopier copier;
     private Game simGame;
@@ -28,6 +56,37 @@ public class GameSimulator {
     private SpellAbilityChoicesIterator interceptor;
 
     public GameSimulator(SimulationController controller, Game origGame, Player origAiPlayer, PhaseType advanceToPhase) {
+        this(controller, origGame, origAiPlayer, advanceToPhase, null);
+    }
+
+    /**
+     * TICKET-V3-207 (Ultron v3, session 4 root-cause fix): {@code precomputedOrigScore}, when
+     * non-null, is used verbatim instead of recomputing {@code eval.getScoreForGameState(origGame,
+     * origAiPlayer)} here. Every candidate SA evaluated by {@code SpellAbilityPicker.
+     * chooseSpellAbilityToPlayImpl}'s loop constructs its own {@code GameSimulator} against the
+     * SAME (unmodified-by-sibling-candidates) {@code origGame}/{@code origAiPlayer} pair -- the
+     * caller has ALREADY computed this exact score once (it's the {@code origGameScore} parameter
+     * threaded through {@code chooseSpellAbilityToPlayImpl}/{@code evaluateSa}), so recomputing it
+     * from scratch per candidate was pure duplicated work: each recomputation itself runs
+     * {@code GameStateEvaluator.getScoreForGameState}, which (via {@code
+     * simulateUpcomingCombatThisTurn}) can trigger its own {@code GameCopier.makeCopy()} -- and, if
+     * the copy's active player is Ultron-controlled with legal attackers, a full nested {@code
+     * declareAttackers}/{@code declareBlockers} candidate search of its own. With B candidates per
+     * decision node, this alone was an unconditional B-fold multiplier on top of {@code
+     * SimulationController}'s existing depth-3 recursive branching (B + B^2 + B^3 GameSimulator
+     * constructions), independently confirmed by instrumented counts in {@code
+     * UltronGameCopierCallCountTest} (975 {@code GameCopier.makeCopy()} calls for a single
+     * main-phase decision with only 4 hand candidates and minimal board state -- see FORGE_TRACKER
+     * TICKET-V3-207). {@code getScoreForOrigGame()}'s test-visible contract (equal to
+     * {@code eval.getScoreForGameState(origGame, origAiPlayer)}) is preserved exactly: {@code
+     * GameStateEvaluator} is a pure function of game state, and {@code origGame} is not mutated
+     * between when the caller computed {@code origGameScore} and this constructor running --
+     * passing the already-known value in is a decision-quality-neutral performance fix, not a
+     * behavior change. {@code null} (the existing test helper's/legacy 4-arg constructor's path)
+     * preserves the original recompute-here behavior exactly, for callers that have no
+     * already-known score to hand in.
+     */
+    public GameSimulator(SimulationController controller, Game origGame, Player origAiPlayer, PhaseType advanceToPhase, Score precomputedOrigScore) {
         this.controller = controller;
         copier = new GameCopier(origGame);
         simGame = copier.makeCopy(advanceToPhase, origAiPlayer);
@@ -39,9 +98,9 @@ public class GameSimulator {
         debugLines = origLines;
 
         debugPrint = false;
-        origScore = eval.getScoreForGameState(origGame, origAiPlayer);
+        origScore = precomputedOrigScore != null ? precomputedOrigScore : eval.getScoreForGameState(origGame, origAiPlayer);
 
-        if (advanceToPhase == null) {
+        if (advanceToPhase == null && VERIFY_GAME_COPY) {
             ensureGameCopyScoreMatches(origGame, origAiPlayer);
         }
 

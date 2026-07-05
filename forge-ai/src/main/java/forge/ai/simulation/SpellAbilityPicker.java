@@ -22,6 +22,12 @@ import java.util.Random;
 import java.util.Set;
 
 public class SpellAbilityPicker {
+    // TICKET-V3-207 (Ultron v3, session 4): candidate-breadth cap applied only to the RECURSIVE
+    // (hypothetical-future-turn) lookahead branch of chooseSpellAbilityToPlay(SimulationController)
+    // -- see that method's inline comment for the full rationale. Chosen at the upper end of the
+    // plan's own stated "3-6 main-phase/attack candidates" pruning design (not below it).
+    private static final int MAX_LOOKAHEAD_CANDIDATES = 6;
+
     private Game game;
     private Player player;
     private Score bestScore;
@@ -31,6 +37,16 @@ public class SpellAbilityPicker {
     private Plan plan;
     private int numSimulations;
 
+    // TICKET-V3-207 (Ultron v3, session 4): null means "use SimulationController's own shared
+    // default (3)" -- the pre-existing behavior for every non-Ultron caller of this class. Set via
+    // setMaxRecursionDepth() specifically for Ultron's Battlebox usage (UltronPlayerController),
+    // where the combination of a 3-ply-deep recursive search and Battlebox's shared-zone
+    // architecture (every GameCopier.makeCopy() anywhere in the tree re-parses the entire shared
+    // zones, including a several-hundred-card shared Library, from scratch) made the existing
+    // MAX_LOOKAHEAD_CANDIDATES breadth cap alone insufficient -- a real 3-game smoke test at
+    // -Xmx3g still OOM'd. See SimulationController's matching constructor javadoc.
+    private Integer maxRecursionDepth;
+
     public SpellAbilityPicker(Game game, Player player) {
         this.game = game;
         this.player = player;
@@ -38,6 +54,10 @@ public class SpellAbilityPicker {
 
     public void setInterceptor(SpellAbilityChoicesIterator in) {
         this.interceptor = in;
+    }
+
+    public void setMaxRecursionDepth(int maxRecursionDepth) {
+        this.maxRecursionDepth = maxRecursionDepth;
     }
 
     private void print(String str) {
@@ -93,6 +113,26 @@ public class SpellAbilityPicker {
         if (controller != null) {
             // This is a recursion during a higher-level simulation. Just return the head of the best
             // sequence directly, no need to create a Plan object.
+            //
+            // TICKET-V3-207 (Ultron v3, session 4) root-cause fix: cap the candidate breadth
+            // considered at this RECURSIVE (hypothetical-future-turn) node to
+            // MAX_LOOKAHEAD_CANDIDATES. The real, top-level decision (the controller == null path
+            // below, called once per actual chooseSpellAbilityToPlay() from the game engine) keeps
+            // its full, unpruned candidate list -- this cap only bounds how many candidate
+            // sequences get explored several simulated turns deep, which is exactly the axis the
+            // plan's own "3-6 main-phase/attack candidates" design intended to prune everywhere,
+            // but this pre-existing (originally 2-player-era, reused as-is by P2.4) recursive
+            // planner never capped. Instrumented counts (UltronGameCopierCallCountTest,
+            // FORGE_TRACKER TICKET-V3-207) showed this recursive search combined with
+            // SimulationController's depth-3 lookahead and an unpruned real-hand-sized candidate
+            // list (10-20+ legal plays in a real Battlebox game, vs. this synthetic test's 4) is
+            // genuinely exponential (B + B^2 + B^3 GameSimulator constructions) and was still
+            // reproducing the OOM in a real 3-game smoke test even after the combat-lookahead
+            // recursion guard fix in UltronPlayerController -- confirming this is a SECOND,
+            // independent multiplier, not an alternative explanation for the same one.
+            if (candidateSAs.size() > MAX_LOOKAHEAD_CANDIDATES) {
+                candidateSAs = candidateSAs.subList(0, MAX_LOOKAHEAD_CANDIDATES);
+            }
             return chooseSpellAbilityToPlayImpl(controller, candidateSAs, origGameScore, null);
         }
 
@@ -106,7 +146,9 @@ public class SpellAbilityPicker {
     }
 
     private Plan formulatePlanWithPhase(Score origGameScore, List<SpellAbility> candidateSAs, PhaseType phase) {
-        SimulationController controller = new SimulationController(origGameScore);
+        SimulationController controller = maxRecursionDepth != null
+                ? new SimulationController(origGameScore, maxRecursionDepth)
+                : new SimulationController(origGameScore);
         SpellAbility sa = chooseSpellAbilityToPlayImpl(controller, candidateSAs, origGameScore, phase);
         if (sa != null) {
             return controller.getBestPlan();
@@ -169,7 +211,7 @@ public class SpellAbilityPicker {
         Score bestSaValue = origGameScore;
         print("Evaluating... (orig score = " + origGameScore +  ")");
         for (int i = 0; i < candidateSAs.size(); i++) {
-            Score value = evaluateSa(controller, phase, candidateSAs, i);
+            Score value = evaluateSa(controller, phase, candidateSAs, i, origGameScore);
             if (value.value > bestSaValue.value) {
                 bestSaValue = value;
                 bestSa = candidateSAs.get(i);
@@ -339,6 +381,20 @@ public class SpellAbilityPicker {
     }
 
     public Score evaluateSa(final SimulationController controller, PhaseType phase, List<SpellAbility> saList, int saIndex) {
+        return evaluateSa(controller, phase, saList, saIndex, null);
+    }
+
+    /**
+     * TICKET-V3-207 root-cause fix: {@code origGameScore}, when non-null, is the caller's
+     * already-computed {@code eval.getScoreForGameState(game, player)} for this exact (game,
+     * player) pair -- every candidate in {@code chooseSpellAbilityToPlayImpl}'s loop shares the
+     * same unmodified {@code game}/{@code player}, so recomputing this per-candidate inside {@code
+     * GameSimulator}'s constructor was pure duplicated work (see {@code GameSimulator}'s
+     * 5-arg-constructor javadoc for the full multiplier analysis). {@code null} preserves the
+     * original recompute-it-yourself behavior for the {@code SpellAbilityPickerSimulationTest}
+     * caller, which does not have (and should not need) an equivalent already-known value.
+     */
+    public Score evaluateSa(final SimulationController controller, PhaseType phase, List<SpellAbility> saList, int saIndex, Score origGameScore) {
         controller.evaluateSpellAbility(saList, saIndex);
         SpellAbility sa = saList.get(saIndex);
 
@@ -355,7 +411,7 @@ public class SpellAbilityPicker {
             // TODO: MyRandom should be an instance on the game object, so that we could do
             // simulations in parallel without messing up global state.
             MyRandom.setRandom(new Random(randomSeedToUse));
-            GameSimulator simulator = new GameSimulator(controller, game, player, phase);
+            GameSimulator simulator = new GameSimulator(controller, game, player, phase, origGameScore);
             simulator.setInterceptor(choicesIterator);
             // I feel like something here is making a wrong assumption about what the target is
             lastScore = simulator.simulateSpellAbility(sa);

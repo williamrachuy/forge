@@ -34,8 +34,24 @@ import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class GameCopier {
+    // TICKET-V3-207 (session 4): call-count instrumentation. Thread-safe (Ultron runs parallel
+    // eval threads per AiController's existing threading model) -- see FORGE_TRACKER for the
+    // "how many GameCopier.makeCopy() calls happen for one real decision" investigation this
+    // exists to answer. Test-only in spirit (not read by any production decision logic), but kept
+    // as plain public static accessors rather than gated behind a flag so any JUnit test or ad hoc
+    // harness can read/reset it without extra wiring, matching AiDeckStatistics's precedent.
+    private static final AtomicLong makeCopyCallCount = new AtomicLong();
+
+    public static long getMakeCopyCallCount() {
+        return makeCopyCallCount.get();
+    }
+
+    public static void resetMakeCopyCallCount() {
+        makeCopyCallCount.set(0);
+    }
     private static final ZoneType[] ZONES = new ZoneType[] {
         ZoneType.Battlefield,
         ZoneType.Hand,
@@ -71,6 +87,7 @@ public class GameCopier {
         return makeCopy(null, null);
     }
     public Game makeCopy(PhaseType advanceToPhase, Player aiPlayer) {
+        makeCopyCallCount.incrementAndGet();
         if (origGame.EXPERIMENTAL_RESTORE_SNAPSHOT) {
             // How do we advance to phase when using restores?
             return snapshot.makeCopy();
