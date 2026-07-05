@@ -2241,6 +2241,87 @@ Phase 2 is not yet met and needs at least one more follow-up session per the rec
 
 ---
 
+## UPDATE (2026-07-05, ~04:00) — likely root cause found via live jstack, NOT YET FIXED
+
+**The planned automated mid-game jstack sampler (see below) had a bug and produced nothing** — its
+own `pgrep` pattern matched its own shell process alongside the java PID, so `jstack` got called
+with two PIDs concatenated into one bad argument and failed silently on all 4 scheduled samples
+(`/tmp/v3_midgame_jstacks.txt` is worthless — don't waste time reading it). A single **manual**
+`jstack` was grabbed instead, by hand, at **24.5 minutes into a real running game**
+(`/tmp/v3_midgame_manual_jstack.txt`, PID 3444460, same `v3_ticket207_longtimeout.ini` config)
+— the first-ever mid/late-game sample this ticket has collected.
+
+**Finding:** a lingering, abandoned Ultron simulation worker thread (`"Ultron-Sim-
+chooseSpellAbilityToPlay" #917`, already 457 seconds old — i.e. it had long since blown past its
+own 40s timeout and was one of the "still draining in the background" workers the session-6 log
+warnings describe) was caught, at the moment of the dump, stuck in:
+
+```
+Player.getAllOtherPlayers
+  <- Player.getCardsActivatableInExternalZones
+  <- Player.getCardsIn
+  <- PlayerView.updateFlashback
+  <- PlayerView.updateZone
+  <- Player.updateZoneForView
+  <- SharedPlayerZone.onChanged          <-- THE SUSPECT
+  <- Zone.add
+  <- GameCopier.addCard
+  <- GameCopier.copyGameState
+  <- GameCopier.makeCopy
+  <- GameSimulator.<init>
+  <- SpellAbilityPicker.evaluateSa/chooseSpellAbilityToPlayImpl/formulatePlanWithPhase/createNewPlan/chooseSpellAbilityToPlay
+  <- UltronPlayerController.chooseSpellAbilityToPlay (via runWithDecisionTimeout's FutureTask)
+```
+
+Read `SharedPlayerZone.java` directly to confirm: `onChanged()` is overridden from the base
+`PlayerZone` to loop over **every player sharing the zone** and call `player.updateZoneForView(this)`
+on **each one, unconditionally, on every single card add** — no simulation/headless guard, no
+batching. The base (non-shared) `PlayerZone.onChanged()` presumably only updates one player's view
+per add; Battlebox's `SharedPlayerZone` (this fork's own invention, `TICKET-B001`/`TICKET-V3-201`)
+multiplies that by the number of sharing players (4 in a standard Battlebox game) for the shared
+Library/Command/Graveyard zones specifically.
+
+**Why this is a strong lead, not just another guess:** `updateZoneForView`/`PlayerView` is UI
+view-model bookkeeping — it exists to give a GUI something to render. During a `GameCopier.makeCopy()`
+headless simulation copy, there is no GUI and the copied game is discarded after one evaluation —
+every bit of that work is provably wasted. And the cost is structural, not incidental: it fires once
+per `Zone.add()` call, multiplied by every card in every shared zone being reconstructed during
+`copyGameState()`, multiplied again by the number of sharing players for `SharedPlayerZone`
+specifically. This scales with (a) shared-zone size, which *grows* as a real game progresses
+(graveyard accumulates, library cards move around) — consistent with the observed "cost doesn't
+taper off, stays elevated all game" symptom — and (b) is unique to Battlebox's shared-zone
+architecture, consistent with the all-Default control run (P0, no Ultron, but ALSO no simulation-
+copying at all for Default profile) completing 500 games cleanly with no analogous slowdown, and
+with the ORIGINAL 2-player-centric `GameCopier`/`SpellAbilityPicker` code never having hit this
+because vanilla PlayerZone never fans out to multiple players per add.
+
+**This supersedes hypothesis 1 in the section below** (generic "GameCopier per-copy cost may be
+dominated by real card re-parsing") — that was an untested guess; this is a directly-observed stack
+trace pointing at a specific, named, previously-uninstrumented method. It doesn't rule out that
+card re-parsing ALSO costs something, but this view-update fan-out looks like the more likely
+dominant term given how squarely it explains the "stays expensive throughout the whole game,
+scales with shared-zone size" symptom specifically.
+
+**NOT fixed this session — for Fable to assess and fix, per William's instruction to only collect
+data tonight.** A plausible fix shape (untested, use judgment): skip/no-op `updateZoneForView`
+calls entirely when the `Game` being mutated is a `GameCopier`-produced simulation copy (there is
+likely already a way to tell — `Game` has state distinguishing real vs. copied/simulated instances
+used elsewhere in this codebase; find it rather than inventing a new flag) — since no human/GUI
+will ever observe a simulation copy's view state. Verify by re-running the same live-jstack method
+on a real game post-fix and confirming (a) this specific stack shape no longer appears in samples
+taken at various points through a full game, and (b) a real game actually reaches completion within
+a reasonable timeout. This fix, if correct, is likely small and contained (per this ticket's
+established "instrument first, small targeted fix, re-verify with a real game" discipline) but
+touches `Zone`/`SharedPlayerZone`/`Player` — code shared with every other AI profile and the human
+player path — so verify no regression to `PlayerControllerHuman`'s actual GUI rendering (a real human
+game, not a sim copy, must still get its view updates).
+
+Raw evidence file: `/home/william/agents/scratchpad/v3_ticket207_longtimeout.ini` (repro config),
+`/tmp/v3_midgame_manual_jstack.txt` (the full 267-line dump this finding came from, on this
+machine — copy it into the repo or re-capture if starting a fresh session elsewhere).
+
+---
+
 ## ORCHESTRATOR SUMMARY FOR NEXT SESSION (2026-07-05, ~03:30) — read this first
 
 Commit `91900a047f` on `ultron-v3` merges the session-4 recursion-guard fix with the session-6
