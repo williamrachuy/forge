@@ -94,6 +94,7 @@ public class SimulateMatch {
         if (type == GameType.Battlebox) {
             rules.setBattleboxCommandersEnabled(true);
             rules.setBattleboxMonarchEnabled(true);
+            rules.setBattleboxPlanechaseEnabled(true);
         }
 
         if (matchSize != 0) {

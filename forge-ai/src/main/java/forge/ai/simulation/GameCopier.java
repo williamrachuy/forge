@@ -60,6 +60,10 @@ public class GameCopier {
         ZoneType.Exile,
         ZoneType.Stack,
         ZoneType.Command,
+        // Planechase: copy the planar deck contents so simulations of a Planechase/Battlebox game
+        // retain the remaining planes (the active plane already rides along in Command). Paired with
+        // copySharedZones(PlanarDeck) below, mirroring how Library/Command/Graveyard are handled.
+        ZoneType.PlanarDeck,
     };
 
     private Game origGame;
@@ -246,6 +250,7 @@ public class GameCopier {
         copySharedZoneIfPresent(newGame, ZoneType.Library);
         copySharedZoneIfPresent(newGame, ZoneType.Command);
         copySharedZoneIfPresent(newGame, ZoneType.Graveyard);
+        copySharedZoneIfPresent(newGame, ZoneType.PlanarDeck);
     }
 
     private void copySharedZoneIfPresent(Game newGame, ZoneType zoneType) {
@@ -272,6 +277,8 @@ public class GameCopier {
                     newSharer.setSharedCommandZone(newSharedZone);
                 } else if (zoneType == ZoneType.Graveyard) {
                     newSharer.setSharedGraveyardZone(newSharedZone);
+                } else if (zoneType == ZoneType.PlanarDeck) {
+                    newSharer.setSharedPlanarDeckZone(newSharedZone);
                 }
             }
         }

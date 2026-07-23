@@ -1617,7 +1617,9 @@ public class AiController {
             if (hostCard == null) return false;
             if (ComputerUtilCard.isCardRemAIDeck(hostCard)) return true;
             // Apply Battlebox commander constraints: one per player per game; can't steal another's claimed commander.
-            if (player.isBattleboxSharedCommandCard(hostCard)) {
+            // Effects living in the shared command zone (e.g. the Planechase "Planar Dice" roll action)
+            // are NOT commanders and have no dedicated pass, so they must stay playable here.
+            if (player.isBattleboxSharedCommandCard(hostCard) && !hostCard.isImmutable()) {
                 // Always remove from saList — the dedicated commander pass handles casting with correct costs.
                 // saList copies of command zone SAs have stripped mana costs (zero), causing free casts.
                 return true;

@@ -88,6 +88,12 @@ public class Match {
             game.setBattleboxPlanechaseChoice(rules.isBattleboxPlanechaseEnabled());
         }
 
+        // Battlebox planechase reuses the stock Planechase rules engine (planar die, plane
+        // rotation, controller-lost handling); ensure the variant is applied so those fire.
+        if (rules.isBattleboxPlanechaseEnabled() && !rules.hasAppliedVariant(GameType.Planechase)) {
+            rules.addAppliedVariant(GameType.Planechase);
+        }
+
         prepareAllZones(game);
         if (rules.useAnte()) {  // Deciding which cards go to ante
             Multimap<Player, Card> list = game.chooseCardsForAnte(rules.getMatchAnteRarity(), rules.getAnteIncludeBasicLands());
@@ -317,6 +323,34 @@ public class Match {
         refreshBattleboxSharedZone(players, ZoneType.Command);
     }
 
+    private static void prepareBattleboxSharedPlanarDeck(final FCollectionView<Player> players, final List<RegisteredPlayer> playersConditions, final Game game) {
+        if (players.isEmpty() || playersConditions.isEmpty()) {
+            return;
+        }
+        final RegisteredPlayer battleboxSource = playersConditions.get(0);
+        final CardPool planes = BattleboxConfig.getPlanes(battleboxSource.getDeck());
+        if (planes == null || planes.countAll() == 0) {
+            return;
+        }
+
+        final Player host = players.get(0);
+        final SharedPlayerZone sharedPlanarDeck = new SharedPlayerZone(ZoneType.PlanarDeck, host);
+        for (final Player player : players) {
+            sharedPlanarDeck.addPlayer(player);
+            player.setSharedPlanarDeckZone(sharedPlanarDeck);
+        }
+
+        final List<Card> planeCards = createCardsForZone(host, planes, battleboxSource.useRandomFoil());
+        for (final Card c : planeCards) {
+            c.setCollectible(true);
+        }
+        sharedPlanarDeck.setCards(planeCards);
+        sharedPlanarDeck.shuffle();
+
+        game.traceState("=== prepareBattleboxSharedPlanarDeck: " + sharedPlanarDeck.size() + " planes/phenomena ===");
+        refreshBattleboxSharedZone(players, ZoneType.PlanarDeck);
+    }
+
     private static void prepareBattleboxSharedGraveyard(final FCollectionView<Player> players) {
         if (players.isEmpty()) {
             return;
@@ -372,6 +406,9 @@ public class Match {
             prepareBattleboxSharedLibrary(players, playersConditions, game);
             prepareBattleboxSharedCommand(players, playersConditions, game);
             prepareBattleboxSharedGraveyard(players);
+            if (rules.isBattleboxPlanechaseEnabled()) {
+                prepareBattleboxSharedPlanarDeck(players, playersConditions, game);
+            }
         }
 
         for (int i = 0; i < playersConditions.size(); i++) {

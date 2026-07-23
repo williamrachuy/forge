@@ -156,6 +156,7 @@ public class Player extends GameEntity implements Comparable<Player> {
     private PlayerZone sharedLibraryZone = null;
     private PlayerZone sharedCommandZone = null;
     private PlayerZone sharedGraveyardZone = null;
+    private PlayerZone sharedPlanarDeckZone = null;
     private List<PlayerZone> extraZones = null;
 
     private final Map<Long, Integer> adjustLandPlays = Maps.newHashMap();
@@ -1304,6 +1305,9 @@ public class Player extends GameEntity implements Comparable<Player> {
         if (zone == ZoneType.Graveyard && sharedGraveyardZone != null) {
             return sharedGraveyardZone;
         }
+        if (zone == ZoneType.PlanarDeck && sharedPlanarDeckZone != null) {
+            return sharedPlanarDeckZone;
+        }
         return zones.get(zone);
     }
     public PlayerZone getPersonalCommandZone() {
@@ -1345,6 +1349,11 @@ public class Player extends GameEntity implements Comparable<Player> {
 
     public void setSharedGraveyardZone(final PlayerZone zone) {
         sharedGraveyardZone = zone;
+        updateZoneForView(zone);
+    }
+
+    public void setSharedPlanarDeckZone(final PlayerZone zone) {
+        sharedPlanarDeckZone = zone;
         updateZoneForView(zone);
     }
 
@@ -1394,6 +1403,10 @@ public class Player extends GameEntity implements Comparable<Player> {
         return sharedCommandZone != null && sharedCommandZone == zone;
     }
 
+    public boolean isSharedPlanarDeckZone(final PlayerZone zone) {
+        return sharedPlanarDeckZone != null && sharedPlanarDeckZone == zone;
+    }
+
     public boolean isBattleboxSharedGraveyardCard(final Card card) {
         return card != null && sharedGraveyardZone != null && card.getZone() == sharedGraveyardZone;
     }
@@ -1419,6 +1432,9 @@ public class Player extends GameEntity implements Comparable<Player> {
         }
         if (sharedGraveyardZone != null) {
             updateZoneForView(sharedGraveyardZone);
+        }
+        if (sharedPlanarDeckZone != null) {
+            updateZoneForView(sharedPlanarDeckZone);
         }
     }
 
@@ -2681,6 +2697,9 @@ public class Player extends GameEntity implements Comparable<Player> {
         }
         if (sharedCommandZone != null && sharedCommandZone.getPlayer() == this) {
             sharedCommandZone.resetCardsAddedThisTurn();
+        }
+        if (sharedPlanarDeckZone != null && sharedPlanarDeckZone.getPlayer() == this) {
+            sharedPlanarDeckZone.resetCardsAddedThisTurn();
         }
         setNumDrawnLastTurn(getNumDrawnThisTurn());
         resetNumDrawnThisTurn();

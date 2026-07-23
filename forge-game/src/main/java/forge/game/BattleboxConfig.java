@@ -164,6 +164,25 @@ public final class BattleboxConfig {
         return deck.get(DeckSection.Commander);
     }
 
+    public static final String PLANECHASE_SECTION = "Planechase";
+
+    /**
+     * Reads every plane and phenomenon from the [Planechase] section of the Battlebox deck.
+     * The section is unparsed (its header does not map to a {@link DeckSection}), so it is
+     * read the same way as [BasicLandsSet].
+     */
+    public static CardPool getPlanes(final Deck deck) {
+        if (deck == null) {
+            return null;
+        }
+        final List<String> lines = deck.getUnparsedSection(PLANECHASE_SECTION);
+        if (lines == null || lines.isEmpty()) {
+            return null;
+        }
+        final CardPool planes = CardPool.fromCardList(lines);
+        return planes.isEmpty() ? null : planes;
+    }
+
     public static Set<String> getLandNamesInMain(final Deck deck) {
         final Set<String> names = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
         if (deck == null || !deck.has(DeckSection.Main)) {

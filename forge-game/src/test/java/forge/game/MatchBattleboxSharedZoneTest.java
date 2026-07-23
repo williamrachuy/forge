@@ -273,8 +273,43 @@ public class MatchBattleboxSharedZoneTest {
                 player.setSharedCommandZone(sharedZone);
             } else if (zoneType == ZoneType.Graveyard) {
                 player.setSharedGraveyardZone(sharedZone);
+            } else if (zoneType == ZoneType.PlanarDeck) {
+                player.setSharedPlanarDeckZone(sharedZone);
             }
         }
+    }
+
+    @Test
+    public void battleboxSharedPlanarDeckIsSingleZoneAcrossAllPlayers() {
+        final Game game = createMatch(4, true).createGame();
+        installSharedZone(game, ZoneType.PlanarDeck);
+        final Player host = game.getPlayers().get(0);
+
+        // Every seat must resolve the planar deck to the very same zone instance.
+        for (final Player player : game.getPlayers()) {
+            Assert.assertSame(player.getZone(ZoneType.PlanarDeck), host.getZone(ZoneType.PlanarDeck));
+        }
+
+        // A single plane in that shared zone must be counted exactly once game-wide, not once
+        // per sharing player.
+        final Card plane = addSharedZoneCard(game, host, ZoneType.PlanarDeck, 70_000, "Shared Plane");
+        Assert.assertEquals(game.getCardsIncludePhasingIn(ZoneType.PlanarDeck).size(), 1);
+        Assert.assertTrue(game.getPlayers().get(3).getZone(ZoneType.PlanarDeck).contains(plane));
+    }
+
+    @Test
+    public void battleboxPlayerLossPreservesSharedPlanarDeckCardsOwnedByLoser() {
+        final Game game = createMatch(4, true).createGame();
+        installSharedZone(game, ZoneType.PlanarDeck);
+        final Player losingPlayer = game.getPlayers().get(0);
+        final Player nextPlayer = game.getPlayers().get(1);
+        final Card plane = addSharedZoneCard(game, losingPlayer, ZoneType.PlanarDeck, 70_001, "Shared Plane");
+
+        game.onPlayerLost(losingPlayer);
+
+        Assert.assertTrue(nextPlayer.getZone(ZoneType.PlanarDeck).contains(plane));
+        Assert.assertSame(plane.getOwner(), nextPlayer);
+        Assert.assertEquals(game.getCardsIncludePhasingIn(ZoneType.PlanarDeck).size(), 1);
     }
 
     private static void setSharedCommandZone(final Player player, final SharedPlayerZone sharedCommand) throws Exception {

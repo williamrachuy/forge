@@ -297,7 +297,7 @@ public class Game {
     public CardCollectionView copyLastState(ZoneType type) {
         CardCollection result = new CardCollection();
         Map<Integer, Card> cachedMap = Maps.newHashMap();
-        Set<PlayerZone> seenSharedZones = type == ZoneType.Library || type == ZoneType.Command || type == ZoneType.Graveyard
+        Set<PlayerZone> seenSharedZones = type == ZoneType.Library || type == ZoneType.Command || type == ZoneType.Graveyard || type == ZoneType.PlanarDeck
                 ? Collections.newSetFromMap(new IdentityHashMap<>()) : null;
         for (final Player p : getPlayers()) {
             final PlayerZone zone = p.getZone(type);
@@ -703,7 +703,7 @@ public class Game {
         }
 
         CardCollection cards = new CardCollection();
-        Set<Zone> seenSharedZones = zone == ZoneType.Library || zone == ZoneType.Command || zone == ZoneType.Graveyard
+        Set<Zone> seenSharedZones = zone == ZoneType.Library || zone == ZoneType.Command || zone == ZoneType.Graveyard || zone == ZoneType.PlanarDeck
                 ? Collections.newSetFromMap(new IdentityHashMap<>()) : null;
         for (final Player p : getPlayers()) {
             if (zone == ZoneType.Command && p.getPersonalCommandZone() != p.getZone(zone)) {
@@ -1149,7 +1149,8 @@ public class Game {
             final PlayerZone commandZone = player.getZone(ZoneType.Command);
             final boolean sharedCommandZone = playerZone.is(ZoneType.Command)
                     && player.getPersonalCommandZone() != commandZone && commandZone == playerZone;
-            if (player.isSharedLibraryZone(playerZone) || player.isSharedGraveyardZone(playerZone) || sharedCommandZone) {
+            if (player.isSharedLibraryZone(playerZone) || player.isSharedGraveyardZone(playerZone)
+                    || player.isSharedPlanarDeckZone(playerZone) || sharedCommandZone) {
                 return true;
             }
         }
