@@ -223,6 +223,20 @@ vs timing out, out of 10** — compared against the control's 2.0% baseline time
 Decision rule agreed in advance: a timeout rate in the control's neighbourhood means Phase 0 is
 done and Phase 1 (encoder) starts; a substantially worse rate justifies scoping the caching ticket.
 
+> PRE-REGISTERED CAVEAT [2026-07-24, written before any game finished — not a post-hoc excuse]:
+> this run caps at `timeoutSeconds=900`, but the TICKET-V3-007 control it is compared against ran
+> at **1200**. The comparison is therefore **asymmetric in the conservative direction**, and the
+> two verdicts must be read differently:
+> - **Low timeout rate → strong evidence.** Passing under a stricter cap implies passing at 1200s.
+>   Take the result at face value and move to Phase 1.
+> - **High timeout rate → ambiguous, do NOT conclude systemic slowness directly.** Some timed-out
+>   games may have completed between 900s and 1200s. Before concluding anything, check each
+>   timed-out game's `elapsedMillis`, `totalPlayerTurns`, and how many players were still alive at
+>   the kill — a game killed at 900s with 3 players eliminated was nearly done; one at 900s with
+>   4 alive and 15 turns played is genuinely stuck. Only the latter shape justifies the caching ticket.
+> 900s was inherited from TICKET-V4-001's own gate bar and the run was already in flight when this
+> was noticed; re-running at 1200s is cheap (~75 min) if the result lands ambiguous.
+
 > HARDWARE CORRECTION [2026-07-24]: TICKET-V3-001's RAM budget (`nproc`=4, 15 GB total, hence
 > workers=2) is **stale** — the box now measures **31 GB RAM / 8 cores**, with ~11 GB `available`
 > at the time of writing. The practical parallel-run ceiling is roughly double what that ticket's
