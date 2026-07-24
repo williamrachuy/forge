@@ -57,6 +57,9 @@ public final class CardPicturePanel extends JPanel implements ImageFetcher.Callb
     private boolean mayView = true;
 
     private final FImagePanel panel;
+    /** Extra clockwise rotation (degrees, rounded to nearest 90) applied on top of flip handling.
+     *  Used to show landscape cards such as Planechase planes upright in a portrait panel. */
+    private int rotation = 0;
     private BufferedImage currentImage;
 
     public CardPicturePanel() {
@@ -104,7 +107,7 @@ public final class CardPicturePanel extends JPanel implements ImageFetcher.Callb
                 final BufferedImage displayedimage = new BufferedImage(cm, raster, isAlphaPremultiplied, null)
                         .getSubimage(0, 0, image.getWidth(), image.getHeight());
                 this.currentImage = displayedimage;
-                this.panel.setImage(isFlipped ? rotateImage180(displayedimage) : image, getAutoSizeImageMode());
+                this.panel.setImage(isFlipped ? rotateImage180(displayedimage) : image, rotation, getAutoSizeImageMode());
                 PaperCard card = (PaperCard) displayed;
                 if (FModel.getPreferences().getPrefBoolean(FPref.UI_OVERLAY_FOIL_EFFECT)) {
                     if (card.isFoil()) {
@@ -114,7 +117,7 @@ public final class CardPicturePanel extends JPanel implements ImageFetcher.Callb
                 }
             } else {
                 this.currentImage = image;
-                this.panel.setImage(isFlipped ? rotateImage180(image) : image, getAutoSizeImageMode());
+                this.panel.setImage(isFlipped ? rotateImage180(image) : image, rotation, getAutoSizeImageMode());
             }
         }
     }
@@ -163,6 +166,12 @@ public final class CardPicturePanel extends JPanel implements ImageFetcher.Callb
     }
 
     public void showAsEnabled(){ this.panel.setAlpha(0.0f); }
+
+    /** Sets an extra clockwise rotation (degrees, rounded to nearest 90) applied to the card image,
+     *  e.g. 90 to show a landscape Planechase plane upright in a portrait panel. */
+    public void setRotation(final int degrees) {
+        this.rotation = degrees;
+    }
 
     private BufferedImage rotateImage180(BufferedImage image) {
         int width = image.getWidth();

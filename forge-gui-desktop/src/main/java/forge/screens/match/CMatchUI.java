@@ -109,6 +109,7 @@ import forge.screens.match.controllers.CDetailPicture;
 import forge.screens.match.controllers.CDev;
 import forge.screens.match.controllers.CDock;
 import forge.screens.match.controllers.CLog;
+import forge.screens.match.controllers.CPlanechase;
 import forge.screens.match.controllers.CPrompt;
 import forge.screens.match.controllers.CStack;
 import forge.screens.match.menus.CMatchUIMenus;
@@ -178,6 +179,7 @@ public final class CMatchUI
     private final CDev cDev = new CDev(this);
     private final CDock cDock = new CDock(this);
     private final CLog cLog = new CLog(this);
+    private final CPlanechase cPlanechase = new CPlanechase(this);
     private final CPrompt cPrompt = new CPrompt(this);
     private final CStack cStack = new CStack(this);
     private final Consumer<UltronAdvisor.StatusEvent> ultronStatusListener = this::onUltronStatus;
@@ -202,6 +204,7 @@ public final class CMatchUI
         this.myDocs.put(EDocID.REPORT_COMBAT, cCombat.getView());
         this.myDocs.put(EDocID.REPORT_DEPENDENCIES, cDependencies.getView());
         this.myDocs.put(EDocID.REPORT_LOG, cLog.getView());
+        this.myDocs.put(EDocID.REPORT_PLANECHASE, cPlanechase.getView());
         this.myDocs.put(EDocID.DEV_MODE, getCDev().getView());
         this.myDocs.put(EDocID.BUTTON_DOCK, getCDock().getView());
         UltronAdvisor.get().addStatusListener(ultronStatusListener);
@@ -377,6 +380,46 @@ public final class CMatchUI
         if (deck != null) {
             FDeckViewer.show(deck);
         }
+    }
+
+    /** Surfaces the Planechase panel as a dockable tab in a reliably-visible cell (regardless of the
+     *  saved layout) and selects it. From there it drags between cells like the card-detail view. */
+    public void showPlanechasePanel() {
+        // Use the real registered doc directly, and (re)assert the mapping, in case an older saved
+        // layout left a stale empty doc under this id.
+        final IVDoc<? extends ICDoc> doc = cPlanechase.getView();
+        EDocID.REPORT_PLANECHASE.setDoc(doc);
+
+        DragCell target = firstDockedCell(EDocID.CARD_DETAIL, EDocID.CARD_PICTURE,
+                EDocID.REPORT_LOG, EDocID.REPORT_COMBAT, EDocID.REPORT_MESSAGE);
+        if (target == null) {
+            final List<DragCell> cells = FView.SINGLETON_INSTANCE.getDragCells();
+            if (!cells.isEmpty()) {
+                target = cells.get(0);
+            }
+        }
+        if (target == null) {
+            return;
+        }
+        if (doc.getParentCell() != target) {
+            if (doc.getParentCell() != null) {
+                doc.getParentCell().removeDoc(doc);
+            }
+            target.addDoc(doc);
+        }
+        SDisplayUtil.showTab(doc);
+        cPlanechase.update();
+    }
+
+    /** @return the parent cell of the first of the given docs that is actually placed in a cell. */
+    private static DragCell firstDockedCell(final EDocID... ids) {
+        for (final EDocID id : ids) {
+            final IVDoc<? extends ICDoc> refDoc = id.getDoc();
+            if (refDoc != null && !(refDoc instanceof VEmptyDoc) && refDoc.getParentCell() != null) {
+                return refDoc.getParentCell();
+            }
+        }
+        return null;
     }
 
     public void showUltronChat() {
@@ -646,6 +689,9 @@ public final class CMatchUI
                 vField.updateZones();
             }
         }
+        // Refresh the Planechase panel: the active plane and roll availability change as command/
+        // planar zones and priority shift.
+        cPlanechase.update();
     }
 
     @Override

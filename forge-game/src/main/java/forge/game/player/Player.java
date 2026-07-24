@@ -1317,12 +1317,28 @@ public class Player extends GameEntity implements Comparable<Player> {
         if (zone.is(ZoneType.Command) && sharedCommandZone != null) {
             final CardCollection cards;
             if (isBattleboxGame()) {
-                // In Battlebox: only show this player's own claimed commander in the Command Zone.
-                // The land station and unclaimed commanders appear in the playable (Flashback) zone.
+                // In Battlebox the shared Command zone holds the land station, the commander pool,
+                // the active plane and the Planar Dice effect. Show land station + castable commanders
+                // here (plane/dice live in the Planechase panel). Once a player casts a commander from
+                // the pool, the unclaimed pool disappears for them and only their own commander remains.
                 cards = new CardCollection();
+                final boolean hasClaimedCommander = !getCommanders().isEmpty();
                 for (Card c : sharedCommandZone.getCards(false)) {
-                    if (getCommanders().contains(c)) {
-                        cards.add(c);
+                    if (c.getType().isPlane() || c.getType().isPhenomenon() || c.isImmutable()) {
+                        continue; // active plane and Planar Dice are shown in the Planechase panel
+                    }
+                    if (c.isLand()) {
+                        cards.add(c); // land station always visible while it remains
+                    } else if (hasClaimedCommander) {
+                        if (getCommanders().contains(c)) {
+                            cards.add(c); // only this player's own claimed commander
+                        }
+                    } else {
+                        final boolean claimedByAnyone = getGame().getPlayers().stream()
+                                .anyMatch(p -> p.getCommanders().contains(c));
+                        if (!claimedByAnyone) {
+                            cards.add(c); // full unclaimed commander pool until this player claims one
+                        }
                     }
                 }
                 cards.addAll(getPersonalCommandZone().getCards(false));
@@ -1530,13 +1546,21 @@ public class Player extends GameEntity implements Comparable<Player> {
                 for (Card c : sharedCommandZone.getCards(false)) {
                     if (isBattleboxSharedLandStationCard(c)) {
                         cl.add(c);
-                    } else if (isBattleboxSharedCommandCard(c)) {
+                    } else if (isBattleboxSharedCommandCard(c) && !c.isImmutable()) {
                         boolean firstCast = getCommanders().isEmpty()
                                 && game.getPlayers().stream().noneMatch(p -> p.getCommanders().contains(c));
                         boolean recast = getCommanders().contains(c);
                         if (firstCast || recast) {
                             cl.add(c);
                         }
+                    }
+                }
+                // Shared-zone effects (e.g. the Planechase "Planar Dice" roll action) aren't
+                // commanders; surface them only when the player can actually activate one of their
+                // abilities, so the roll respects sorcery-speed timing.
+                for (Card c : sharedCommandZone.getCardsPlayerCanActivate(this)) {
+                    if (c.isImmutable()) {
+                        cl.add(c);
                     }
                 }
                 addCardsPlayerCanActivate(cl, seenZones, getPersonalCommandZone());
@@ -1561,6 +1585,34 @@ public class Player extends GameEntity implements Comparable<Player> {
         if (zone != null && seenZones.add(zone)) {
             cards.addAll(zone.getCardsPlayerCanActivate(this));
         }
+    }
+
+    /** Cards shown in the playable/Flashback zone view. In Battlebox the shared land station,
+     *  commanders, active plane and Planar Dice effect are surfaced in the Command zone / Planechase
+     *  panel instead, so they are filtered out here. */
+    public CardCollectionView getCardsForFlashbackView() {
+        final CardCollectionView all = getCardsIn(ZoneType.Flashback);
+        if (!isBattleboxGame() || sharedCommandZone == null) {
+            return all;
+        }
+        final CardCollection filtered = new CardCollection();
+        for (final Card c : all) {
+            if (c.getZone() != sharedCommandZone) {
+                filtered.add(c);
+            }
+        }
+        return filtered;
+    }
+
+    /** @return the Planar Dice roll effect if the player may currently roll (it is activatable),
+     *  else null. Lets the UI drive the roll from a button instead of showing a card. */
+    public Card getPlanarRollCard() {
+        for (final Card c : getCardsIn(ZoneType.Flashback)) {
+            if (c.isImmutable() && "Planar Dice".equals(c.getName())) {
+                return c;
+            }
+        }
+        return null;
     }
 
     public final CardCollectionView getAllCards() {
@@ -2878,6 +2930,15 @@ public class Player extends GameEntity implements Comparable<Player> {
      */
     public void planeswalkTo(SpellAbility sa, final CardCollectionView destinations) {
         System.out.println(getName() + " planeswalks to " + destinations.toString());
+        final StringBuilder planeNames = new StringBuilder();
+        for (final Card c : destinations) {
+            if (planeNames.length() > 0) {
+                planeNames.append(", ");
+            }
+            planeNames.append(c.getName());
+        }
+        game.fireEvent(new forge.game.event.GameEventAddLog(GameLogEntryType.INFORMATION,
+                getName() + " planeswalks to " + planeNames));
         game.getView().updatePlanarPlayer(getView());
 
         for (Card c : destinations) {
@@ -2906,6 +2967,9 @@ public class Player extends GameEntity implements Comparable<Player> {
             game.getAction().moveTo(ZoneType.PlanarDeck, plane, -1, null, AbilityKey.newMap());
         }
         currentPlanes.clear();
+        // Reflect the now-empty active plane in the UI (the shared active-planes list may be this
+        // same reference; clearing it in place would otherwise not refresh the view).
+        game.getView().updateActivePlanes(currentPlanes);
     }
 
     /**

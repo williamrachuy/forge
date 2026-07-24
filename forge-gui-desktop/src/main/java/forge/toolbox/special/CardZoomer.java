@@ -217,10 +217,17 @@ public enum CardZoomer {
         imagePanel = new FImagePanel();
 
         final BufferedImage xlhqImage = FImageUtil.getImageXlhq(thisCard);
-        imagePanel.setImage(xlhqImage == null ? FImageUtil.getImage(thisCard) : xlhqImage, getInitialRotation(), AutoSizeImageMode.SOURCE);
+        // Planes/phenomena are oversized cards that often ship lower-resolution images; SOURCE mode
+        // caps scaling at native size, leaving the text too small to read once zoomed. Fill the panel
+        // (upscaling if needed) for those so the text stays legible; other cards keep SOURCE.
+        final boolean isPlane = thisCard.getType().isPlane() || thisCard.getType().isPhenomenon();
+        final AutoSizeImageMode sizeMode = isPlane ? AutoSizeImageMode.PANEL : AutoSizeImageMode.SOURCE;
+        imagePanel.setImage(xlhqImage == null ? FImageUtil.getImage(thisCard) : xlhqImage, getInitialRotation(), sizeMode);
 
         pnlMain.removeAll();
-        pnlMain.add(imagePanel, "w 80%!, h 80%!");
+        // Planes fill their box (PANEL mode), which is large once upscaled; give them a smaller box
+        // (~2/3) so the zoom isn't oversized. Other cards keep the standard 80%.
+        pnlMain.add(imagePanel, isPlane ? "w 53%!, h 53%!" : "w 80%!, h 80%!");
         pnlMain.validate();
         setFlipIndicator();
     }

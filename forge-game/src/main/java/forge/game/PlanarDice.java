@@ -70,6 +70,10 @@ public enum PlanarDice {
             }
         }
 
+        final String rollResult = res == Planeswalk ? "Planeswalk" : res == Chaos ? "Chaos" : "no symbol";
+        game.fireEvent(new forge.game.event.GameEventAddLog(GameLogEntryType.INFORMATION,
+                roller + " rolls the planar die: " + rollResult));
+
         Map<AbilityKey, Object> runParams = AbilityKey.mapFromPlayer(roller);
         runParams.put(AbilityKey.Result, res);
         game.getTriggerHandler().runTrigger(TriggerType.PlanarDice, runParams, false);

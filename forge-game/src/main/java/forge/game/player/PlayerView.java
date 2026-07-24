@@ -419,6 +419,12 @@ public class PlayerView extends GameEntityView {
         return get(TrackableProperty.Flashback);
     }
 
+    /** @return the Planar Dice roll effect card if the player may currently roll, else null. Used by
+     *  the Planechase panel's roll button so the die isn't shown as a playable card. */
+    public CardView getPlanarRollCard() {
+        return get(TrackableProperty.PlanarRollCard);
+    }
+
     public FCollectionView<CardView> getGraveyard() {
         return get(TrackableProperty.Graveyard);
     }
@@ -496,7 +502,9 @@ public class PlayerView extends GameEntityView {
     }
 
     void updateFlashback(Player p) {
-        set(TrackableProperty.Flashback, CardView.getCollection(p.getCardsIn(ZoneType.Flashback)));
+        set(TrackableProperty.Flashback, CardView.getCollection(p.getCardsForFlashbackView()));
+        final Card roll = p.getPlanarRollCard();
+        set(TrackableProperty.PlanarRollCard, roll == null ? null : roll.getView());
     }
 
     public int getMana(final byte color) {

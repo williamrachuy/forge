@@ -120,6 +120,16 @@ public class GameView extends TrackableObject {
         return get(TrackableProperty.PlanarPlayer);
     }
 
+    /** The plane(s)/phenomenon currently face up in the command zone, exposed to the UI so it can
+     *  show them even in Battlebox, where the shared command-zone view is filtered to commanders. */
+    public FCollectionView<CardView> getActivePlanes() {
+        return get(TrackableProperty.ActivePlanes);
+    }
+
+    public void updateActivePlanes(Iterable<forge.game.card.Card> planes) {
+        set(TrackableProperty.ActivePlanes, planes == null ? null : CardView.getCollection(planes));
+    }
+
     public FCollectionView<StackItemView> getStack() {
         return get(TrackableProperty.Stack);
     }

@@ -1211,6 +1211,9 @@ public class Game {
     }
     public void setActivePlanes(List<Card> activePlane0) {
         activePlanes = activePlane0;
+        if (view != null) {
+            view.updateActivePlanes(activePlane0);
+        }
     }
 
     public GameStage getAge() {

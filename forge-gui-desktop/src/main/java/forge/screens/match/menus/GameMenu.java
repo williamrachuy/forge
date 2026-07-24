@@ -60,7 +60,15 @@ public final class GameMenu {
         menu.addSeparator();
         menu.add(getMenuItem_UltronChat());
         menu.add(getMenuItem_ViewDeckList());
+        menu.add(getMenuItem_Planechase());
         return menu;
+    }
+
+    private SkinnedMenuItem getMenuItem_Planechase() {
+        final Localizer localizer = Localizer.getInstance();
+        final SkinnedMenuItem menuItem = new SkinnedMenuItem(localizer.getMessage("lblPlanechaseTab"));
+        menuItem.addActionListener(e -> matchUI.showPlanechasePanel());
+        return menuItem;
     }
 
     private SkinnedMenuItem getMenuItem_Undo() {
