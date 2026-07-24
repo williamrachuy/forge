@@ -237,6 +237,37 @@ done and Phase 1 (encoder) starts; a substantially worse rate justifies scoping 
 > 900s was inherited from TICKET-V4-001's own gate bar and the run was already in flight when this
 > was noticed; re-running at 1200s is cheap (~75 min) if the result lands ambiguous.
 
+**Attempt 1 (2026-07-24 01:27, 2 workers x 4g): INVALID — both shards OOM'd. Results discarded,
+not analyzed.** Output preserved at `simstats/out/v4_002_smoke_10game_INVALID_4g_oom/` for
+reference. Each shard completed exactly 1 game (both hit the 900s timeout, at 29 and 23 player
+turns) and then died of `java.lang.OutOfMemoryError` — 5 OOM records in shard_0's log, 2 in
+shard_1's. **The 2/2 timeout figure from this attempt must NOT be read as evidence of anything:**
+a heap thrashing at its ceiling produces GC pressure that slows every decision, so the timeouts
+are confounded by the very defect that killed the run. Orchestrator error — 4g was chosen to
+leave headroom for a Forge GUI instance the user had open, despite TICKET-V3-207 session 6
+having already verified 6g as the working size and 3g as OOM-prone. Sharding itself was correct
+(shard_0 `games=5 seedOffset=0`, shard_1 `games=5 seedOffset=5`).
+
+**The OOM stack is itself a finding, and it corroborates TICKET-V4-001's hot spot 2:**
+```
+GameAction.checkStaticAbilities  <- ReplacementHandler.getReplacementList
+  <- AiController.chooseBestLandToPlay <- chooseDefaultLandAbility
+  <- AiController.chooseSpellAbilityToPlay  <- PlayerControllerAi.chooseSpellAbilityToPlay
+  <- UltronPlayerController.chooseSpellAbilityToPlay   (inherited-fallback path)
+```
+i.e. the static-ability/replacement-effect recomputation that TICKET-V4-001 caught as a *CPU*
+hot spot is also allocation-heavy enough to exhaust a 4g heap — in the **inherited Default-AI
+path**, reached because Ultron's own simulation decision had already timed out and fallen back.
+Note the contrast that makes this specific rather than generic: the all-Default control run
+(TICKET-V3-007) completed 500 games at a *tighter* 3g heap without this. What differs is game
+shape — Ultron games run long with large late-game boards (29/23/50 turns across the three
+observed), and this cost scales with permanent count.
+
+**Attempt 2 (2026-07-24 02:00, 2 workers x 6g): IN FLIGHT.** tmux session `v4_002_smoke_6g`.
+Same config, unchanged, so attempt 1's seeds are reused exactly. The user's Forge GUI instance
+had exited by launch time, freeing the headroom that motivated the bad 4g choice (~15g available
+at launch vs 12g committed).
+
 > HARDWARE CORRECTION [2026-07-24]: TICKET-V3-001's RAM budget (`nproc`=4, 15 GB total, hence
 > workers=2) is **stale** — the box now measures **31 GB RAM / 8 cores**, with ~11 GB `available`
 > at the time of writing. The practical parallel-run ceiling is roughly double what that ticket's
