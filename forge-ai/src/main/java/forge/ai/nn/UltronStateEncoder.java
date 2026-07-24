@@ -6,6 +6,8 @@ import forge.game.card.CardCollectionView;
 import forge.game.card.CounterEnumType;
 import forge.game.phase.PhaseType;
 import forge.game.player.Player;
+import forge.game.spellability.AbilityManaPart;
+import forge.game.spellability.SpellAbility;
 import forge.game.zone.ZoneType;
 
 import java.nio.charset.StandardCharsets;
@@ -117,16 +119,30 @@ public final class UltronStateEncoder {
     public static final int VECTOR_LENGTH = GLOBAL_OFFSET + GLOBAL_BLOCK_SIZE;
 
     /**
-     * Stable hash of the feature layout, per plan sect. 4.3: model files and training logs carry
-     * this so a model trained on one layout refuses to load against another. Computed once from a
-     * canonical description of every named segment's offset/size (FNV-1a 64-bit over UTF-8 bytes --
-     * deterministic across JVMs/processes, unlike relying on incidental class/field ordering).
+     * TICKET-V4-006: bumped whenever a feature's *meaning* changes without moving any offset or
+     * size -- e.g. the land mana-color-production fix in this ticket (basic-subtype matching ->
+     * actual mana-ability walk) changes what {@code SELF_LAND_COLORS}/{@code OPP_LAND_COLORS}
+     * *contain* for the exact same 6 floats at the exact same offset. A pure layout hash (offsets
+     * and sizes only) would not move for that kind of change, which is precisely the failure mode
+     * that lets a model trained on old semantics silently load against new encodings and produce
+     * garbage. Any change to HOW a feature is computed -- not just to the vector layout -- must
+     * bump this constant.
+     */
+    public static final int ENCODER_SEMANTIC_VERSION = 2;
+
+    /**
+     * Stable hash of the feature layout AND semantics, per plan sect. 4.3: model files and
+     * training logs carry this so a model trained on one layout/semantics refuses to load against
+     * another. Computed once from a canonical description of every named segment's offset/size
+     * plus {@link #ENCODER_SEMANTIC_VERSION} (FNV-1a 64-bit over UTF-8 bytes -- deterministic
+     * across JVMs/processes, unlike relying on incidental class/field ordering).
      */
     public static final long SCHEMA_HASH = computeSchemaHash();
     public static final String SCHEMA_HASH_HEX = Long.toHexString(SCHEMA_HASH);
 
     private static long computeSchemaHash() {
         StringBuilder sb = new StringBuilder();
+        sb.append("ENCODER_SEMANTIC_VERSION=").append(ENCODER_SEMANTIC_VERSION).append(';');
         sb.append("CARD_DIM=").append(CARD_DIM).append(';');
         sb.append("BATTLEFIELD_CARD_DIM=").append(BATTLEFIELD_CARD_DIM).append(';');
         sb.append("SELF_BF_CREATURES@").append(SELF_BF_CREATURES_OFFSET).append('/').append(BF_POOL_SIZE).append(';');
@@ -276,30 +292,75 @@ public final class UltronStateEncoder {
     }
 
     /**
-     * Coarse land-color-production counts. Approximated via basic land subtypes (a land's own color
-     * is normally colorless in Forge even when it produces colored mana, so this can't just read
-     * {@link Card#getColor()}). Nonbasic lands count as "other/colorless" in this v0 approximation --
-     * a known simplification, see FORGE_TRACKER.md TICKET-V4-005.
+     * Land-color-production counts, one increment per distinct color a land can actually produce
+     * (deduped per land, so a karoo/temple that taps for "W U" increments both the W and U slots
+     * by exactly 1, same as it would count a Plains + an Island). Derived from the card's real
+     * mana abilities -- {@link Card#getManaAbilities()} + {@link AbilityManaPart#mana(SpellAbility)}
+     * -- not from basic land subtype name matching. This mirrors the established pattern in
+     * {@code GameStateEvaluator.evaluateLand()} (forge-ai/.../simulation/GameStateEvaluator.java),
+     * which already solves this exact problem for the heuristic evaluator.
+     *
+     * <p>TICKET-V4-006: replaces the prior v1 approximation, which matched only the five basic
+     * land names (Plains/Island/Swamp/Mountain/Forest) and silently counted every nonbasic land --
+     * every Ravnica karoo, every Theros temple, every shockland, every fetchable dual -- as
+     * "other/colorless." Measured against the Battlebox pool: 60 of 80 lands have no basic land
+     * subtype at all and were previously reporting zero color production. See
+     * {@link #ENCODER_SEMANTIC_VERSION}.
      */
     private static void writeLandColorCounts(float[] out, int base, Iterable<Card> battlefield) {
         for (Card c : battlefield) {
             if (!c.isLand()) {
                 continue;
             }
-            String name = c.getName();
-            int idx;
-            switch (name) {
-                case "Plains": idx = 0; break;
-                case "Island": idx = 1; break;
-                case "Swamp": idx = 2; break;
-                case "Mountain": idx = 3; break;
-                case "Forest": idx = 4; break;
-                default: idx = 5; break;
+            boolean[] produced = new boolean[LAND_COLOR_COUNTS_SIZE]; // W,U,B,R,G,other -- per-land dedup set
+            for (SpellAbility m : c.getManaAbilities()) {
+                m.setActivatingPlayer(c.getController());
+                for (AbilityManaPart mp : m.getAllManaParts()) {
+                    String colorsStr = mp.mana(m);
+                    if (colorsStr == null || colorsStr.isEmpty()) {
+                        continue;
+                    }
+                    for (String token : colorsStr.split(" ")) {
+                        markProducedColor(produced, token);
+                    }
+                }
             }
-            out[base + idx] += 1f;
+            for (int i = 0; i < LAND_COLOR_COUNTS_SIZE; i++) {
+                if (produced[i]) {
+                    out[base + i] += 1f;
+                }
+            }
         }
         for (int i = 0; i < LAND_COLOR_COUNTS_SIZE; i++) {
             out[base + i] = out[base + i] / 10f; // scale down raw counts
+        }
+    }
+
+    /** Marks the W/U/B/R/G slots (or "other" for colorless/generic/unknown tokens) a mana token covers. */
+    private static void markProducedColor(boolean[] produced, String token) {
+        if (token == null || token.isEmpty()) {
+            return;
+        }
+        switch (token) {
+            case "W": produced[0] = true; break;
+            case "U": produced[1] = true; break;
+            case "B": produced[2] = true; break;
+            case "R": produced[3] = true; break;
+            case "G": produced[4] = true; break;
+            case "Any":
+                // Can filter/produce any color -- counts toward all five colors, same convention as
+                // GameStateEvaluator.evaluateLand()'s colors_produced.contains("Any") special case.
+                produced[0] = true;
+                produced[1] = true;
+                produced[2] = true;
+                produced[3] = true;
+                produced[4] = true;
+                break;
+            default:
+                // "C" (colorless), generic-mana tokens ("1", etc.), or anything else not one of
+                // W/U/B/R/G/Any -- bucket into "other/colorless".
+                produced[5] = true;
+                break;
         }
     }
 

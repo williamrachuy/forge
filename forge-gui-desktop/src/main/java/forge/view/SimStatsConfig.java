@@ -155,6 +155,18 @@ final class SimStatsConfig {
     }
 
     /**
+     * TICKET-V4-006 (Ultron v4 Phase 1, P1.3): enables {@code UltronStateLogger}'s per-game binary
+     * feature-vector logging (schema hash, semantic version, per-perspective vectors, raw
+     * heuristic board scores, placement/elimination labels). Off by default -- the corpus
+     * generator's throughput (~237 games/hour/worker, TICKET-V4-004) must not regress for runs
+     * that don't need this data. Also settable via the {@code ULTRON_NN_LOGGING} env var (OR'd
+     * with this config flag) for ad-hoc runs outside a simstats config file.
+     */
+    boolean isNnLoggingEnabled() {
+        return getBoolean("stats.nnLogging", false);
+    }
+
+    /**
      * Per-AI-decision timeout in seconds for the FutureTask in AiController.
      * Default 60s — generous enough that complex boards complete without timing out,
      * unlike the hardcoded game default of 5s which causes timeout storms in sim.

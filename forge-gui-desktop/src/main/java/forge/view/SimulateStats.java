@@ -17,6 +17,7 @@ import forge.ai.llm.runtime.UltronAdaptiveLearner;
 import forge.ai.llm.runtime.UltronRuntimeController;
 import forge.ai.llm.runtime.UltronSimStats;
 import forge.ai.llm.runtime.UltronWeights;
+import forge.ai.nn.UltronStateLogger;
 import forge.ai.ultron.UltronDecisionTelemetry;
 import forge.ai.ultron.UltronPlayerController;
 import forge.deck.Deck;
@@ -127,6 +128,19 @@ public final class SimulateStats {
                     game.subscribeToEvents(collector);
                 }
 
+                // TICKET-V4-006 (P1.3): NN state logger. Gated on construction, not just on
+                // internal no-ops, so a disabled run allocates nothing and subscribes nothing --
+                // "zero measurable cost when disabled" per the plan's requirement. gameSeed is
+                // already a unique-per-game 64-bit value (seedForGame is a bijective mix over
+                // (baseSeed, globalIndex)), so it doubles as the logged game ID without needing a
+                // separate counter.
+                final UltronStateLogger.GameCollector nnLogger = UltronStateLogger.isEnabled(config.isNnLoggingEnabled())
+                        ? new UltronStateLogger.GameCollector(game, gameSeed, outputDir)
+                        : null;
+                if (nnLogger != null) {
+                    game.subscribeToEvents(nnLogger);
+                }
+
                 final long started = System.currentTimeMillis();
                 boolean timeout = false;
                 String error = null;
@@ -149,6 +163,10 @@ public final class SimulateStats {
                 }
                 final long elapsed = System.currentTimeMillis() - started;
                 final boolean completedNormally = !timeout && error == null;
+
+                if (nnLogger != null) {
+                    nnLogger.finish(completedNormally, timeout);
+                }
 
                 if (collector != null) {
                     final java.util.Map<String, Object> record =

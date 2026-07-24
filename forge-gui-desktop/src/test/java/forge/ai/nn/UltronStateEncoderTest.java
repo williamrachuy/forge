@@ -278,6 +278,71 @@ public class UltronStateEncoderTest extends AITest {
     }
 
     // -----------------------------------------------------------------------
+    // Land mana-color production (TICKET-V4-006)
+    // -----------------------------------------------------------------------
+
+    /**
+     * TICKET-V4-006: land color production must come from the card's real mana abilities, not
+     * from matching basic land subtype names. Measured against the Battlebox pool: 60 of 80 lands
+     * (every karoo, every temple, every shockland) have no basic land subtype at all and were
+     * previously encoded as producing zero colors. Pins the fix for one land of each shape:
+     * karoo (Azorius Chancery -> W+U), temple (Temple of Enlightenment -> W+U, "Combo" produced
+     * string), shockland (Hallowed Fountain -> W+U via basic land subtypes Plains+Island), basic
+     * (Forest -> G), and a colorless utility land (Wastes -> "other" slot only).
+     */
+    @Test
+    public void testLandColorProductionFromManaAbilitiesNotSubtypeNames() {
+        initAndCreateGame();
+        Game game = createBattleboxGame(NUM_PLAYERS);
+        List<Player> p = game.getPlayers();
+
+        addCard("Azorius Chancery", p.get(0));
+        addCard("Temple of Enlightenment", p.get(1));
+        addCard("Hallowed Fountain", p.get(2));
+        addCard("Forest", p.get(3));
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p.get(0));
+        game.getAction().checkStateEffects(true);
+
+        assertLandColors(UltronStateEncoder.encode(game, p.get(0)), UltronStateEncoder.SELF_LAND_COLORS_OFFSET,
+                "Azorius Chancery (karoo)", true, true, false, false, false, false);
+        assertLandColors(UltronStateEncoder.encode(game, p.get(1)), UltronStateEncoder.SELF_LAND_COLORS_OFFSET,
+                "Temple of Enlightenment", true, true, false, false, false, false);
+        assertLandColors(UltronStateEncoder.encode(game, p.get(2)), UltronStateEncoder.SELF_LAND_COLORS_OFFSET,
+                "Hallowed Fountain (shockland)", true, true, false, false, false, false);
+        assertLandColors(UltronStateEncoder.encode(game, p.get(3)), UltronStateEncoder.SELF_LAND_COLORS_OFFSET,
+                "Forest (basic)", false, false, false, false, true, false);
+    }
+
+    @Test
+    public void testColorlessUtilityLandProducesOnlyOtherSlot() {
+        initAndCreateGame();
+        Game game = createBattleboxGame(NUM_PLAYERS);
+        List<Player> p = game.getPlayers();
+
+        addCard("Wastes", p.get(0));
+
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p.get(0));
+        game.getAction().checkStateEffects(true);
+
+        assertLandColors(UltronStateEncoder.encode(game, p.get(0)), UltronStateEncoder.SELF_LAND_COLORS_OFFSET,
+                "Wastes (colorless)", false, false, false, false, false, true);
+    }
+
+    /** W,U,B,R,G,other order, matching {@code writeLandColorCounts}'s slot layout. */
+    private void assertLandColors(float[] v, int base, String label,
+            boolean w, boolean u, boolean b, boolean r, boolean g, boolean other) {
+        boolean[] expected = {w, u, b, r, g, other};
+        String[] names = {"W", "U", "B", "R", "G", "other"};
+        for (int i = 0; i < expected.length; i++) {
+            float actual = v[base + i];
+            float expectedVal = expected[i] ? 0.1f : 0f; // one land, scaled /10
+            Assert.assertEquals(actual, expectedVal, 1e-6f,
+                    label + ": land-color slot [" + names[i] + "] mismatch");
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Eliminated-player masking / 1v1-as-4p transfer guarantee
     // -----------------------------------------------------------------------
 

@@ -499,6 +499,174 @@ as a hard failure during the `-am` build chain.
    entirely absent. None of these matter for the Stage A (1v1 Battlebox Monarch) bootstrap lane
    TICKET-V4-003/004 are running, but they are real gaps for Commander/Planechase variants later.
 
+### TICKET-V4-006: Land mana-color fix, semantic schema versioning, state logger (P1.3) [Task A/B DONE, Task C DONE 2026-07-24]
+
+**Task A — land mana-color production fix.** `UltronStateEncoder.writeLandColorCounts()` (the
+per-player land-colour-count block; `UltronCardFeatureTable` itself never had land-colour logic —
+the dispatch brief's attribution of the bug to that class was inaccurate, the real and only
+offender was the encoder's land block) previously matched only the five basic land names
+(`Plains`→W, etc.) and counted every other land, however much fixing it actually did, as
+"other/colorless." Measured against the Battlebox pool: **60 of 80 lands have no basic land
+subtype at all** — every Ravnica karoo, every Theros temple, every shockland — and were silently
+reporting zero color production.
+
+Fix: `writeLandColorCounts()` now walks `Card.getManaAbilities()` and, for each `AbilityManaPart`,
+calls `mp.mana(m)` (after `m.setActivatingPlayer(c.getController())`) and splits the result on
+whitespace, exactly mirroring `GameStateEvaluator.evaluateLand()`'s established pattern
+(forge-ai/.../simulation/GameStateEvaluator.java:~306) rather than inventing a new one. Per land,
+each distinct color token increments that color's slot by 1 (deduped per land, so a two-color
+land increments both slots by exactly 1, same as if it were two basics); `"Any"` increments all
+five color slots (same convention as `evaluateLand`'s `colors_produced.contains("Any")` special
+case); anything else (`"C"`, generic-mana tokens) buckets into the existing "other/colorless"
+slot. New helper `markProducedColor(boolean[], String)`.
+
+**What moved:** the `SELF_LAND_COLORS`/`OPP_LAND_COLORS` 6-float block's *values* for any land
+without a basic-land-named subtype. Golden-value shift, by land shape: Azorius Chancery (karoo,
+`Produced$ W U`) — was `[0,0,0,0,0,0.1]` (counted as "other"), now `[0.1,0.1,0,0,0,0]` (W+U).
+Temple of Enlightenment (`Produced$ Combo W U`, `isComboMana()`→`getComboColors`) — same shift,
+was all-other, now W+U. Hallowed Fountain (shockland, `Types:Land Plains Island`, gets its mana
+ability from the basic land subtypes it has despite no `Basic` supertype — real MTG rule 305.6,
+which Forge's engine already implements dynamically) — same shift, W+U. Basics (Forest→G, etc.)
+and colorless utility lands (Wastes→`Produced$ C`→"other") are **unchanged** — they were already
+correct under the old subtype-name-match approximation, since it happened to be exact for those
+two cases.
+
+**No offset moved** — same 6-float slot at the same position in both self and opponent blocks.
+This is exactly why Task B exists: a pure layout hash would not have moved for this change.
+
+Test: `UltronStateEncoderTest#testLandColorProductionFromManaAbilitiesNotSubtypeNames` (karoo,
+temple, shockland, basic, one per player, checked via `SELF_LAND_COLORS_OFFSET`) and
+`#testColorlessUtilityLandProducesOnlyOtherSlot` (Wastes). Both new, both pass.
+
+**Task B — semantic schema versioning.** Added `UltronStateEncoder.ENCODER_SEMANTIC_VERSION`
+(int, starts at 2 — 1 would have been V4-005's original release), folded into
+`computeSchemaHash()`'s input string ahead of every other field, with a doc comment stating
+explicitly that *any change to how a feature is computed, not just to the layout*, must bump it.
+Bumped to 2 as part of this ticket's Task A. **New `SCHEMA_HASH_HEX` = `330703df11234a17`**
+(was `c411b2af58e8404b` per TICKET-V4-005 — confirmed via a temporary `System.out.println` in a
+test run, then reverted; nothing in the test suite pins the hash as a literal so no golden-file
+update was needed there). No model or training log exists yet to migrate — this is the first time
+the hash has ever moved, so there's nothing downstream to break.
+
+**Task C — `UltronStateLogger` (P1.3).** New `forge.ai.nn.UltronStateLogger` (forge-ai module),
+modeled on `UltronOfflineDecisionLogger`'s enable-flag/writer conventions but logging binary
+`UltronStateEncoder` feature vectors instead of prose JSONL.
+
+*Enable flag:* off by default. `UltronStateLogger.isEnabled(configFlag)` OR's a new
+`SimStatsConfig.isNnLoggingEnabled()` (`stats.nnLogging`, default `false`) with the
+`ULTRON_NN_LOGGING` env var, matching `UltronOfflineDecisionLogger`'s `ULTRON_OFFLINE_DECISION_
+LOGGING` convention. **Zero-cost-when-disabled is structural, not a runtime branch**: `SimulateStats`
+only constructs `UltronStateLogger.GameCollector` and subscribes it to the game's event bus when
+`isEnabled()` is true (`forge-gui-desktop/.../view/SimulateStats.java`, mirroring the existing
+`collector`-nullable pattern for `stats.enabled`) — a disabled run allocates nothing and the event
+bus has one fewer subscriber, not a subscriber that no-ops. No throughput measurement was taken
+against the ~237 games/hour/worker baseline (would need a real N-game run, out of scope for this
+session), but the "don't even construct it" design means there is nothing to measure a regression
+against when off.
+
+*Sampling:* one record captured at each player's `MAIN1` phase entry each turn (a cheap,
+decision-logic-free proxy for "decision point" — P1.3 is logging-only, no AI method is hooked, per
+the session's hard constraint). Capped at `MAX_RECORDS_PER_GAME = 200`: turn 1 and the final
+`ALWAYS_KEEP_FINAL_TURNS = 3` turns' records are always kept; everything else is downsampled by
+uniform random sampling once the game's full record list is known (records buffer in memory for
+one game's duration, so this is decided in one pass at `finish()`, not true streaming reservoir
+sampling — a documented simplification, fine for typical Battlebox-length games, worth revisiting
+if a training run ever produces multi-hundred-turn games that bloat memory).
+
+*Format:* self-describing binary records (magic `0x554E5331`/"UNS1" + format version 1, so shard
+files are concatenable the same way `games.jsonl` shards are), gzip-compressed, one growing
+`nn_states.bin.gz` file per shard's `outputDir` — never one shared path across worker JVMs, since
+`outputDir` is already per-shard via `run_parallel.sh`. Per record: schema hash + semantic version,
+game ID (reused from the already-unique-per-game `gameSeed`, no new counter needed), turn, phase
+ordinal, acting seat, game length, then one block per living player: seat, vector length +
+`UltronStateEncoder.encode()` output (1908 floats today), raw `ComputerUtil.evaluateBoardPosition
+(null, player)` heuristic score, elimination turn (-1 if never eliminated), and a placement rank
+(1 = best; the winner or still-alive-at-end player is rank 1, eliminated seats rank by elimination
+turn descending, ties share a rank — a documented v0 tie-break, refinable at training time since
+the raw elimination turn is logged alongside it). **Record size at today's `VECTOR_LENGTH`=1908:
+`36 + numPlayers × (7640)`** bytes pre-gzip (header 36B; each seat block = 4+4+1908×4+4+4+4 =
+7640B) — e.g. a 2-player record is ~15.3 KB pre-gzip.
+
+*Labels:* computed at `finish()`, not via a literal second file-rewrite pass — because records are
+buffered in memory for the whole (short) game and only written once the game's outcome is fully
+known, "post-game append" and "single write pass with correct labels already in it" are
+equivalent here, and the latter is simpler. **Timeout games are discarded entirely** — `finish()`
+returns without writing anything if `timeout` or `!completedNormally`, per plan §5.1's "a
+timeout's winner is noise" policy (matches `gate.py`'s denominator handling).
+
+*Python reader:* `tools/nn/read_nn_states.py` (new), a plain-struct reader mirroring the exact
+big-endian layout `DataOutputStream` writes (Java writes all primitives, including floats via
+`Float.floatToIntBits`, big-endian). **Round-trip proof performed this session:**
+`UltronStateLoggerTest#testWritesParseableRecordsAndRoundTripsInJava` builds a real 2-player
+Battlebox fixture (Forest/Mountain/Grizzly Bears vs. Island/Swamp, life 18/20), drives it through
+three `MAIN1` entries (turns 1, 2, 3; seats 0, 1, 0), and writes+asserts via a second, independent
+Java-side reader (pinning the byte layout in-JVM). The file is deliberately left on disk
+(`$TMPDIR/ultron_nn_state_fixture/nn_states.bin.gz`, not deleted by the test) and
+`read_nn_states.py` was run against that exact file:
+```
+/tmp/ultron_nn_state_fixture/nn_states.bin.gz: 3 record(s)
+  schema_hash=0x330703df11234a17 semantic_version=2 format_version=1
+  first record: game_id=987654321 turn=1 phase_ordinal=3 acting_seat=0 game_length=3 num_seats=2
+    seat=0 vector_len=1908 heuristic_score=137.0000 elimination_turn=-1 placement=1
+    seat=1 vector_len=1908 heuristic_score=63.0000 elimination_turn=-1 placement=1
+```
+Per-record turn/acting-seat sequence across all three records (1/seat0, 2/seat1, 3/seat0),
+`schema_hash`, `semantic_version`, `game_id`, `vector_len`, and elimination/placement all matched
+the Java test's own assertions exactly — the first attempt at the Python struct format had a real
+bug (`gameId` mis-typed as a 32-bit field instead of 64-bit, corrupting every read after it), which
+this exact round-trip check caught immediately (`EOFError` on the first vector read) and the fix
+was a one-line format-string correction. That bug is worth flagging: it's the kind of
+off-by-field-width mistake that silently produces plausible-looking garbage if the two sides are
+never actually cross-checked against the same real file, rather than each side's own synthetic
+test data.
+
+**Not done / explicitly out of scope this session:**
+- No outcome-label wiring beyond what `finish()` already computes per-game — there is no
+  cross-game aggregation, no train/val split tooling, and no corpus-scale run. That is Phase 2's
+  job (P2.1), not P1.3's.
+- No throughput/regression measurement of the corpus generator with logging enabled vs. disabled
+  (see zero-cost note above for why the disabled case doesn't need one; the *enabled* case's
+  actual overhead — vector encoding + gzip write cost per sampled turn — has not been measured and
+  should be before committing to it for a multi-day P2.1 run).
+- Placement-rank tie-breaking (simultaneous elimination) is a simple documented v0 rule, not
+  validated against the plan's exact "soft distribution" language (`1st→[.70,.15,.10,.05]`) — that
+  conversion is explicitly a training-time concern per the plan text, not something this logger
+  needs to bake in, but flagging it so a training-side ticket doesn't assume more than is here.
+- Reservoir sampling is "buffer whole game, sample once at finish()," not true single-pass
+  streaming reservoir sampling — fine at current game lengths, a real limitation if game length
+  variance grows a lot in later phases (very long Commander-style games, if ever logged).
+
+**Test results (this session, full detail):**
+- New/changed: `UltronStateEncoderTest` (+2 tests, 7 total in that class now),
+  `UltronStateLoggerTest` (new, 4 tests) — `forge.ai.nn.*` altogether: **25/25**
+  (`UltronCardFeatureTableTest` 14 + `UltronStateEncoderTest` 7 + `UltronStateLoggerTest` 4).
+- Full regression baseline re-run (13 explicit classes: the 6
+  `forge.ai.simulation.*` + 5 `forge.ai.ultron.*` classes from TICKET-V4-005 plus both `forge.ai.
+  nn.*` classes, now 3 with `UltronStateLoggerTest` added): **259/259**
+  (`mvn -pl forge-gui-desktop -am test -Dtest=<13 explicit class names>
+  -Dsurefire.failIfNoSpecifiedTests=false -DfailIfNoTests=false`). Package-glob `-Dtest=forge.ai.
+  simulation.*`/`forge.ai.nn.*` still silently matches 0 tests on this setup — explicit class
+  names required, confirming the standing tracker warning yet again.
+- `forge.ai.llm.runtime.Ultron*` was **not** re-run this session (nothing in that package was
+  touched; TICKET-V4-005 already reproduced its known 34/42 baseline with the same 8 pre-existing
+  "Ahead-state" failures).
+
+**What the next session needs to know:**
+1. Task A/B are complete and tested; the new hash `330703df11234a17` / semantic version `2` is
+   live now — any Phase 2 corpus generation should start from this encoder, not the V4-005
+   original.
+2. P1.4 (encoder microbenchmark, <1ms/state target) is still not done — same status as
+   TICKET-V4-005 left it.
+3. The Phase 1 gate ("a 20-game logged run produces parseable data; a Python notebook round-trips
+   it; per-feature sanity report") is **not fully met**: the round-trip is proven on a 3-record
+   synthetic fixture, not a real 20-game `SimulateStats` run with `stats.nnLogging=true`. That run
+   has not been attempted this session (no `.ini` config with the new key was created or executed)
+   — doing that, and measuring real per-record/per-game overhead with logging on, is the
+   immediate next step before calling Phase 1 fully closed.
+4. `stats.nnLogging` is wired into `SimStatsConfig`/`SimulateStats` but has never been exercised
+   through an actual `.ini` config file end-to-end — only through direct `GameCollector`
+   construction in tests. Worth a real dry run before trusting it in a long unattended P2.1 job.
+
 > HARDWARE CORRECTION [2026-07-24]: TICKET-V3-001's RAM budget (`nproc`=4, 15 GB total, hence
 > workers=2) is **stale** — the box now measures **31 GB RAM / 8 cores**, with ~11 GB `available`
 > at the time of writing. The practical parallel-run ceiling is roughly double what that ticket's
