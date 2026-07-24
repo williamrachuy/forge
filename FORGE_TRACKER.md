@@ -339,11 +339,32 @@ turns out not to reduce per-decision cost enough (plan §1 Claim 3), and note th
 there: the NN eval removes the *evaluation*-layer copies, but `SpellAbilityPicker` still copies
 once per candidate, so it reduces rather than eliminates copy pressure.
 
-### TICKET-V4-004: All-Default 1v1 corpus-generator validation [IN_PROGRESS 2026-07-24]
+### TICKET-V4-004: All-Default 1v1 corpus-generator validation [DONE 2026-07-24]
 Config `configs/simstats/v4_004_default_1v1_corpus.ini` — 20 games, all-Default 1v1 Monarch,
 2 workers x 4g (Default AI has never needed more; the control lane ran 500 games at 3g).
 Purpose: confirm the bootstrap-corpus lane completes reliably, and measure games/hour, before
 committing days of wall-clock to a full corpus. Not an Ultron measurement lane.
+
+**Result: 20/20 completed naturally. 0 timeouts, 0 OOM, 0 errors.** The bootstrap-corpus lane is
+green. Elapsed per game: min 3s, **median 13s**, max 49s. Player turns: min 13, median 17, max 28
+(mean 18.4). Throughput **~237 games/hour/worker** — roughly 474/hr at 2 workers, ~11,000/day.
+Measured *under contention* (the TICKET-V4-005 encoder session was running Maven builds on the
+same box throughout), so this is a floor, not a ceiling.
+
+**Game-legitimacy sanity check (done because a 3-second game invites suspicion of a degenerate
+result — it is not degenerate):** all 20 ended `AllOpponentsLost` (real kills, no draws/errors);
+winner seats split exactly 10/10, so no detectable play/draw bias at N=20; mean 21.9 spells cast
+per game across both players; 18/20 games had *both* players cast >=5 spells. Even the fastest
+3s game ran 14 player turns with 11 spells cast and ended with a player at -1 life. These are
+real games, just short — 1v1 Battlebox is roughly 9 turns per player.
+
+**Plan impact (`ULTRON_V4_NEURAL_PLAN.md` §2 updated):** the plan was written around ~500-1000
+games/day from the 4-player lane. The 1v1 lane is ~10x that, which drops the P2.1 bootstrap corpus
+from "3-5 days" to a few hours and makes a substantially larger corpus and more ExIt iterations
+affordable. Samples/game is lower than 4p (shorter games, 2 perspectives not 4 — call it ~200/game
+vs ~800), but samples/day still rises nearly an order of magnitude. **Explicitly NOT relaxed:** the
+§5.4 promotion gate. Cheap games make it tempting to run many gates and promote the best-looking
+one, which is p-hacking; the rule stands as written.
 
 ### TICKET-V4-005: State encoder (P1.1 + P1.2) [IN_PROGRESS 2026-07-24]
 Dispatched to an implementation session. `UltronCardFeatureTable` + `UltronStateEncoder` in

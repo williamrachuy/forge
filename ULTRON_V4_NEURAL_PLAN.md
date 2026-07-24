@@ -69,7 +69,8 @@ v4 is therefore simultaneously the quality fix and a large part of the performan
 | CPU | 4 cores (Dell XPS 15) | 2-3 sim workers max; no MCTS with 300-sim budgets |
 | RAM | 15 GB (~7 available) | 2 workers × 3g heap ceiling (measured, TICKET-V3-001) |
 | GPU | GTX 1050 4GB, CUDA 12.4 | Fine for ≤5M-param nets in PyTorch; useless for sim |
-| Game throughput (Default 4p) | ~1.8-3 min/game, 2 workers | ~30-60 games/hour → 500-1000 games/day realistic |
+| Game throughput (Default 4p) | ~1.8-3 min/game, 2 workers | ~30-60 games/hour → 500-1000 games/day |
+| **Game throughput (Default 1v1)** | **median 13s/game (min 3, max 49)** | **~237 games/hour/worker; ~474/hr at 2 workers ≈ 11,000/day** — measured 2026-07-24, TICKET-V4-004, 20/20 completed, 0 timeouts, 0 OOM |
 | Game throughput (Ultron v3 today) | **DNF** (times out at 2400s) | Phase 0 perf work is a hard prerequisite |
 | Card pool | 666 cards + basics/tokens | Card vocab ~750 IDs; embedding table, not input nodes |
 | Baseline | Default = 24.7% [21.1, 28.7] Wilson 95% | The number to beat, with `gate.py` significance |
@@ -78,6 +79,17 @@ v4 is therefore simultaneously the quality fix and a large part of the performan
 The throughput ceiling is the defining constraint: we get **thousands of games, not millions**.
 Every design choice below optimizes samples-per-game (multi-seat perspectives, many states per
 game, auxiliary targets) and quality-per-sample (search amplification) rather than raw game count.
+
+> **REVISED 2026-07-24 (TICKET-V4-004 measurement):** the 1v1 Default lane is ~10x faster than
+> this section assumed — median 13s/game, ~11,000 games/day at 2 workers, versus the 500-1000/day
+> the plan was written around. The bootstrap corpus (§6 P2.1) drops from "3-5 days" to **a few
+> hours**. Samples-per-game is lower than 4p (shorter games — mean 18.4 player turns — and 2
+> perspectives instead of 4, so roughly ~200 samples/game rather than ~800), but total
+> samples/day still rises by nearly an order of magnitude. Consequences: a larger corpus is
+> affordable, more ExIt iterations fit in the same calendar time, and the net could be scaled up
+> from 700K params if held-out loss says it is underfitting. **Do not, however, relax the
+> gate discipline** — cheap games make it tempting to run many gates and promote on the best one,
+> which is p-hacking; the promotion rule in §5.4 stands unchanged.
 
 ---
 
