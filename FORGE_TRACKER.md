@@ -3051,6 +3051,77 @@ per the discipline this ticket's sessions have (mostly) maintained throughout.
 
 ---
 
+### TICKET-V4-006 VERIFICATION (orchestrator, 2026-07-24 04:00) — logger proven end-to-end
+
+The implementing session honestly flagged "no real end-to-end `.ini` dry run, no throughput
+measurement with logging enabled." Both are now closed, plus one build defect found on the way
+(see BUILD TRAP below — the first attempt produced **zero** log files because the shaded jar
+predated the logger; config and code were correct throughout).
+
+**Paired measurement** (`configs/simstats/v4_006_logged_dryrun.ini` — byte-identical to
+`v4_004_default_1v1_corpus.ini` except `nnLogging=true`; same seed, same 20 games, same box):
+20/20 completed, 0 timeouts, 0 OOM. **215 games/hr/worker with logging vs 272.5 without on the
+same quiet box — roughly a 21% cost.** Acceptable: at 2 workers that is still ~430 games/hr,
+~10,000/day. Note the unlogged 272.5 figure is itself higher than TICKET-V4-004's 236.8 because
+that baseline was measured under contention from a concurrent Maven build; 272.5-vs-215 is the
+honest apples-to-apples pair.
+
+**Data verified with `tools/nn/read_nn_states.py` against real game output (not a fixture):**
+379 records across 20 games, 758 perspective-samples. `schema_hash=0x330703df11234a17`,
+`semantic_version=2`, `vector_len=1908` — all matching the current encoder. Placement labels
+exactly balanced (379 firsts, 379 seconds — every 1v1 game has one winner and one loser).
+Elimination turn populated correctly (`-1` for the survivor, the real turn for the loser).
+**Turn coverage is complete** — a 19-turn game logs turns 1..19 with no gaps. Heuristic board
+scores diverge meaningfully between seats and grow over a game (105 → 314), i.e. the U(s) anchor
+input carries real signal rather than a constant.
+
+**Two findings that shape Phase 2 (neither blocking):**
+1. **Sample yield is ~38 perspective-samples/game, not the ~200 assumed in plan §2's revision** —
+   the logger writes one record per turn (all observed records are `phase_ordinal=3`), and 1v1
+   games are ~19 turns. So ~10,000 games/day yields **~390K samples/day**, not ~2M. For a
+   ~1.1M-parameter net (1908×512 alone is 977K), that implies either a multi-day corpus, denser
+   sampling (2-3 phases/turn — cheap, but adjacent states are highly correlated so the marginal
+   value is low), or a narrower first layer. **Recommendation: size the net to the data via
+   held-out loss rather than assuming 512; a 256-wide first layer halves parameters to ~570K.**
+2. **The vector is sparse: median 117 of 1908 features nonzero (~6%).** Expected — pooled flags
+   over small boards — but it reinforces (1): a 1908-wide input into 512 units, mostly zeros, is a
+   lot of parameters per unit of signal. Worth measuring feature occupancy on the full corpus
+   before fixing the architecture.
+
+# BUILD TRAP: `mvn test` does NOT rebuild the jar the simulator runs
+
+**Recorded 2026-07-24 after it silently invalidated a verification run — read this before running
+any sim after a code change.**
+
+`tools/simstats/run_simstats.sh` executes
+`forge-gui-desktop/target/forge-gui-desktop-*-jar-with-dependencies.jar`. That shaded jar is
+produced by the **`package`** phase (assembly plugin). `mvn test` compiles classes into
+`target/classes` and runs tests against them, but **never regenerates the shaded jar**. So:
+
+> A sim run launched after `mvn test` — even one where every test passes — runs whatever code was
+> in the jar at the last `package`. New classes are simply absent.
+
+**How it bit us (TICKET-V4-006):** the NN state logger was written, unit-tested (272/272 green),
+committed, and a 20-game logged verification run was launched with `stats.nnLogging=true` correctly
+set and correctly propagated into the generated `shard.ini`. The run completed 20/20 with zero
+errors and produced **no log files whatsoever**. The jar was timestamped 24 minutes before the
+logger source file existed. Nothing errored, nothing warned — a missing class in a code path gated
+behind a disabled-by-default flag simply does nothing. Had this not been checked, the "generate the
+real corpus" step would have burned hours producing an empty dataset, and the natural suspicion
+would have fallen on the logger's correctness rather than the build.
+
+**Rule:** before any sim run that is supposed to exercise newly-written code, run
+`mvn -pl forge-ai,forge-gui-desktop -am package -DskipTests -Dcheckstyle.skip=true -q` and verify
+the jar actually contains what you expect:
+`unzip -l forge-gui-desktop/target/*jar-with-dependencies.jar | grep <your/package/path>`.
+Cheap, and it converts a silent-empty-output failure into a five-second check.
+
+(Related, from TICKET-V4-005/006's own instructions: sessions are told not to run `mvn clean`
+while a sim run holds the jar open. That guidance stands — but note it does not mean "skip
+`package`"; a non-clean `package` is both safe and required.)
+
+---
+
 # AGENT ORIENTATION
 
 If you're a fresh agent session reading this:
