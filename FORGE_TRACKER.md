@@ -677,6 +677,208 @@ test data.
 
 ---
 
+### TICKET-V4-008: Trainer, architecture sizing, Java inference + parity test (P2.2/P2.3, partial) [Task A DONE, Task C DONE, Task B DONE (analysis only, no code change), 2026-07-24]
+
+Session ran concurrently with the `v4_007_bootstrap_corpus` corpus-generation run (2 JVMs, ~19h,
+left completely undisturbed — no `mvn clean`, no `-T` parallel builds, single-threaded `mvn
+package`/`test` invocations only). **Did not train V0** — the only data available was the
+379-record/758-perspective-sample/20-game smoke set from TICKET-V4-006 (`simstats/out/
+v4_006_logged_dryrun/shard_{0,1}/nn_states.bin.gz`), which the dispatch brief correctly flagged
+as far too small for a real model; every number below from that dataset is labelled a smoke-test
+result, not a V0 result, and `--smoke-label` in the trainer CLI forces that label into
+`metrics.json` so a future session can't mistake a smoke run for a real one.
+
+**Task A — trainer (`tools/nn/train.py`, new, ~470 lines).** Reuses `read_nn_states.read_records`
+for all parsing (no second parser). Key design decisions, documented at length in the module's
+own docstring so a future session doesn't have to re-derive them:
+
+- **Perspective-relative composite value target.** For a sample captured at absolute seat `s` in
+  an `n`-player game, relative slot `i` (0=self, 1..3=opponents) maps to absolute seat
+  `(s+i) % n` for `i < n`; slots `i >= n` are structurally masked (mirrors the encoder's own
+  zero-block padding for 1v1). A slot is ALSO masked if that seat was already eliminated as of
+  this specific record (absent from the record's `seats` list) — input and target masking are
+  self-consistent by construction, since the encoder already zeroes that same slot's input block.
+  Target = `alpha * placement_credit + (1-alpha) * U(s)`, both renormalized over exactly the
+  unmasked slots: `placement_credit` uses `RANK_CREDIT = [0.70, 0.15, 0.10, 0.05]` (the plan's own
+  §5.1 example numbers) indexed by each slot's final placement rank; `U(s)` is a softmax of the
+  raw `heuristic_score` values across unmasked slots at that record ("table share"). Loss is
+  soft-target cross-entropy with masked-out logits driven to `-inf` before softmax so the model
+  is never asked to place probability mass on a slot whose input is already zeroed.
+- **Split by game ID, not by state** (`split_game_ids`), with a dedicated `--self-test` that
+  asserts no game straddles train/val and no game is lost — this was written and run FIRST, before
+  any model code, per the brief's warning that a state-level split is "the single easiest way to
+  fool yourself here." `python3 tools/nn/train.py --self-test` passes.
+- **Aux heads implemented:** own-placement (4-way classification of self's final rank) and
+  game-length bucket (8-way, fixed edges `[10,14,17,20,24,30,40]`, heuristic and undocumented
+  against real data since the smoke set is only 20 games). **Aux head NOT implemented:** the
+  plan's third aux head, table-share-2-turns-later — it requires cross-referencing a different
+  record 2 turns ahead in the same game's stream, which this session deprioritized under the
+  stated A→C→B priority order. Flagging explicitly rather than silently dropping it; a future
+  session adding it needs to index records by `(game_id, turn)` within `build_samples`.
+- Timeout games need no filtering here — `UltronStateLogger.GameCollector#finish()` already
+  discards them before ever writing a record (TICKET-V4-006), so they're never in the input files.
+- Deterministic seed (`torch.manual_seed` + `random.seed`); every run writes
+  `runs/<timestamp>/{config.json, metrics.json, model.bin, parity_vectors.bin,
+  parity_python_probs.bin}`.
+- **Environment:** `tools/nn/.venv` created, CPU-only wheel installed
+  (`pip install torch --index-url https://download.pytorch.org/whl/cpu` → **torch 2.13.0+cpu**,
+  `torch.cuda.is_available()` is `False`, confirmed no CUDA deps pulled), plus `numpy` (needed for
+  the parity-fixture export, not otherwise used). Install was ~869 MB, took several minutes on a
+  quiet-except-for-the-corpus-run box.
+- **Smoke-test run performed** (proves the pipeline runs end-to-end, nothing more):
+  `tools/nn/.venv/bin/python3 tools/nn/train.py --data shard_0/nn_states.bin.gz
+  shard_1/nn_states.bin.gz --epochs 15 --hidden1 128 --hidden2 64 --alpha 0.5 --val-frac 0.2
+  --seed 1234 --smoke-label "..."`. Split: 614 train samples (16 games) / 144 val samples
+  (4 games). Early-stopped at epoch 13 (patience 5). **These numbers are meaningless as a
+  quality signal** (16 training games) and are reported only to prove the trainer doesn't crash
+  and produces a loadable model: `val_value_logloss` bottomed around 0.66, `val_winner_accuracy`
+  fluctuated 0.54–0.69 — with 16 games' worth of games-to-be-overfit that is noise, not signal.
+  **Do not cite these numbers as V0 quality in any later report.**
+
+**Task B — architecture sizing (analysis only; no plan/code change committed).** Parameter counts
+(export-time, i.e. after the two aux heads are dropped; VECTOR_LENGTH=1908, value head width 4):
+
+| hidden1 → hidden2 | export params | train params (incl. both aux heads) | params / 300K samples* |
+|---|---|---|---|
+| 512 → 256 (plan §4.2's numbers) | 1,111,300 | 1,114,384 | 3.70 |
+| 256 → 128 | 522,884 | 524,432 | 1.74 |
+| 128 → 64 (used for this session's smoke run) | 253,252 | 254,032 | 0.84 |
+| 64 → 32 | 124,580 | 124,976 | 0.42 |
+
+*300K samples = the task brief's estimate for the real corpus (~8,000 games × ~38
+perspective-samples/game per the TICKET-V4-006 verification's measured yield).
+
+**Feature occupancy, measured on the smoke dataset (758 perspective-samples, 20 games):**
+605 of 1908 features (31.7%) are EVER nonzero anywhere in the dataset; 1,303 (68.3%) are always
+zero. **This number overstates true dead-feature count and should not be used to trim the vector
+as-is** — two artifacts specific to the smoke corpus inflate it:
+1. It is 1v1 data only, so 2 of the 3 opponent blocks (846 of 1908 floats) are permanently
+   padded-eliminated by construction — that's expected and will look completely different in a 4p
+   corpus.
+2. `UltronStateLogger` only samples at `MAIN1` phase entry (documented in TICKET-V4-006), so only
+   1 of the 13 one-hot phase-type slots is EVER set — 12 more structurally-dead floats that are a
+   sampling artifact, not a real dead feature.
+   Even accounting for both of the above, restricting to the "live" 1,062 floats (self block +
+   real opponent block + global block) still shows only 603 ever-nonzero (**57% occupancy** on the
+   part of the vector that's actually exercised in 1v1), consistent with the tracker's prior
+   finding of median 117/1908 (~6%) nonzero per individual sample — most of that 6% comes from a
+   fairly narrow, repeating subset of features (card-role/keyword flags for a small, fixed
+   Battlebox card pool), not a spread across the whole vector. **Recommendation: re-measure
+   occupancy on the real 4p corpus before trimming anything** — the padded-block and phase-only-
+   sampling effects specifically will not apply there, and 4p data will exercise features (e.g.
+   `OPP_ELIMINATED` transitions mid-game, more phase diversity if sampling is ever widened) this
+   1v1 smoke set structurally cannot.
+
+**Recommendation: hidden1=256, hidden2=128 (≈523K export params, ≈1.7 params per real-corpus
+sample) for the V0 training run, not the plan's 512→256.** Reasoning: (a) 512-wide first layer
+alone is 977K parameters against a ~300K-sample corpus — a params/sample ratio (3.7) high enough
+to invite memorization rather than generalization on a corpus this size, independent of the
+sparsity finding; (b) the median-117-of-1908-nonzero sparsity (TICKET-V4-006 finding, reconfirmed
+this session) means most of a 512-wide first layer's units are dotting against a near-all-zero
+vector for a typical sample — capacity that's disproportionately expensive per unit of live
+signal; (c) 256→128 is still meaningfully large model capacity (half of every plan-spec dimension)
+and is a defensible middle ground versus jumping straight to something as small as 64→32, which
+plan §7's own risk table anticipates might be too small ("net could be scaled up... if held-out
+loss says it is underfitting"). **This session did NOT change the plan or write the recommendation
+into any code default** — `train.py --hidden1/--hidden2` default to 256/128 as the CLI defaults
+(matching this recommendation), but the actual smoke-test run above used `--hidden1 128 --hidden2
+64` for a faster demo pass; nothing about that run should be read as retracting the 256/128
+recommendation for the real V0 corpus run. Whoever runs V0 training should treat 256/128 as a
+starting point, watch held-out `val_value_logloss` for overfitting (16 games of the smoke set
+already showed visible fitting-then-plateau within 13 epochs; with ~7,000 training games instead
+of 16 this will look completely different and needs to be re-observed) and adjust up/down from
+there — this is an estimate grounded in parameter/sample ratios and measured sparsity, not a
+tuned result (no tuning was possible on 20 games).
+
+**Task C — Java inference + model artifact + PARITY TEST.**
+
+*Export format* (`tools/nn/train.py:export_model`, `.bin`, big-endian throughout — same convention
+as `UltronStateLogger`'s `DataOutputStream` writes): header
+`magic(int32,0x554E5332="UNS2") formatVersion(int32,1) schemaHash(int64) semanticVersion(int32)
+inputDim(int32) hidden1(int32) hidden2(int32) numValueSlots(int32,4)`, then float32 weights in
+this exact order: `fc1.weight[hidden1,inputDim] fc1.bias[hidden1] ln1.weight[hidden1]
+ln1.bias[hidden1] fc2.weight[hidden2,hidden1] fc2.bias[hidden2] ln2.weight[hidden2]
+ln2.bias[hidden2] valueHead.weight[4,hidden2] valueHead.bias[4]`. Aux heads
+(`placement_head`, `length_head`) are dropped at export — train-time only, per plan §4.2.
+
+*`forge.ai.nn.UltronValueNet`* (new, `forge-ai/src/main/java/forge/ai/nn/`, 260 lines): loads the
+`.bin` via a `DataInputStream`, **refuses to load** (throws `IOException` with an explicit message)
+if `schemaHash != UltronStateEncoder.SCHEMA_HASH` or `semanticVersion !=
+UltronStateEncoder.ENCODER_SEMANTIC_VERSION` — checked BEFORE any weight bytes are read. Forward
+pass: `Linear→ReLU→LayerNorm→Linear→ReLU→LayerNorm→Linear→softmax`, plain `float` arithmetic
+throughout (no double accumulation), PyTorch-default LayerNorm epsilon (`1e-5`) and biased
+(population, divide-by-N) variance — both called out explicitly in the class javadoc as the most
+likely parity-break points if either side is ever edited independently. **Not wired into any AI
+decision path** — no `StateEvaluator`, no `UltronPlayerController`/`GameStateEvaluator` changes,
+per the dispatch brief's explicit instruction that this is a later ticket.
+
+*THE PARITY TEST* (`forge-gui-desktop/src/test/java/forge/ai/nn/UltronValueNetParityTest.java`,
+new, extends `AITest` for the same Localizer/FModel-init reason `UltronStateEncoderTest` does —
+`UltronStateEncoder`'s static `SCHEMA_HASH` computation touches `PhaseType`, which needs the
+Localizer loaded first, and skipping that produces an opaque `ExceptionInInitializerError` the
+first time this was run without it). Fixture: `train.py`'s smoke-test run above also wrote
+`parity_vectors.bin` (100 REAL logged vectors, drawn straight from the same training corpus, not
+synthetic) and `parity_python_probs.bin` (the actual trained `nn.Module`'s softmax output on those
+same 100 vectors — not a reimplementation). Test loads `model.bin` through the real
+`UltronValueNet.load(Path)` path (schema-check included) and asserts every one of the 100×4
+outputs matches the Python reference to <1e-5.
+
+**Result: PASS. Max absolute deviation = 2.384185791015625e-7 (record 22, slot 3) — over 40× under
+the 1e-5 tolerance**, on the very first run (no LayerNorm-epsilon or weight-ordering bug needed
+chasing this time — the class javadoc's explicit warnings about those two failure modes appear to
+have been enough to avoid them by construction, rather than needing a debug pass). Two additional
+tests added and passing: `testRefusesToLoadOnSchemaHashMismatch` and
+`testRefusesToLoadOnSemanticVersionMismatch`, both using a synthetic (deliberately-wrong-header)
+fixture — the "not synthetic vectors" rule is specifically about the parity claim, not about unit
+tests for the loader's own guard clauses.
+
+Run command (for reproducing): `mvn -pl forge-gui-desktop -am test -Dtest=UltronValueNetParityTest
+-Dsurefire.failIfNoSpecifiedTests=false -DfailIfNoTests=false
+-Dultron.parity.dir=<runs/timestamp dir> -Dcheckstyle.skip=true -q`. The test SKIPS (not fails) if
+neither `-Dultron.parity.dir` nor `ULTRON_PARITY_DIR` is set — there is deliberately no synthetic
+fallback for the parity claim itself.
+
+**Build hygiene:** used `mvn -pl forge-ai,forge-gui-desktop -am test-compile -DskipTests
+-Dcheckstyle.skip=true -q` to compile, then targeted `-Dtest=UltronValueNetParityTest` runs — no
+`mvn clean`, no `-T` parallel flag, single JVM at a time, box was otherwise carrying the two
+corpus-generation JVMs the whole session (`v4_007_bootstrap_corpus`, left untouched).
+
+**Not done / explicitly out of scope this session (honest partial reporting):**
+1. **No V0 model was trained.** The real corpus (`v4_007_bootstrap_corpus`, ~8,000 games) was
+   still running at session end; this is Task A's own explicit instruction, not an oversight.
+2. **The table-share-2-turns-later aux head is not implemented** (see Task A section above) —
+   the trainer trains only 2 of the plan's 3 aux heads.
+3. **The `alpha` anneal schedule is not implemented** — `train.py` takes a single fixed `--alpha`
+   per run; annealing across successive corpora/ExIt iterations (plan §5.1) is a Phase 3 concern,
+   not exercised or even scaffolded here beyond the flag existing.
+4. **Feature-occupancy numbers above are 1v1-smoke-set-only** and explicitly flagged as likely
+   overstating true dead-feature count for the real (eventually 4p) corpus — see the caveats
+   under Task B. Do not use them to trim the vector without re-measuring on real 4p data.
+5. **No calibration-by-game-stage numbers are reported** (the trainer computes them —
+   `calibration_by_stage` in `metrics.json` — but on 20 games they are not meaningful and are
+   omitted from this write-up for the same reason the headline smoke numbers are).
+6. **P1.4 (encoder <1ms/state microbenchmark) is still not done** — carried over from
+   TICKET-V4-005/006, still nobody's done it.
+
+**What the next session needs to do to train V0 on the real corpus:**
+1. Wait for `v4_007_bootstrap_corpus` to finish (~19h from its start; check the tmux session).
+2. Merge/point `--data` at all shard `nn_states.bin.gz` files from that run.
+3. Run `tools/nn/.venv/bin/python3 tools/nn/train.py --data <all shards> --hidden1 256 --hidden2
+   128 --alpha 0.5 --epochs 30 --seed <pick one, keep it> ` (no `--smoke-label` this time — that
+   flag exists specifically so a real run's `metrics.json` is NOT mistaken for another smoke test).
+4. Watch `val_value_logloss` for early stopping behavior and re-derive the 256/128 sizing call
+   against real held-out loss — Task B's recommendation is a params/sample-ratio estimate, not a
+   tuned result, and should be revisited once real numbers exist.
+5. Re-run the parity test against the new run's `runs/<timestamp>/` directory
+   (`-Dultron.parity.dir=...`) — schema hash/semantic version will match automatically as long as
+   the encoder hasn't changed since TICKET-V4-006 (currently `330703df11234a17` / version 2).
+6. Re-measure feature occupancy on the real (4p, once available) corpus before ever acting on
+   this session's 1v1-smoke occupancy numbers.
+7. `StateEvaluator`/`NeuralStateEvaluator` wiring (plan §4.4, P2.4) is NOT started — still fully
+   out of scope per this ticket's own instructions, next session's job.
+
+---
+
 ## EPIC: ULTRON-V3 / PHASE-0
 **Status:** IN_PROGRESS
 **Branch:** `ultron-v3` (created off `ultron-fast-ai-remodel`)
