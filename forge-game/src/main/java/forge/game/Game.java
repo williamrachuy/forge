@@ -643,6 +643,20 @@ public class Game {
         this.timestamp = timestamp;
     }
 
+    // GameCopier.makeCopy() produces one of these per simulated candidate, evaluated once and
+    // discarded; it is never rendered by any GUI. Zone.onChanged() implementations use this to
+    // skip per-player PlayerView bookkeeping that only exists to feed a UI (TICKET-V4-001 /
+    // TICKET-V3-207).
+    private boolean simulationCopy = false;
+
+    public boolean isSimulationCopy() {
+        return simulationCopy;
+    }
+
+    public void dangerouslyMarkAsSimulationCopy() {
+        this.simulationCopy = true;
+    }
+
     public final GameOutcome getOutcome() {
         return outcome;
     }

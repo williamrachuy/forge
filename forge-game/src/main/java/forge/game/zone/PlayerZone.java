@@ -92,6 +92,11 @@ public class PlayerZone extends Zone {
         if (getZoneType() == ZoneType.Hand && player.getController().isOrderedZone()) {
             sort();
         }
+        if (game.isSimulationCopy()) {
+            // Simulation copies (GameCopier) are scored once and discarded; no GUI ever
+            // observes their PlayerView, so this bookkeeping is pure waste (TICKET-V4-001).
+            return;
+        }
         player.updateZoneForView(this);
     }
 

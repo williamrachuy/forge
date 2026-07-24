@@ -54,7 +54,7 @@ session, tracker as the handoff medium. Fable reserved for phase-gate reviews an
 when a ticket stalls twice. Sim runs and NN training happen in tmux outside sessions, never
 inside one.
 
-### TICKET-V4-001: P0.1 — SharedPlayerZone view-update fan-out fix for simulation copies [PLANNED]
+### TICKET-V4-001: P0.1 — SharedPlayerZone view-update fan-out fix for simulation copies [DONE, GATE NOT MET — see 2026-07-24 update below]
 
 The single highest-leverage change in the v4 plan. Diagnosis is already complete — see
 TICKET-V3-207's "UPDATE (2026-07-05, ~04:00)" section: a live mid-game jstack caught
@@ -95,6 +95,98 @@ as the game progresses (matches the "stays expensive all game" symptom exactly).
 >    new dominant cost is (fresh jstack evidence), and stop — do not start P0.2/P0.3.
 > 5. Run in tmux, watch it live, never background-and-forget a sim JVM (TICKET-V3-207's
 >    6-hour-zombie lesson). Update the tracker before ending the session either way.
+
+## UPDATE (2026-07-24) — fix implemented and verified; gate NOT reached; new bottleneck identified
+
+**Status changed to [DONE, GATE NOT MET]** — the fan-out fix itself is correct, real, and
+verified regression-free, but it alone does not clear TICKET-V3-207's completion bar. Per this
+ticket's own instructions, stopping here rather than starting P0.2/P0.3 unilaterally.
+
+**What was implemented:** no existing real-vs-copy discriminator was found on `Game` (checked
+`getMaingame()` — unused by `GameCopier`/`GameSnapshot`, both construct via the 3-arg `Game`
+constructor with `maingame0=null`; checked `LobbyPlayerAi.useSimulation` — that means "this AI
+player uses simulation to decide," the opposite direction, set per-player not per-Game). Added a
+new minimal flag, following the existing `dangerouslySetTimestamp`-style post-construction-mutation
+convention already used by `GameCopier`:
+- `Game.isSimulationCopy()` / `Game.dangerouslyMarkAsSimulationCopy()` (`Game.java`).
+- Called from `GameCopier.makeCopy()` right after `new Game(...)`, and from `GameSnapshot.makeCopy()`
+  (the `EXPERIMENTAL_RESTORE_SNAPSHOT` path, currently disabled by default, marked too for
+  consistency — same shape of copy, same reasoning).
+- `PlayerZone.onChanged()` and `SharedPlayerZone.onChanged()` both check `game.isSimulationCopy()`
+  and skip the `player.updateZoneForView(this)` fan-out when true. `PlayerZone`'s hand-sort logic
+  runs regardless (it's real game-state mutation, not view bookkeeping).
+
+**Regression testing:** `MatchBattleboxSharedZoneTest` 15/15. `forge.ai.simulation.*` +
+`forge.ai.ultron.*` (by explicit class name, since `-Dtest='forge.ai.simulation.*'` package-glob
+syntax silently matched 0 tests under Maven/Surefire on this setup — use explicit class-name
+lists) 234/234, matching baseline exactly. `forge.ai.llm.runtime.Ultron*` 34/42, the same 8
+pre-existing failures as baseline — no new failures anywhere.
+
+**Live-jstack verification:** ran the standing Phase 2 gate config
+(`configs/simstats/v3_ultron_vs_default_4p.ini`) shape as a single game,
+`configs/simstats/v4_001_gate_single_game.ini` (games=1, timeoutSeconds=900, same
+aiProfiles/format/bannedCards), in tmux, `FORGE_SIM_XMX=6g`, jstack samples at 300s and 601s.
+
+*(a) Confirmed fixed:* `grep -c "SharedPlayerZone\|updateZoneForView"` across both samples = 0.
+The specific stack shape from the 2026-07-05 finding (`SharedPlayerZone.onChanged` →
+`Player.updateZoneForView` → `PlayerView.updateZone`/`updateFlashback` →
+`Player.getCardsActivatableInExternalZones`) does not appear anywhere in either sample.
+
+*(b) Per-decision cost, from `games.jsonl`'s `ultronCoverage.perMethod`:* `chooseSpellAbilityToPlay`
+309 calls / 238333.79ms = **~771ms mean**, down from session-6's baseline of ~941ms early-game and
+~3.1-3.4s late-game per the same method — a real, material drop, consistent with the fan-out
+theory (its cost scaled with shared-zone size, which grows as the game progresses; removing it
+should disproportionately help *late*-game decisions, which is exactly the shape of improvement
+here).
+
+**(c) Gate NOT reached.** `games.jsonl`: `"completedNormally":false,"timeout":true,
+"elapsedMillis":901517`. 50 player-turns / 12 completed table rounds happened before the 900s kill;
+2 of 4 players eliminated (turn 27, turn 48), the remaining two still undecided at kill time
+(`"winReason":"Draw"` is the timeout-kill artifact, not a real result). So: **materially faster,
+still not fast enough to finish in 900s** on this seed/config.
+
+**New dominant cost, from fresh jstack evidence (fan-out fix already in effect — this is what's
+left):** two distinct hot spots, neither touching `SharedPlayerZone`:
+1. At 300s, the *live simulation* worker thread (`Ultron-Sim-chooseSpellAbilityToPlay`, a
+   `GameCopier`-produced copy) was caught in `Card.updateReplacementEffects` →
+   `CardState.getReplacementEffects` → `ReplacementHandler.getReplacementList` →
+   `Game.forEachCardInGame`, called from `Player.cantWin`/`hasWon` →
+   `GameAction.checkGameOverCondition` → `checkStateEffects`, itself called from
+   `GameSimulator.resolveStack`'s state-effects pass during `GameStateEvaluator
+   .simulateUpcomingCombatThisTurn`. I.e. every state-based-action check inside a simulated combat
+   resolution re-walks every card in the copied game to rebuild replacement-effect lists just to
+   answer "has anyone won/can anyone win" — cost scales with total card count in the copy, called
+   repeatedly per state check, not just once per copy.
+2. At 601s, the thread stuck for 617s of the run (`pool-3-thread-1`, 48.9s of CPU time in this one
+   sample alone) was a **real, non-simulated** decision — no `GameCopier`/`GameSimulator` in its
+   stack at all — in `AiController.getSpellAbilityToPlay` → `Card.getAllPossibleAbilities` →
+   `SpellAbility.canPlay` → `GameActionUtil.getOptionalCostValues` → `Card.getStaticAbilities` →
+   `CardState.getStaticAbilities` → `Card.updateStaticAbilities` → `CardState$LandTraitChanges
+   .applyStaticAbility` → `Card.hasRemoveIntrinsic` (a `Stream.anyMatch` scan). This is the
+   inherited `AiController`/Default-profile candidate-enumeration path (not Ultron's own decision
+   path — Ultron/seat 0 was already eliminated by turn 27, so most late-game decisions after that
+   are the 3 surviving Default profiles using the shared inherited controller) recomputing a
+   card's full static-ability set on every `canPlay()` check for every candidate ability, on every
+   priority pass, as board complexity (permanent count) grows late-game.
+
+**Where this leaves the plan:** hypothesis 1 from the 2026-07-05 orchestrator summary (real
+card-object construction/parsing cost in `GameCopier`) is still untested and still plausible as an
+additional contributor, but the two stacks actually caught here point somewhere more specific and
+more actionable: **static-ability/replacement-effect recomputation cost that scales with total
+card/permanent count**, hit both inside simulation copies (replacement-effect list rebuild per
+state check) and in the real inherited-AI candidate path (static-ability rebuild per canPlay
+check). This reads like a caching opportunity (memoize per-card static/replacement-effect lists,
+invalidate on the actual triggers that change them, instead of recomputing from scratch on every
+check) rather than a copy-count or fan-out problem — a different shape of fix than P0.1/P0.2/P0.3
+as currently scoped in `ULTRON_V4_NEURAL_PLAN.md` §6. This needs scoping as its own ticket (working
+title: static-ability/replacement-effect caching) before further Phase 0 work — **not started
+here**, per this ticket's own stop condition.
+
+**Do not re-diagnose the fan-out theory** — it's fixed and confirmed absent from both samples.
+**Do not read `chooseSpellAbilityToPlay`'s improved mean as "P0 done"** — the full-game gate is
+the bar, and it wasn't met. Config used for this run: `configs/simstats/v4_001_gate_single_game.ini`
+(new file, checked in). Raw jstack samples were captured to a job-scoped scratch dir that no
+longer exists on disk by the time this is read; the stack traces above are transcribed in full.
 
 ---
 
@@ -1802,6 +1894,16 @@ rm -f ~/.forge/ultron-learning/ultron_card_stats.json
 ---
 
 ### TICKET-V3-207: OOM crash — uncached AiDeckStatistics.fromPlayer() in nested simulation [BLOCKING, NEEDS-FOLLOWUP 2026-07-04]
+
+> AGENT NOTE [2026-07-24]: The `SharedPlayerZone.onChanged()` fan-out named in this ticket's
+> "UPDATE (2026-07-05, ~04:00)" section is fixed — see TICKET-V4-001's 2026-07-24 update (in the
+> `EPIC: ULTRON-V4` section above) for the implementation, regression testing, and fresh jstack
+> evidence. It materially improved per-decision cost (`chooseSpellAbilityToPlay` mean dropped from
+> the ~941ms-3.4s range recorded below to ~771ms) but did **not** clear this ticket's standing bar
+> — a 900s single-game run still hit timeout without natural completion. Two new dominant costs
+> were identified (both card static-ability/replacement-effect recomputation, scaling with card/
+> permanent count — not the fan-out, not GameCopier call count) — full detail in TICKET-V4-001.
+> This ticket remains open; do not re-diagnose the fan-out, it's closed.
 
 **Session 2 update (2026-07-04, this session):** Implemented and unit-test-verified the
 `AiDeckStatistics` cache described below (see "Fix implemented, session 2" at the bottom of

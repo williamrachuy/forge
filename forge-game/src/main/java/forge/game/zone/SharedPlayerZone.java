@@ -24,6 +24,12 @@ public class SharedPlayerZone extends PlayerZone {
             super.onChanged();
             return;
         }
+        if (game.isSimulationCopy()) {
+            // See PlayerZone.onChanged(): simulation copies never have a GUI observing their
+            // view state, and this fan-out multiplies the cost by every sharing player on every
+            // single card add (TICKET-V4-001 / TICKET-V3-207).
+            return;
+        }
         for (final Player player : players) {
             player.updateZoneForView(this);
         }
