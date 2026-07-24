@@ -188,6 +188,49 @@ the bar, and it wasn't met. Config used for this run: `configs/simstats/v4_001_g
 (new file, checked in). Raw jstack samples were captured to a job-scoped scratch dir that no
 longer exists on disk by the time this is read; the stack traces above are transcribed in full.
 
+> ORCHESTRATOR NOTE [2026-07-24]: reviewed the above against the actual diff and working tree
+> before committing it as `0146c6f082`. The fix is correct and safe — `GameSnapshot.restoreGameState()`
+> writes back into the real (unmarked) `Game`, so live-game and human-GUI view updates are
+> unaffected; the flag only ever suppresses view bookkeeping on copies. Three qualifications on
+> the conclusions above, for whoever picks this up:
+> 1. **The ~771ms mean is weaker evidence than it reads.** Ultron was eliminated on turn 27 of 50,
+>    so all 309 measured `chooseSpellAbilityToPlay` calls came from the early/mid game — the metric
+>    structurally cannot see the late-game decisions where the fan-out cost was worst, which is
+>    also where the claimed "disproportionately helps late-game" effect would show up. The load-bearing
+>    proof that the fix works is the jstack absence of the diagnosed stack shape, not this number.
+> 2. **"Still not fast enough" is an N=1 conclusion.** The all-Default control run (TICKET-V3-007)
+>    had its own 10/500 = 2.0% timeout tail, so a single 900s timeout does not establish systemic
+>    slowness — that seed may simply be a tail game. TICKET-V4-002 (below) exists to settle this
+>    before anyone commits to more perf work.
+> 3. **Do not scope the static-ability/replacement-effect caching ticket yet.** Hot spot 1
+>    (replacement-effect rebuilds inside `GameStateEvaluator.simulateUpcomingCombatThisTurn`) lives
+>    in exactly the code path the v4 learned evaluator *deletes* — see `ULTRON_V4_NEURAL_PLAN.md` §1
+>    Claim 3, the NN eval replaces the eval-layer combat sim entirely. Optimizing code that Phase 2
+>    removes is effort pointed backwards. Hot spot 2 is in the Default AI's own inherited path, which
+>    demonstrably completes 490/500 control games, so it is unlikely to be the binding constraint.
+>    Engine-wide static/replacement-effect caching is correctness-sensitive surgery (stale rule caches
+>    produce wrong game rules); it needs a real justification, which TICKET-V4-002's timeout rate
+>    either provides or removes.
+
+### TICKET-V4-002: 10-game smoke run — is the timeout systemic or a tail? [IN_PROGRESS 2026-07-24]
+
+Settles the N=1 question above with the cheapest possible experiment before any further Phase 0
+performance work is scoped. Config `configs/simstats/v4_002_smoke_10game.ini`: 10 games,
+`timeoutSeconds=900`, Ultron + 3x Default, Battlebox Monarch, `rotateSeats=true`, same
+`baseSeed=910123` and `bannedCards` as `v3_ultron_vs_default_4p.ini` so results stay paired with
+the existing 500-game all-Default control. Deliverable is one number: **games completing naturally
+vs timing out, out of 10** — compared against the control's 2.0% baseline timeout rate.
+Decision rule agreed in advance: a timeout rate in the control's neighbourhood means Phase 0 is
+done and Phase 1 (encoder) starts; a substantially worse rate justifies scoping the caching ticket.
+
+> HARDWARE CORRECTION [2026-07-24]: TICKET-V3-001's RAM budget (`nproc`=4, 15 GB total, hence
+> workers=2) is **stale** — the box now measures **31 GB RAM / 8 cores**, with ~11 GB `available`
+> at the time of writing. The practical parallel-run ceiling is roughly double what that ticket's
+> formula computes, which materially changes the wall-clock cost of the planned N=600 gate runs.
+> Re-measure with `free -g`/`nproc` before sizing any run rather than trusting the old formula, and
+> subtract any Forge GUI instance the user has open (one `--battlebox-test` JVM at -Xmx4096m was
+> running during this session and was deliberately left undisturbed).
+
 ---
 
 ## EPIC: ULTRON-V3 / PHASE-0
