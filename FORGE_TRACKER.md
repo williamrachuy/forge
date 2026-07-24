@@ -35,6 +35,69 @@ providing strategic hints.
 
 ---
 
+## EPIC: ULTRON-V4 / NEURAL-EVAL
+**Status:** PROPOSED (2026-07-23)
+**Plan doc:** `ULTRON_V4_NEURAL_PLAN.md` (in-repo, root — the v3 plan doc in `~/agents/` was lost;
+plans live in the repo from now on).
+**Thesis:** keep v3's search skeleton, replace `GameStateEvaluator`'s hand-tuned constants with a
+small learned value network (TD-Gammon-style afterstate evaluation over the fixed 666-card
+Battlebox pool), trained via expert iteration bootstrapped from cheap all-Default logged games.
+The NN eval also removes the per-evaluation `GameCopier`+combat-sim inner layer — it is part of
+the TICKET-V3-207 performance fix, not just a quality play.
+**Phases:** P0 unblock simulator (V3-207 SharedPlayerZone fan-out fix + GameCopier stack copy);
+P1 Java state encoder + logging; P2 bootstrap value net + N=600 gate at ≥30%; P3 expert-iteration
+loop + policy-prior pruning; P4 commander/planechase/interactive. Full details, risks, and gates
+in the plan doc. No ticket work has started.
+
+**Execution model (decided 2026-07-24):** ticket-sized Sonnet/Opus sessions, one ticket per
+session, tracker as the handoff medium. Fable reserved for phase-gate reviews and for escalation
+when a ticket stalls twice. Sim runs and NN training happen in tmux outside sessions, never
+inside one.
+
+### TICKET-V4-001: P0.1 — SharedPlayerZone view-update fan-out fix for simulation copies [PLANNED]
+
+The single highest-leverage change in the v4 plan. Diagnosis is already complete — see
+TICKET-V3-207's "UPDATE (2026-07-05, ~04:00)" section: a live mid-game jstack caught
+`SharedPlayerZone.onChanged()` fanning out `player.updateZoneForView(this)` to all 4 sharing
+players on every single `Zone.add` during `GameCopier.copyGameState()` — pure UI view-model
+bookkeeping, provably wasted on headless simulation copies that are scored once and discarded,
+multiplied by every card in every shared zone on every copy, scaling with graveyard/zone growth
+as the game progresses (matches the "stays expensive all game" symptom exactly).
+
+**Kickoff prompt for the implementing session (paste verbatim):**
+
+> Read `ULTRON_V4_NEURAL_PLAN.md` §6 Phase 0 and `FORGE_TRACKER.md` TICKET-V3-207 in full
+> (especially the final "UPDATE (2026-07-05, ~04:00)" section and the "ORCHESTRATOR SUMMARY"),
+> then execute **TICKET-V4-001 only**. Scope: make simulation-copy `Zone` mutations skip
+> per-player view updates in `SharedPlayerZone.onChanged()` (and check whether base
+> `PlayerZone.onChanged()` deserves the same guard). Requirements:
+> 1. Find the engine's existing way to distinguish a `GameCopier`-produced simulation `Game`
+>    from a real one and use it — do not invent a new flag unless none exists (look at how
+>    `Game`/`Match` are constructed in `GameCopier.makeCopy` vs `Match.startGame`; grep for
+>    existing "simulation" state on `Game` first).
+> 2. Real games must be unaffected: `PlayerControllerHuman` GUI view updates and the Default
+>    AI path must behave identically. Run the full `forge.game.*` shared-zone tests
+>    (`MatchBattleboxSharedZoneTest`) plus `forge.ai.simulation.*` + `forge.ai.ultron.*`
+>    aggregate suite (baseline 234/234) and `forge.ai.llm.runtime.Ultron*` (baseline 34/42,
+>    8 pre-existing failures — do not chase them).
+> 3. Verify with the established live-jstack method, not unit tests alone: build with
+>    `mvn -pl forge-ai,forge-gui-desktop -am clean package -DskipTests -q`, run
+>    `FORGE_SIM_XMX=6g bash tools/simstats/run_simstats.sh` against a copy of the
+>    TICKET-V3-207 repro config (single JVM, `pgrep -f jar-with-dependencies`), take jstack
+>    samples at ~5/10/15 min, and confirm (a) the `SharedPlayerZone.onChanged` →
+>    `updateZoneForView` stack shape no longer appears, and (b) per-decision telemetry cost
+>    drops materially vs the session-6 numbers recorded in TICKET-V3-207 (~941ms early-game,
+>    ~3.1-3.4s late-game per `chooseSpellAbilityToPlay`).
+> 4. The ticket's gate (and TICKET-V3-207's standing bar): a real Ultron-vs-3xDefault
+>    Battlebox Monarch game reaching **natural completion** within a 900s timeout. If reached,
+>    update BOTH this ticket and TICKET-V3-207 (which this fix likely resolves or nearly
+>    resolves) with the numbers. If not reached, record exactly what improved and what the
+>    new dominant cost is (fresh jstack evidence), and stop — do not start P0.2/P0.3.
+> 5. Run in tmux, watch it live, never background-and-forget a sim JVM (TICKET-V3-207's
+>    6-hour-zombie lesson). Update the tracker before ending the session either way.
+
+---
+
 ## EPIC: ULTRON-V3 / PHASE-0
 **Status:** IN_PROGRESS
 **Branch:** `ultron-v3` (created off `ultron-fast-ai-remodel`)
