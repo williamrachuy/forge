@@ -366,7 +366,7 @@ vs ~800), but samples/day still rises nearly an order of magnitude. **Explicitly
 §5.4 promotion gate. Cheap games make it tempting to run many gates and promote the best-looking
 one, which is p-hacking; the rule stands as written.
 
-### TICKET-V4-005: State encoder (P1.1 + P1.2) [IN_PROGRESS 2026-07-24]
+### TICKET-V4-005: State encoder (P1.1 + P1.2) [DONE 2026-07-24]
 Dispatched to an implementation session. `UltronCardFeatureTable` + `UltronStateEncoder` in
 `forge.ai.nn`, per plan §4.1. **Design call made at dispatch: no card-ID embeddings in v0** — the
 plan's 16-dim ID embedding conflicts with emitting a fixed-length `float[]` (you cannot pool
@@ -374,6 +374,130 @@ embeddings the encoder does not hold), so v0 uses handcrafted card features only
 vocab ID separately so a later ticket can add embeddings without regenerating the corpus.
 Required invariant: 1v1 must encode identically to a 4-player game with two seats flagged
 eliminated, so a Stage A net transfers to Stage B without an architecture change.
+
+**Implementation summary.**
+
+Files: `forge-ai/src/main/java/forge/ai/nn/UltronCardFeatureTable.java` (new),
+`forge-ai/src/main/java/forge/ai/nn/UltronStateEncoder.java` (new),
+`forge-ai/src/main/java/forge/ai/llm/runtime/UltronStackThreatAnalyzer.java` (additive-only edit:
+four new public static `isXxxApi(ApiType)` predicates factored out of the existing `classify()`
+switch's own dispatch groupings — `classify()` itself is untouched, so the analyzer's behavior is
+provably unchanged; `UltronStackThreatAnalyzerTest` still passes). Tests:
+`forge-gui-desktop/src/test/java/forge/ai/nn/UltronCardFeatureTableTest.java` (14 tests),
+`forge-gui-desktop/src/test/java/forge/ai/nn/UltronStateEncoderTest.java` (5 tests).
+
+**P1.1 — `UltronCardFeatureTable`.** Static `Map<String, float[]>` built lazily (double-checked
+lock) from `StaticData.instance().getCommonCards().getUniqueCards()`. `CARD_FEATURE_DIM = 48`:
+mana value (1, ÷10), color identity (5: W/U/B/R/G), card types (8: creature/land/instant/sorcery/
+artifact/enchantment/planeswalker/battle), power/toughness (2, ÷10, zero for noncreatures), 25
+tracked keyword flags (flying, deathtouch, lifelink, haste, trample, ward, flash, vigilance,
+menace, reach, first strike, double strike, defender, hexproof, indestructible, infect, wither,
+exalted, myriad, affinity, convoke, flashback, cycling, prowess, shroud), 6 role flags (removal,
+counterspell, board wipe, card draw, ramp, token maker), 1 legendary flag. Role flags for
+removal/counterspell/board-wipe/card-draw reuse the four new `UltronStackThreatAnalyzer` predicates
+(`isRemovalApi`→`Destroy`, `isCounterspellApi`→`Counter`, `isBoardWipeApi`→`DestroyAll`/`DamageAll`,
+`isDrawApi`→`Draw`) exactly as instructed — no second classifier was written for those four. Ramp
+and token-maker have no analyzer analog (not stack *threats*) and are classified fresh here:
+ramp = has a `Mana`/`ManaReflected`-api ability **and is not itself a land** (every land has a
+baseline Mana ability — without the land exclusion, Forest/Plains/etc. were incorrectly flagged as
+ramp; caught by the golden test, fixed); token maker = has a `Token`-api ability. ApiTypes are
+collected by walking each of the card's `SpellAbility`s plus their `getSubAbility()` chains.
+**Nontrivial finding:** `Card.fromPaperCard(pc, null)` (null owner) returns cards with an EMPTY
+`getSpellAbilities()` for spells — Doom Blade/Counterspell/Wrath of God/Sol Ring's mana ability all
+came back with zero abilities parsed until a real `Player`+`Game` owner was supplied. Fixed by
+building one throwaway 2-player `Game` once (`buildDummyOwner()`, never played) and using its
+seat-0 `Player` as the owner for every `Card.fromPaperCard` call during table construction. This
+cost real debugging time; worth flagging for anyone else instantiating cards outside a live game.
+Unknown card names return an all-zero vector (not null); `getVocabId(name)` returns a stable
+1-based sorted-order integer per unique name, 0 (`UNK_VOCAB_ID`) for unknown — logged but unused by
+pooling in v0, per the no-embeddings decision above.
+
+**P1.2 — `UltronStateEncoder`.** `encode(Game, Player) -> float[]`, perspective-relative: self
+block first, then exactly 3 opponent blocks in turn order (rotated to start after self), then one
+global block. **Vector length = 1908 floats, fixed regardless of board size** (proven by test:
+empty 4p board and a ~60-card-across-the-table board both produce length 1908). This is over the
+plan's soft "~1000-1500" target — the choice was to keep full sum+max+count pooling fidelity
+across six zones (battlefield creatures, battlefield noncreatures, hand, graveyard, exile,
+command) rather than trim zones/pooling width to hit the budget; flagging as a deviation a future
+session can revisit if training throughput demands a smaller input. **Schema hash:**
+`UltronStateEncoder.SCHEMA_HASH` / `SCHEMA_HASH_HEX = "c411b2af58e8404b"` — FNV-1a 64-bit over a
+canonical string of every named segment's offset+size (not Java's `String.hashCode()`, so it stays
+portable if a Python-side check ever wants to recompute it independently). Changing any offset,
+size, or the keyword/role ordering changes the hash.
+
+Layout (self block 615 floats; each of 3 opponent blocks 423 floats; global block 24 floats;
+615 + 3×423 + 24 = 1908): self = battlefield-creatures pool (109) + battlefield-noncreatures pool
+(109) + hand pool (97, full knowledge) + graveyard pool (97) + exile pool (97) + command-zone pool
+(97) + land-color counts (6) + life/poison/energy (3). Opponent = same battlefield pools (109+109)
++ hand **count only** (1) + graveyard pool (97) + command-zone pool (97) + land-color counts (6) +
+life/poison/energy (3) + eliminated flag (1). Pooling = elementwise sum + elementwise max + count,
+so `pool(dim) = 2*dim + 1`; battlefield cards get 6 dynamic floats appended before pooling (tapped,
+summon-sick, damage/toughness ratio ÷2, +1/+1 counters ÷5, -1/-1 counters ÷5, has-attachment) so
+`BATTLEFIELD_CARD_DIM = 54` vs `CARD_DIM = 48` for the non-battlefield zones. Global block: turn
+÷50 (1), phase one-hot (13, `PhaseType.values().length`), active-player relative slot one-hot
+(4: self/opp1/opp2/opp3), monarch holder relative slot one-hot+none (5), players-remaining ÷4 (1).
+**Eliminated opponents get a pure zero block + `eliminated=1`** — their zones are never read at
+all, which is what makes the transfer guarantee below hold exactly, not approximately.
+
+**Known simplifications (documented, not silently dropped):** land mana-color-production is
+approximated by basic-land subtype name match only (`Plains`→W, etc.); any nonbasic land, however
+much fixing it actually does, counts as "other/colorless." Commander damage (per-opponent, from
+plan §4.1's global scalars) and a Planechase current-plane-ID slot are **not implemented** — no
+Commander/Planechase-damage fixture existed to drive them and the ticket's Battlebox-first scope
+didn't need them; a later ticket adding Commander/Planechase training data must add these before
+relying on the vector for those variants. Stack (top-3 entries) is also not encoded — Phase 1's
+fixtures are all pre-priority board states; this is a real gap for any future in-priority-window
+training signal and should be called out explicitly if P1.3's logger starts capturing mid-stack
+states.
+
+**Tests (19 total, all passing):**
+- `UltronCardFeatureTableTest` (14): full-vector golden pins for Forest, Plains, Grizzly Bears,
+  Serra Angel, Lightning Bolt (proves DealDamage burn is deliberately NOT the removal flag),
+  Doom Blade (removal), Counterspell (counterspell), Wrath of God (board wipe), Divination (card
+  draw), Sol Ring (ramp via Mana api), Raise the Alarm (token maker), Llanowar Elves (creature +
+  ramp simultaneously — the case most likely to break if ramp detection is ever narrowed to
+  "noncreature only"); unknown-card zero-vector handling; vocab ID stability/distinctness.
+- `UltronStateEncoderTest` (5): vector length constant on an empty vs. large (~60-card) board;
+  no-NaN/no-Infinity + printed min/max/mean sanity report over 50 randomized states × 4 seats = 200
+  perspective-samples (report: 1420/1908 features constant-zero at this sample size — expected,
+  most are rare keyword/role flags over a ~17-card pool, not evidence of a bug); perspective
+  invariance (same game, seat 0 vs. seat 1, verified via each pool's count slot — self/opponent
+  ordering rotates correctly and wraps); **the transfer-guarantee test** — a real 2-player game and
+  a hand-built 4-player game with seats 2/3 `concede()`d before any zone population, given
+  byte-identical content on seats 0/1, produce `Assert.assertEquals(v4p, v2p)` (exact float-array
+  equality, not just "close"). That test deliberately uses plain Constructed fixtures (no
+  `SharedPlayerZone`) rather than Battlebox — Battlebox's shared graveyard/library/command zones
+  return the same underlying collection to every player regardless of seat count, which would mask
+  rather than exercise the per-seat parity this test exists to prove; the length/perspective tests
+  above use the standard Battlebox+`SharedPlayerZone` fixture convention.
+
+**Regression baselines: unaffected, both reproduced exactly.**
+`forge.ai.simulation.*` + `forge.ai.ultron.*`: **234/234** (`mvn test -pl forge-gui-desktop -am
+-Dtest=<10 explicit class names> -Dsurefire.failIfNoSpecifiedTests=false`). `forge.ai.llm.runtime.
+Ultron*`: **34/42**, the same 8 pre-existing "Ahead-state" failures as before this session (not
+chased, per instructions) — `UltronStackThreatAnalyzerTest` itself is in the 34 that pass, so the
+additive predicate extraction is confirmed behavior-preserving.
+
+**Build note:** `-Dtest=forge.ai.simulation.*` package-glob silently matched 0 tests here too
+(confirms the existing tracker warning); explicit comma-separated class lists were required and
+`-Dsurefire.failIfNoSpecifiedTests=false` was needed on top of `-DfailIfNoTests=false` or Maven
+treats a 0-match on a single upstream module (e.g. `forge-core`, which has none of these classes)
+as a hard failure during the `-am` build chain.
+
+**What the next session needs to know:**
+1. P1.3 (`UltronStateLogger` + `SimulateStats` outcome back-fill, `stats.nnLogging` config key) and
+   P1.4 (encoder microbenchmark, plan wants <1ms/state — not measured yet, but 200
+   encode()-calls-with-fresh-Game-construction across the sanity-report test ran in a few seconds
+   total including JVM/card-DB warmup, so the encoder itself is very unlikely to be the bottleneck)
+   are NOT started.
+2. The 1908-length vector is bigger than the plan's soft ~1000-1500 target — a deliberate tradeoff,
+   not an oversight, but worth a conscious decision (trim zones vs. accept it) before P2's net
+   sizing locks in an input width.
+3. Card-ID embeddings are NOT in this vector by design (see the no-embeddings note above) — a
+   future ticket adding them needs `getVocabId()` plus a new logging column, not a re-encode.
+4. Commander damage and Planechase plane-ID are reserved-but-unimplemented; stack encoding is
+   entirely absent. None of these matter for the Stage A (1v1 Battlebox Monarch) bootstrap lane
+   TICKET-V4-003/004 are running, but they are real gaps for Commander/Planechase variants later.
 
 > HARDWARE CORRECTION [2026-07-24]: TICKET-V3-001's RAM budget (`nproc`=4, 15 GB total, hence
 > workers=2) is **stale** — the box now measures **31 GB RAM / 8 cores**, with ~11 GB `available`

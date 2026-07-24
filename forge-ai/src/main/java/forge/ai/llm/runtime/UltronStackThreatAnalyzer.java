@@ -50,6 +50,38 @@ public final class UltronStackThreatAnalyzer {
 
     private UltronStackThreatAnalyzer() {}
 
+    // -----------------------------------------------------------------------
+    // Reusable ApiType role predicates (TICKET-V4-005, P1.1).
+    //
+    // These mirror exactly the ApiType groupings the switch in classify() below
+    // already dispatches on (Destroy -> classifyRemoval, Counter -> COUNTER_WAR,
+    // DestroyAll/DamageAll -> classifyBoardWipe, Draw -> classifyDraw). They are
+    // additive/read-only extractions -- classify()'s own switch is untouched, so
+    // this analyzer's behavior is unchanged. forge.ai.nn.UltronCardFeatureTable
+    // reuses these instead of re-deriving a second, divergent ApiType mapping for
+    // its static card role flags (removal / counterspell / board-wipe / draw).
+    // -----------------------------------------------------------------------
+
+    /** True if {@code api} is the "single-target destroy" removal API this analyzer treats as removal. */
+    public static boolean isRemovalApi(ApiType api) {
+        return api == ApiType.Destroy;
+    }
+
+    /** True if {@code api} is the counterspell API this analyzer treats as a counter war. */
+    public static boolean isCounterspellApi(ApiType api) {
+        return api == ApiType.Counter;
+    }
+
+    /** True if {@code api} is one of the mass-destruction APIs this analyzer treats as a board wipe. */
+    public static boolean isBoardWipeApi(ApiType api) {
+        return api == ApiType.DestroyAll || api == ApiType.DamageAll;
+    }
+
+    /** True if {@code api} is the card-draw API this analyzer treats as a draw effect. */
+    public static boolean isDrawApi(ApiType api) {
+        return api == ApiType.Draw;
+    }
+
     /**
      * Classify a stack ability from Ultron's perspective.
      *
