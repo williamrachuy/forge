@@ -261,6 +261,41 @@ log-loss, winner-prediction accuracy, calibration curve by game-stage (early/mid
 
 ### 5.3 Opponent curriculum (answers the 1v1 / FFA / vs-Default / self-play question)
 
+**REVISED 2026-07-24 (William's call): bootstrap on 1v1 Monarch Battlebox first, then transfer to
+4-player FFA.** This supersedes the original "4p FFA from day one, 1v1 as debugging lane only"
+position below, and it is a better plan than what it replaces:
+- **It routes around the measured blocker.** TICKET-V4-001/V4-002 established that the dominant
+  remaining cost — static-ability/replacement-effect recomputation — scales with *permanent count*,
+  in both CPU (jstack) and allocation (the 4g OOM) terms. A 2-player board is roughly half the size,
+  so 1v1 attacks the cost driver directly rather than waiting on an engine-caching fix that would be
+  correctness-sensitive surgery.
+- **It buys sample throughput, which is the binding constraint on the whole plan** (§2). Shorter
+  games with smaller boards mean more games/hour and therefore more training samples per day.
+- **The encoder needs no change.** 1v1 is representable as "a 4-player game where two seats are
+  already eliminated" — the zero-block + `eliminated` flag path §4.1 already specifies. The 4-way
+  value head is kept, with the two dead slots masked, so a 1v1-trained net **transfers directly**
+  into 4p fine-tuning instead of needing a new architecture.
+
+**Curriculum:**
+- **Stage A (bootstrap, 1v1 Monarch):** Ultron vs Default, seat-rotated. All-Default 1v1 games for
+  the initial outcome-labeled corpus, then mixed as below.
+- **Stage B (transfer, 4p FFA Monarch):** fine-tune the Stage A net on 4-player data once 4p games
+  are cheap enough to generate at volume (either via the caching ticket or because the NN eval has
+  removed enough per-evaluation cost, §1 Claim 3).
+
+**Gate math differs by lane and must not be mixed up:** the 1v1 null hypothesis is **50%**, not the
+4-player 25%. `gate.py` comparisons for Stage A need the right null, and Stage A results are NOT
+comparable to the TICKET-V3-007 all-Default 4-player control (24.7%). A Stage A win rate of 30%
+would be a *disaster* in 1v1 while being a success in 4p — do not let that confusion into a report.
+
+**What Stage A cannot teach, and why Stage B is not optional:** multi-opponent threat triage,
+politics/kingmaking, and "who at the table do I attack" have no 1v1 analogue. A Stage-A-only net
+will be weak at exactly the reasoning 4-player FFA is made of. Stage A is a cheap way to learn
+card/board/tempo value; Stage B is where the multiplayer game actually gets learned. Do not ship
+a 1v1-trained net into a 4-player lane and call the plan done.
+
+--- *original position, retained for the record:* ---
+
 Train and evaluate on the **target distribution from day one: 4-player FFA Battlebox + Monarch**
 (William's stated default — it's already `battleboxMonarch=true` in every v3 config and the
 evaluator/encoder both know about monarch).
@@ -274,8 +309,10 @@ evaluator/encoder both know about monarch).
   provides. Mixing prevents both failure modes: pure self-play collapse into a self-referential
   meta, and pure vs-Default overfitting to one exploitable opponent. Default never leaves the
   population — it is the fixed measuring stick.
-- **1v1** is a debugging lane only (fast, low-variance sanity checks of encoder/net changes), never
-  a training target — the politics/threat-assessment structure of 4p FFA is the actual game.
+- ~~**1v1** is a debugging lane only (fast, low-variance sanity checks of encoder/net changes), never
+  a training target~~ — **superseded 2026-07-24, see the revision at the head of this section.** The
+  reasoning that 4p FFA's politics/threat-assessment structure is the actual game still stands and is
+  why Stage B exists; what changed is that 1v1 is now the bootstrap lane rather than excluded outright.
 - **Commander/Planechase:** encoder slots reserved from day one (commander zone, commander damage,
   plane ID); training on those variants is deferred until the core gate passes (§6 Phase 4).
 

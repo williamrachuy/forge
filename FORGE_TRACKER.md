@@ -263,10 +263,40 @@ Note the contrast that makes this specific rather than generic: the all-Default 
 shape — Ultron games run long with large late-game boards (29/23/50 turns across the three
 observed), and this cost scales with permanent count.
 
-**Attempt 2 (2026-07-24 02:00, 2 workers x 6g): IN FLIGHT.** tmux session `v4_002_smoke_6g`.
-Same config, unchanged, so attempt 1's seeds are reused exactly. The user's Forge GUI instance
-had exited by launch time, freeing the headroom that motivated the bad 4g choice (~15g available
-at launch vs 12g committed).
+**Attempt 2 (2026-07-24 02:00, 2 workers x 6g): DEFERRED, killed ~9 min in with 0 games recorded.**
+Not a failure — deprioritized by a scope change (see TICKET-V4-003). Output dir preserved as
+`simstats/out/v4_002_smoke_10game_DEFERRED_4p/`. The 4-player timeout-rate question this ticket
+exists to answer is **still open and still worth answering**, but it no longer gates anything:
+training moves to 1v1 first, so the caching-ticket decision it was meant to inform is deferred with
+it. Re-run this config unchanged when the box is free and 4-player work becomes current again.
+
+### TICKET-V4-003: 1v1 Monarch as the bootstrap training/measurement lane [IN_PROGRESS 2026-07-24]
+
+**William's call, and it is well-aimed at the measured evidence:** train on 1v1 Monarch Battlebox
+first to avoid board inflation. TICKET-V4-001 (jstack) and V4-002 attempt 1 (the 4g OOM) both point
+at static-ability/replacement-effect recomputation scaling with **permanent count** as the dominant
+remaining cost. A 2-player board is roughly half the size, so this attacks the cost driver directly
+instead of waiting on correctness-sensitive engine caching. It also raises games/hour, and sample
+throughput is the binding constraint on the entire v4 plan (`ULTRON_V4_NEURAL_PLAN.md` §2).
+
+Config: `configs/simstats/v4_003_smoke_1v1_monarch.ini` — `players=2`,
+`aiProfiles=Ultron, Default`, `battleboxMonarch=true`, `rotateSeats=true` (cycles Ultron between
+seats so play/draw advantage doesn't confound), `timeoutSeconds=900`, 10 games, same
+`seed=910123` and `bannedCards` as every other lane. Verified against `SimStatsConfig`: the plural
+`game.aiProfiles` key takes precedence over singular `game.aiProfile`, and 2-player Battlebox is an
+established config shape (`battlebox_no_monarch_2p_trace.ini`). Launched 02:09 in tmux `v4_003_1v1`,
+2 workers x 6g.
+
+**Two traps recorded before any data arrives:**
+1. **The 1v1 null hypothesis is 50%, not 25%.** Stage A results are NOT comparable to the
+   TICKET-V3-007 all-Default 4-player control (24.7%). A 30% win rate would be a disaster here and a
+   success in 4p; `gate.py` must be pointed at the right null for this lane.
+2. **1v1 cannot teach what 4p FFA is made of** — multi-opponent threat triage, politics, target
+   selection have no 1v1 analogue. This is Stage A of a two-stage curriculum
+   (`ULTRON_V4_NEURAL_PLAN.md` §5.3 as revised); a 1v1-trained net must not be shipped into a
+   4-player lane and called done. The encoder/value-head design already supports the transfer
+   (1v1 encodes as a 4-player game with two seats flagged eliminated), so no architecture change is
+   needed — but Stage B fine-tuning is mandatory, not optional.
 
 > HARDWARE CORRECTION [2026-07-24]: TICKET-V3-001's RAM budget (`nproc`=4, 15 GB total, hence
 > workers=2) is **stale** — the box now measures **31 GB RAM / 8 cores**, with ~11 GB `available`
