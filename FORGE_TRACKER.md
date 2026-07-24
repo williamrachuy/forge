@@ -298,6 +298,62 @@ established config shape (`battlebox_no_monarch_2p_trace.ini`). Launched 02:09 i
    (1v1 encodes as a 4-player game with two seats flagged eliminated), so no architecture change is
    needed — but Stage B fine-tuning is mandatory, not optional.
 
+**RESULT (2026-07-24 02:31): run OOM'd at 6g — but produced the single most important data point
+this project has recorded.** 2/10 games completed before both shards died. Raw counts:
+
+| shard | games | 40s per-decision timeouts | `SIM_WORKER_BUSY` "still draining" fallbacks | OOM |
+|-------|-------|---------------------------|---------------------------------------------|-----|
+| 0     | 1     | 5                         | **85**                                      | yes |
+| 1     | 1     | 3                         | **147**                                     | yes |
+
+**A real Ultron game completed naturally for the first time in this project's history:** 161
+seconds, 14 player turns, 1v1 Monarch (Ultron seat 0, lost to Default seat 1). Every prior
+attempt across TICKET-V3-207 sessions 2-6 and TICKET-V4-001 ended in timeout, OOM, or hang. This
+validates the 1v1 direction concretely — when a decision does not blow up, a 1v1 game finishes in
+under 3 minutes. The other game hit the 900s timeout at 28 turns.
+
+**Diagnosis — the failure is structural in the v3 simulation architecture, and no heap size fixes
+it.** The `SIM_WORKER_BUSY` counts are the tell. The sequence:
+1. One `chooseSpellAbilityToPlay` exceeds its 40s per-decision budget.
+2. The TICKET-V3-207 session-6 backstop abandons the decision — but **cannot stop the thread**
+   (`Thread.stop()` is gone; the `GameCopier`/`GameSimulator`/`SpellAbilityPicker` call chain has
+   no cooperative interrupt checkpoint). The worker keeps running *and keeps allocating deep-copy
+   trees*.
+3. The `SIM_WORKER_BUSY` gate correctly refuses to start a second worker while one is draining —
+   so **85-147 consecutive subsequent decisions fall back to the inherited Default AI**. Ultron
+   stops being Ultron for long stretches of the game.
+4. The abandoned worker's retained object graph cannot be collected while it is still running, so
+   the heap fills and the JVM OOMs.
+This is a **liveness/retention defect, not a heap-sizing problem** — which finally explains the
+otherwise baffling empirical record: OOM at 3g, 4g, 6g **and** 8g across sessions. An unbounded
+abandoned allocator exhausts any ceiling. The session-6 timeout backstop did not create this
+(without it, a single decision ate the entire game budget) but it converted a hang into a leak.
+
+**Strategic consequence — this does NOT block the v4 plan, and the plan should not wait on it.**
+`ULTRON_V4_NEURAL_PLAN.md` §6 P2.1 already specifies that the **bootstrap corpus comes from
+all-Default games**, which never invoke Ultron's simulation search at all. The critical path
+(P1 encoder → P2.1 corpus → P2.2 train → P2.3/4 integrate) is therefore fully unblocked by this
+failure. Do **not** spend sessions trying to make the v3 copy-per-candidate architecture survive
+long games — that is the architecture v4 replaces. Revisit only if Phase 2's NN-eval integration
+turns out not to reduce per-decision cost enough (plan §1 Claim 3), and note the honest caveat
+there: the NN eval removes the *evaluation*-layer copies, but `SpellAbilityPicker` still copies
+once per candidate, so it reduces rather than eliminates copy pressure.
+
+### TICKET-V4-004: All-Default 1v1 corpus-generator validation [IN_PROGRESS 2026-07-24]
+Config `configs/simstats/v4_004_default_1v1_corpus.ini` — 20 games, all-Default 1v1 Monarch,
+2 workers x 4g (Default AI has never needed more; the control lane ran 500 games at 3g).
+Purpose: confirm the bootstrap-corpus lane completes reliably, and measure games/hour, before
+committing days of wall-clock to a full corpus. Not an Ultron measurement lane.
+
+### TICKET-V4-005: State encoder (P1.1 + P1.2) [IN_PROGRESS 2026-07-24]
+Dispatched to an implementation session. `UltronCardFeatureTable` + `UltronStateEncoder` in
+`forge.ai.nn`, per plan §4.1. **Design call made at dispatch: no card-ID embeddings in v0** — the
+plan's 16-dim ID embedding conflicts with emitting a fixed-length `float[]` (you cannot pool
+embeddings the encoder does not hold), so v0 uses handcrafted card features only and exposes the
+vocab ID separately so a later ticket can add embeddings without regenerating the corpus.
+Required invariant: 1v1 must encode identically to a 4-player game with two seats flagged
+eliminated, so a Stage A net transfers to Stage B without an architecture change.
+
 > HARDWARE CORRECTION [2026-07-24]: TICKET-V3-001's RAM budget (`nproc`=4, 15 GB total, hence
 > workers=2) is **stale** — the box now measures **31 GB RAM / 8 cores**, with ~11 GB `available`
 > at the time of writing. The practical parallel-run ceiling is roughly double what that ticket's
