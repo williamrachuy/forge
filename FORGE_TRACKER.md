@@ -3290,6 +3290,51 @@ input carries real signal rather than a constant.
    lot of parameters per unit of signal. Worth measuring feature occupancy on the full corpus
    before fixing the architecture.
 
+# WHERE THINGS STAND — ULTRON-V4, end of 2026-07-24 session (read this first)
+
+**Phase 1 is complete and independently verified. Phase 2 is mid-flight, blocked only on a
+corpus that is generating right now.**
+
+**Running unattended:** tmux session `v4_007_corpus` — 8000-game Stage A bootstrap corpus
+(`configs/simstats/v4_007_bootstrap_corpus.ini`), all-Default 1v1 Monarch, 2 workers x 4g,
+started 04:04 on 2026-07-24, observed rate ~488 games/hr combined, **ETA ~16 hours (~20:00)**.
+Output: `simstats/out/v4_007_bootstrap_corpus/shard_{0,1}/` — `games.jsonl` plus
+`nn_states.bin.gz` (~4.7 KB/game, projecting ~38 MB total). Expected yield ~300K
+perspective-samples. Check progress with `wc -l simstats/out/v4_007_bootstrap_corpus/shard_*/games.jsonl`.
+If the JVMs are gone and the game count is well short of 8000, check the shard `run.log`s for
+`OutOfMemoryError` before assuming success — though note this is the all-Default lane, which has
+never OOM'd (TICKET-V4-003's failure is specific to Ultron's simulation search).
+
+**Next session, in order:**
+1. **Re-measure feature occupancy on the real corpus** before fixing the architecture. TICKET-V4-008's
+   31.7% figure came from the smoke set and is knowingly overstated (1v1 padding leaves two opponent
+   blocks permanently zero; MAIN1-only sampling kills 12 of 13 phase one-hot slots). Do not trim the
+   vector or pick a width off that number.
+2. **Train V0** (`tools/nn/train.py`, venv at `tools/nn/.venv`, torch 2.13.0+cpu). Recommended
+   architecture 256->128 (523K params) rather than the plan's 512->256 (1.11M) — justify against the
+   re-measured occupancy. Split by game ID (already enforced, with a self-test).
+3. **Re-run the parity test against the newly trained model** — it is not optional and it is not a
+   one-time check. It validates *a specific model's* weights round-trip into Java, so it must be
+   re-run for every model that will ever be deployed:
+   `mvn test -pl forge-gui-desktop -am -Dcheckstyle.skip=true -Dtest=forge.ai.nn.UltronValueNetParityTest
+   -Dultron.parity.dir=tools/nn/runs/<timestamp> -Dsurefire.failIfNoSpecifiedTests=false`
+4. **Only then** wire `StateEvaluator`/`NeuralStateEvaluator` (plan §4.4) — deliberately untouched so
+   far. Remember `summonSickValue`: `SpellAbilityPicker.java:226` compares it, not `value`, so the
+   neural evaluator needs the second masked forward pass described in §4.4.
+5. Gate per plan §5.4. **The 1v1 null hypothesis is 50%, not 25%** — see TICKET-V4-003's trap list.
+
+**Do not skip the rebuild step before any sim run** — see BUILD TRAP immediately below. It has
+already silently invalidated one verification run this session.
+
+**Verified state at handoff:** 275/275 tests pass (that count includes the parity test actually
+running, not skipping). Commits this session: `0146c6f082` (SharedPlayerZone sim-copy fix),
+`571c322d8e` (encoder), `c76df31bc9` (land colors + semantic hash + logger), `f3eff69209`
+(logger verification + corpus config), `8b9ca8dd2a` (trainer + Java inference + parity test),
+plus tracker/plan docs. Nothing is wired into any AI decision path yet, so `master`-bound behaviour
+is unchanged.
+
+---
+
 # BUILD TRAP: `mvn test` does NOT rebuild the jar the simulator runs
 
 **Recorded 2026-07-24 after it silently invalidated a verification run — read this before running
