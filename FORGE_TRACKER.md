@@ -3492,6 +3492,29 @@ verified before dispatch:
 gate.** The implementing session wires + proves-in-a-smoke only. The gate is a multi-hour compute
 commitment and is run only after the wiring's integrity is confirmed.
 
+### TICKET-V4-011: Bound per-decision search so the V4-003 abandoned-worker leak can't OOM the gate [IN_PROGRESS 2026-07-24]
+
+**User decision (2026-07-24): fix the leak before running the gate — a trustworthy win-rate
+number is worth one more session; a biased one is what sank v2.** V4-010's smoke proved the neural
+eval lets Ultron games *complete* (40s/246s) but game 3 still OOM'd: neural eval made evaluation
+cheap, yet `SpellAbilityPicker` still `GameCopier.makeCopy()`s per candidate, so a complex-board
+decision can exceed the 40s per-decision budget, get abandoned by `runWithDecisionTimeout`'s
+FutureTask, and keep allocating (TICKET-V4-003's root cause: "no cooperative interrupt checkpoint
+deep inside the search"). The abandoned worker's retained graph can't be GC'd → OOM at any heap.
+
+**Goal:** no Ultron decision can trigger that leak. Two complementary levers, both Ultron-gated and
+Default-safe:
+1. **Cooperative deadline checkpoint (the root-cause fix):** the search checks a deadline between
+   candidates and returns best-so-far when exceeded, so the worker finishes on its own thread
+   instead of being abandoned mid-allocation. This is what V4-003 said was missing.
+2. **Top-level candidate breadth cap for Ultron:** V3-207 session 6 noted the top-level candidate
+   list is unbounded (only the recursive lookahead branch is capped at 6). Cap it with a cheap
+   pre-ranking so typical worst-case decision time stays well under budget.
+
+**Verify:** the exact 3-game `v4_010_smoke_nn_1v1_monarch.ini` config that OOM'd on game 3 must now
+complete all games with `ULTRON_NN_EVAL=true`, 0 OOM. Flag-OFF and non-Ultron paths byte-identical
+(278/278 stays green). Do NOT run the full gate — orchestrator runs it after confirming no OOM.
+
 # BUILD TRAP: `mvn test` does NOT rebuild the jar the simulator runs
 
 **Recorded 2026-07-24 after it silently invalidated a verification run — read this before running
