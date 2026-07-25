@@ -3959,6 +3959,35 @@ hidden-to-them cards, which the existing `canBeShownTo` check already handles.
 (Default byte-identical). (3) Report throughput — pruning should also speed up completed games.
 Progress-based watchdog (log-mtime > 450s → kill), NEVER a bare PID/self-matching pattern.
 
+### TICKET-V4-019 RESULT (2026-07-25): OOM ELIMINATED; residual slow-decision hang remains (containable). Monster is now a TAX, not a run-killer.
+
+Per-copy Ultron-NN-gated hidden-info pruning landed (commit `1da0e70a97`), Default-safe (232/232).
+On the identical 30-game monster diagnostic: **OOM 6 → 0** (Keyword fix took it 6→1; pruning →0).
+Completed games ran 30-165s (median 42s), normal speed.
+
+**BUT the run still wedged at game 5** — clean 360s whole-game timeout, then a drain-hang: log shows
+`chooseSpellAbilityToPlay exceeded its 40s per-decision timeout` → `declareAttackers: a prior
+timed-out simulation worker is still draining`. This is the V4-003 root, **minus the OOM**: a single
+pathological decision runs >40s, its worker is abandoned but cannot be cooperatively stopped, and it
+hangs the JVM by pegging a core forever. Pruning fixed allocation, not the un-stoppable worker.
+
+**Net: three fixes (Keyword cache, hidden-info pruning, earlier depth-0/copy-budget) turned an
+OOM-crash-that-kills-the-whole-run into a slow-decision hang the round harness can CONTAIN** (kill
+the wedged round's JVM via progress-watchdog, continue). The V4-016 gate already proved the round
+harness survives this. So the monster is now a compute TAX (~1/8 games lost + occasional round
+remainder), not a blocker on progress.
+
+**DECISION PENDING (human, 2026-07-25):** (a) accept the tax and proceed to V4-018 (multi-phase
+corpus + retrain V1 — the actual iteration loop where 25% starts moving), the round harness handling
+the residual hang; or (b) one more focused session on cooperative cancellation to truly kill the
+hang (deepest, least-cracked part of V4-003). Orchestrator recommends (a): the big win (no OOM) is
+banked, the tax is survivable, and V4-018 is where the project's goal actually advances. Fixes to
+KEEP regardless: Keyword cache (engine-wide speedup), hidden-info pruning (0 OOM), depth-0/copy-budget.
+
+**For the V4-018 session, use the round harness** (`tools/simstats/run_gate_v4_016.sh` pattern:
+rounds × distinct seeds, per-round progress watchdog killing on >450s stall) for ALL data
+generation and gating — never a single long run that one hang can kill.
+
 # BUILD TRAP: `mvn test` does NOT rebuild the jar the simulator runs
 
 **Recorded 2026-07-24 after it silently invalidated a verification run — read this before running
