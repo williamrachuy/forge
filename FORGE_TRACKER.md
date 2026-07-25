@@ -3617,6 +3617,46 @@ evidence worth recording:
   decision among the three directions listed; this session did not attempt options 1-3 and made no
   commits (per instructions). Combat-side code left uncommitted in the working tree, same as before.
 
+### TICKET-V4-014: Version A — flat afterstate NN decisions + HARD per-decision copy budget [IN_PROGRESS 2026-07-25]
+
+**Human decision (2026-07-25): build Version A — the NN judges every option directly, rip out the
+crash-prone recursive simulation for Ultron.** After V4-010/011/013 (three cost-reduction patches)
+all failed to complete a real game, the diagnosis is definitive: three independent cost sources
+multiply, and soft deadlines can't bound them because they can't interrupt a copy in flight.
+
+**The three cost sources (confirmed by code read of `SpellAbilityPicker.evaluateSa` +
+`SimulationController`):**
+1. **Lookahead recursion** — Ultron runs `setMaxRecursionDepth(1)` (UltronPlayerController:1622); each
+   top-level candidate spawns a nested `MAX_LOOKAHEAD_CANDIDATES=6` search.
+2. **Target/mode fan-out** — `evaluateSa`'s `do-while(choicesIterator.advance())` builds a fresh
+   `GameSimulator` (full `GameCopier.makeCopy`) per target/mode combination of a SINGLE candidate. A
+   spell with many legal targets = many copies for one candidate. This is the "single candidate blew
+   the 40s budget" finding V4-013 hit; no breadth cap or between-candidate deadline touches it.
+3. **Top-level candidate count** — already capped (V4-011).
+
+**Version A design:**
+- **depth-0 for Ultron** (`setMaxRecursionDepth(0)`): no lookahead. Each candidate scored by its
+  immediate afterstate only. VERIFY depth-0 still scores each candidate's afterstate (the afterstate
+  eval happens in `GameSimulator.simulateSpellAbility` → `eval.getScoreForGameState`, which is
+  separate from the recursion — so depth-0 should give exactly "flat afterstate scoring, no
+  lookahead"; confirm, don't assume).
+- **HARD per-decision `GameCopier.makeCopy` budget** (the key new mechanism, and the robust belt the
+  previous 3 attempts lacked): a per-decision counter, Ultron-only, default ~18. Checked BEFORE each
+  new `GameSimulator`/`makeCopy` across ALL paths (main-phase target fan-out, combat candidates). When
+  exhausted, the loops stop and return best-so-far. This hard-bounds total work AND allocation
+  regardless of which cost source is exploding — a soft deadline can't interrupt an in-flight copy or
+  fan-out; a copy COUNT checked before allocating is a true hard bound. Because decisions are now
+  genuinely bounded (~18 copies, complete in seconds), the 40s FutureTask timeout should never fire,
+  so no worker is abandoned, so no leak.
+- Reuse (all done): NN eval main-phase (V4-010) + combat (V4-013 checkpoint), top-level breadth cap
+  (V4-011), the deadline as a secondary backstop.
+- Ultron-gated + Default byte-identical (regression 271/271 stays green).
+
+**The bar (and the anti-wedge lesson from 2026-07-25's 1h wedge):** 3-game smoke completes ALL 3, 0
+OOM, and NO single game exceeds ~5 min. Verification MUST use a progress-based watchdog (games.jsonl /
+log mtime ADVANCING) with a hard per-game kill — a PID-alive watcher does NOT catch a GC-thrash wedge.
+Orchestrator verifies independently before any gate.
+
 # BUILD TRAP: `mvn test` does NOT rebuild the jar the simulator runs
 
 **Recorded 2026-07-24 after it silently invalidated a verification run — read this before running
