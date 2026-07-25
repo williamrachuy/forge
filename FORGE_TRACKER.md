@@ -3882,6 +3882,45 @@ trained only on Default-vs-Default MAIN1 snapshots with zero self-play iteration
 - Gate harness itself worked as designed (wedge cost bounded per round, no duplicate seeds, correct
   0.50 null); keep it, set `timeoutSeconds=360` in the template.
 
+### TICKET-V4-017 COMPLETE DIAGNOSIS (2026-07-25): the "monster" is GameCopier card RE-PARSING the shared library, not a card. Keyword.values() fixed (partial); P0.2 card-caching is the real fix.
+
+**Root cause, nailed by OOM stack + board census (not guessed):** the OOM stack is
+`Keyword.values() ← smartValueOf ← CardFactory.getCard ← GameCopier card construction`. Every
+`GameCopier.makeCopy()` re-parses cards from scratch via `CardFactory.getCard` (PaperCard→Card,
+full script/keyword/trigger parse). In **Battlebox the shared library is large (hundreds of
+cards) and is deep-copied+reparsed on EVERY copy regardless of board state** — which is why the
+timeouts hit at *any* board size, including a captured **turn=1, perms=0** timeout (empty board,
+yet a single decision OOM'd: the cost is the shared-library reparse, board-independent and
+constant). This is the same cost the 2026-07-05 V3-207 orchestrator note flagged as untested
+"hypothesis 1" — now confirmed by stack trace. It is NOT a specific card (censuses showed no
+dominant card; tiny and large boards both OOM) so `sim.bannedCards` is the WRONG remedy here.
+
+**Fix 1 (landed, verified, KEPT): `Keyword.smartValueOf` O(1) cached lookup.** It iterated
+`Keyword.values()` per call, and `Enum.values()` clones its ~300-element array every invocation —
+called for every keyword on every card parsed. Replaced with a one-time `HashMap` (first-in-enum-
+order wins, identical semantics). 217/217 tests green. Real-run effect: OOM log lines dropped
+**6 → 1** on the identical 30-game diagnostic. Engine-wide speedup (helps all card parsing, every
+AI), so worth keeping regardless — **but it did NOT fully fix the monster**: the run still died at
+4 games with 1 OOM + a wedge. Keyword was one hot spot in the parse, not the whole cost.
+
+**Fix 2 (the REAL fix, NOT done — next ticket, Sonnet-appropriate): stop re-parsing the shared
+library per copy (plan P0.2 card-object caching).** Two shapes, in order of preference:
+  (a) **Cache parsed `Card` objects in `GameCopier`** keyed by paper-card identity, reused across
+      copies within a decision (library cards don't change between a decision's candidate copies).
+      Safe-ish, contained to `GameCopier`.
+  (b) **Don't deep-copy the hidden shared library at all** — it's face-down; the encoder uses only
+      its COUNT, and most decisions can't legally see library contents. Copying+reparsing hundreds
+      of hidden cards per simulation is near-pure waste for the neural-eval path. Bigger win, but
+      correctness-sensitive (mill/tutor/cast-from-top DO read the library) — needs care and its own
+      tests. Recommend (a) first (lower risk), measure, then consider (b).
+  Verify with THIS exact `configs/simstats/v4_017_monster_diag_1v1.ini` 30-game run: 0 OOM, ≥25/30
+  complete, no wedge. The board-census logging (committed) will confirm no residual monster.
+
+**Budget note:** this monster hunt consumed significant Fable orchestration. Fix 2 is well-specified
+implementation — hand it to a Sonnet session. The 25% V0 baseline (V4-016) already stands as the
+project's first honest result; the monster is an efficiency blocker for V4-018 data generation
+(it tanked the gate to ~16% yield), not a blocker on the result itself.
+
 # BUILD TRAP: `mvn test` does NOT rebuild the jar the simulator runs
 
 **Recorded 2026-07-24 after it silently invalidated a verification run — read this before running

@@ -320,14 +320,28 @@ public enum Keyword {
         return keywordSet;
     }
 
-    public static Keyword smartValueOf(String value) {
+    // TICKET-V4-017: case-insensitive displayName -> Keyword lookup, built once. The old
+    // smartValueOf iterated Keyword.values() on every call, and Enum.values() CLONES its backing
+    // array on every invocation (~300 elements here) -- so every keyword parsed during a
+    // GameCopier deep-copy allocated a fresh array and did a linear scan. Under simulation search
+    // (thousands of card re-parses per decision, CardFactory.getCard -> addIntrinsicKeywords ->
+    // smartValueOf) this was a dominant allocation source and the direct cause of the "monster
+    // game" OOMs (heap stack: Keyword.values -> smartValueOf -> CardFactory.getCard). Behavior is
+    // identical: first constant in enum-declaration order whose displayName matches wins
+    // (putIfAbsent over a values()-order iteration), UNDEFINED otherwise.
+    private static final Map<String, Keyword> DISPLAY_NAME_LOOKUP = new HashMap<>();
+    static {
         for (final Keyword v : Keyword.values()) {
-            if (v.displayName.equalsIgnoreCase(value)) {
-                return v;
-            }
+            DISPLAY_NAME_LOOKUP.putIfAbsent(v.displayName.toLowerCase(Locale.ENGLISH), v);
         }
+    }
 
-        return UNDEFINED;
+    public static Keyword smartValueOf(String value) {
+        if (value == null) {
+            return UNDEFINED;
+        }
+        final Keyword found = DISPLAY_NAME_LOOKUP.get(value.toLowerCase(Locale.ENGLISH));
+        return found != null ? found : UNDEFINED;
     }
 
     public static Set<Keyword> setValueOf(String value) {
