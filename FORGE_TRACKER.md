@@ -3747,6 +3747,47 @@ this exact smoke config has passed clean. Orchestrator should still run the full
 per standing instructions, but the structural blocker this whole chain of tickets was chasing is
 resolved: Ultron's decisions are now genuinely, hard-boundedly cheap.
 
+### TICKET-V4-014 — 15-game reproducibility run: COMPLETION mostly fixed, but Ultron PLAYS PASSIVELY and lost 0/12 [2026-07-25]
+
+Ran 15 games, seed 44556677 (distinct from the 3-game verify), Ultron(NN, depth-0, copy-budget) vs
+Default, 1v1 Monarch, under a **progress-based watchdog** (log-mtime + per-game wall cap).
+
+**Completion — largely fixed, watchdog works:** 13/15 recorded, 12 completed cleanly (9.4-42.6s,
+median 16.8s), 1 timed out at 361s, and shard_0 wedged on its last game — the progress-watchdog
+KILLED it at 225s (vs the 1h unattended thrash on 2026-07-25 earlier). So depth-0 fixed *most* games
+but ~1-2 of 15 still hit a pathological slow/wedge state; the copy budget did not prevent it. The
+watchdog is now the reliable backstop. Not a clean 15/15, but no more silent hour-long wedges.
+
+**THE CRITICAL FINDING — Ultron lost every completed game, 0/12 (1v1 null=50%, p≈0.0002 — NOT noise).**
+Per-game activity diagnostic (spellsCast / landsPlayed / attacksDeclared):
+- **attacksDeclared = 0 in 11 of 12 games.** Ultron essentially never attacks.
+- **spellsCast = 0-5 (mostly 0-3); Default casts 5-15.** Ultron barely develops.
+- Ultron plays lands fine (3-9) but ends every game at negative life while Default sits at 16-24.
+Ultron is DURDLING: playing lands, casting almost nothing, never attacking, losing passively.
+
+**Leading hypothesis (strong): depth-0 removed the lookahead the value function NEEDS to see delayed
+payoff.** With no lookahead, Ultron scores only the IMMEDIATE afterstate. A just-cast creature is
+summon-sick — and the summon-sick masking (V4-010's second pass, which zeroes summon-sick own
+creatures to implement "don't pre-combat-cast for nothing") makes a freshly-played creature score
+~0 benefit RIGHT NOW. So "play creature" scores ≤ "pass" every time → Ultron never develops. Same
+for attacks: attacking taps your creatures and exposes you; without lookahead to value the damage
+dealt, the immediate post-attack state looks strictly worse → never attack. **The lookahead that
+caused the OOM is the same lookahead that made the AI play sensibly. Removing it fixed the crash and
+broke the play.** This is a fundamental tension, not a bug to patch.
+
+**Implication for the plan:** pure-afterstate depth-0 with THIS value function does not work. Options
+(for a rested human decision — do NOT auto-dispatch):
+1. **Cheap shallow lookahead** — depth-1 but hard-bounded by the copy budget (which we now have) so it
+   can't OOM. Restores the payoff-sightedness while keeping the crash bound. Most likely fix; test
+   whether budget=18 keeps depth-1 completing.
+2. **Fix the value function for afterstate use** — the net was trained to PREDICT outcomes on Default's
+   states, not to rank a player's own immediate afterstates. Retrain with the deferred "future table
+   share" aux head / TD targets so immediate afterstates reflect delayed value; and/or drop the
+   summon-sick masking for the neural path (let the net judge summon-sick creatures directly).
+3. Both.
+The value network itself is fine as a *predictor* (64.9% held-out); the failure is using it as a
+depth-0 *policy*. Diagnosis first, next session, rested.
+
 # BUILD TRAP: `mvn test` does NOT rebuild the jar the simulator runs
 
 **Recorded 2026-07-24 after it silently invalidated a verification run — read this before running
