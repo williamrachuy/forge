@@ -3848,6 +3848,40 @@ Design (wedge-resilient, no duplicated seeds):
   the honest expectation for V0 is "somewhere around parity," and the gate's job is to measure it,
   not to flatter it.
 
+### TICKET-V4-016 RESULT (2026-07-25 ~05:20): V0 baseline = 25.5% [15.3, 39.5] at N=47 — V0 loses ~2:1 to Default. Harness cut short by monster-game OOMs; diagnosis complete.
+
+**Substantive result (the headline):** across 47 counted games (12W/35L, 3 timeouts excluded),
+Ultron(NN/V0) won **25.5%**, Wilson 95% CI **[15.3%, 39.5%]** — the upper bound is well below the
+50% null. Combined with the smoke (17W/57 ≈ 30%): **V0 loses roughly 2:1 to Default. The 5/10
+smoke was small-sample luck, exactly what its [24%, 76%] interval warned.** This is NOT a failed
+project — it is the first statistically honest baseline Ultron has ever had, produced by a model
+trained only on Default-vs-Default MAIN1 snapshots with zero self-play iterations. The plan
+(§6 P3) always located the strength gains in the improvement loop, not V0.
+
+**Why only 47 of 300:** every round ended early. Full diagnosis, each step verified:
+1. Rounds recorded 5-12 games each. Round 3 died to **OutOfMemoryError in both shards** (3+2 OOMs);
+   the other rounds' "wedges" were the same monster-game state caught by the round watchdog first.
+2. **Not a cross-game leak:** round_3/shard_0's games ran 39/61/25/40/136s with no slowdown trend —
+   then game 5 hit a 40s decision timeout at 03:19, OOM at 03:25. A SINGLE pathological game.
+3. **Not the copy budget failing to arm:** verified the ThreadLocal reset runs inside the
+   runWithDecisionTimeout callable (worker thread) — the budget is live. It caps copy COUNT; the
+   monster is ONE copy/resolve cascade allocating gigabytes on a specific board state (~1 game in
+   8-10). The 40s abandonment then leaks it (V4-003 mechanism) until OOM.
+4. The gate's `timeoutSeconds=900` (chosen so slow-but-honest games could finish) made exposure
+   WORSE than the smoke's 360s — more monster-seconds per game before the game-level kill.
+
+**Next-session tickets (do these BEFORE any further gate):**
+- **V4-017 (identify the monster):** add the active candidate/spell name + board size to the 40s
+  per-decision-timeout WARN (one line), rerun ~30 games at 360s, identify the offending card/state,
+  then apply the established BUG-007 remedy (`sim.bannedCards`) or a targeted fix. Do not attempt
+  a general "bound single-copy allocation" — the card-ban precedent is cheap and proven.
+- **V4-018 (Fix B, the actual improvement loop):** multi-phase + afterstate logging in
+  `UltronStateLogger` (currently MAIN1-only — 12/13 phase slots dead in training), regenerate a
+  corpus INCLUDING Ultron-in-the-loop games (they complete now), retrain V1 with the future-table-
+  share aux head and TD targets, parity-test V1, THEN gate V1 at 360s with the round harness.
+- Gate harness itself worked as designed (wedge cost bounded per round, no duplicate seeds, correct
+  0.50 null); keep it, set `timeoutSeconds=360` in the template.
+
 # BUILD TRAP: `mvn test` does NOT rebuild the jar the simulator runs
 
 **Recorded 2026-07-24 after it silently invalidated a verification run — read this before running
