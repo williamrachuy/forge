@@ -3546,6 +3546,41 @@ Default-safe as always (neural path gated to Ultron+flag; flag-off byte-identica
 green). Verify with the SAME 3-game smoke that OOM'd: all 3 complete, 0 OOM, and record per-game
 time (must be sane for a 300-game gate). Only after that does the orchestrator run the gate.
 
+### TICKET-V4-013 RESULT (2026-07-25): FAILED — combat now uses the neural eval, but real games still OOM/wedge
+
+The combat-scoring change is real and correct (uncommitted in the working tree): `scoreAttackCandidate`/
+`scoreBlockCandidate` now resolve the same triple-gated `StateEvaluator` as main phase and advance the
+candidate copy to `COMBAT_END` (heuristic's own `simulateUpcomingCombatThisTurn` short-circuits, no
+double-advance). But the 3-game smoke did NOT pass:
+- game 0: 94s, completed.
+- game 1: **906s, timed out** (did not finish within the 900s budget).
+- game 2: ran **~85 min wall, ~52 min with ZERO log output, RSS ballooned to 24.5 GB** (heap cap 8g —
+  swapping), CPU pinned — the V4-003 death spiral (abandoned worker OOMs, JVM thrashes in GC/swap
+  instead of dying cleanly). Killed manually. **Orchestrator process note: a PID-`kill -0` watcher does
+  NOT catch this — the JVM never exits, it wedges. A liveness watcher must check games.jsonl / log
+  mtime ADVANCING, not just process-alive. This wasted ~1h unattended before a manual check caught it —
+  the exact failure mode TICKET-V4-207 warned about, repeated.**
+
+**Verdict after three cost-reduction attempts (V4-010 neural eval, V4-011 main-phase deadline, V4-013
+neural combat eval): the copy-per-candidate simulation architecture cannot reliably complete a real
+full-length Battlebox game, even with cheap neural scoring.** Each fix removed one cost source and the
+next full-length game found another (main phase → combat → cumulative per-game allocation + shared-zone
+growth). The neural VALUE FUNCTION itself is trained and works (V4-009: 64.9% held-out winner accuracy,
+parity-verified). What does not work is Ultron's copy-heavy SEARCH. This is now a strategy decision for
+the human, not another patch — see the options below. **Do not dispatch a fourth cost-patch without an
+explicit decision.**
+
+Candidate directions (for the human to weigh; not yet chosen):
+1. **Value-only, (almost) no search:** have Ultron pick moves by neural-evaluating the handful of legal
+   afterstates directly (1 cheap copy per legal move, no recursive GameSimulator, no per-candidate
+   combat re-sim). This is the purest TD-Gammon design and structurally cannot hit the copy-explosion.
+   Biggest departure from the current code; likely the real fix.
+2. **Hard per-decision copy budget:** a global counter that hard-caps total GameCopier.makeCopy() calls
+   per decision (e.g. 20) and returns best-so-far when hit — a blunt instrument that bounds cost
+   regardless of which search path is running. Less invasive than (1); cruder.
+3. **Accept it and stop:** the value network is a real, verified artifact; declare Phase 2 partially
+   done and revisit search later.
+
 # BUILD TRAP: `mvn test` does NOT rebuild the jar the simulator runs
 
 **Recorded 2026-07-24 after it silently invalidated a verification run — read this before running
