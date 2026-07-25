@@ -3988,6 +3988,32 @@ KEEP regardless: Keyword cache (engine-wide speedup), hidden-info pruning (0 OOM
 rounds × distinct seeds, per-round progress watchdog killing on >450s stall) for ALL data
 generation and gating — never a single long run that one hang can kill.
 
+### TICKET-V4-018: Iteration 1 — V1 value net (multi-phase + in-the-loop corpus + retrain) [IN_PROGRESS 2026-07-25]
+
+**Human decision (2026-07-25): proceed with the iteration loop (plan §6 Phase 3 / §5.1).** V0's 25%
+has two identified, fixable causes, both about training DATA quality, not the architecture:
+1. **MAIN1-only training data.** `UltronStateLogger.java:130` hard-filters `if (phase != MAIN1)` —
+   the corpus contains ONLY first-main states, so the value net never trained on the combat /
+   second-main / stack afterstates it is asked to score as a depth-0 policy (V4-009 found 12/13 phase
+   one-hot slots dead). This is the leading suspect for the 25%.
+2. **Off-policy data.** V0 trained only on Default-vs-Default games. Ultron's own game states (now
+   reachable — games complete post-V4-019) are the ExIt signal the plan §5.3 calls for.
+
+**Sequenced sub-steps (orchestrator drives; Sonnet for code):**
+- **V4-018a (logger, Sonnet — DISPATCHED):** capture states at the phases where afterstates are
+  actually scored — MAIN1, MAIN2, COMBAT_DECLARE_ATTACKERS, COMBAT_DECLARE_BLOCKERS (and stack-
+  response priority if cheap) — not MAIN1 only. Dedup per (turn, phase). Verify a short logged run
+  shows diverse `phaseOrdinal`s. This is the prerequisite for a richer corpus.
+- **V4-018b (corpus, orchestrator, tmux — no tokens):** ROUND HARNESS (per V4-019's note —
+  `run_gate_v4_016.sh` pattern, per-round >450s-stall watchdog, distinct seeds), mixed population:
+  Ultron(V0/NN) vs Default AND all-Default, 1v1 Monarch, nnLogging on, ~1500-2000 games. The residual
+  hang is a contained tax here. Distinct seeds from every prior lane.
+- **V4-018c (retrain V1, Sonnet):** trainer gains the deferred future-table-share aux head (§5.1
+  label 3) + TD(λ≈0.9) targets (now bootstrappable from V0) + the multi-phase data; train V1, parity-
+  test it (`UltronValueNetParityTest` with the new `.bin`), report held-out accuracy + calibration.
+- **V4-018d (gate V1, orchestrator):** round harness, N=300, `gate.py --null 0.5`, vs Default AND vs
+  V0 (promote only if it beats V0 — plan §5.4). The correct 1v1 null is 0.50.
+
 # BUILD TRAP: `mvn test` does NOT rebuild the jar the simulator runs
 
 **Recorded 2026-07-24 after it silently invalidated a verification run — read this before running
