@@ -3817,6 +3817,37 @@ BEFORE seeing results):**
 - Activity still dead → diagnosis wrong again → stop, instrument per-decision scores, no more fixes
   without data.
 
+**RESULT (2026-07-25 ~02:30, same seed 44556677, only the mask fix changed): activity fully
+normalized AND Ultron went 5/10 — dead even with Default.** 12/15 games recorded (10 completed,
+2 timeouts at the tight 360s cap, 1 wedge killed by the watchdog at 212s stall), 0 OOM. Median
+Ultron spells: **9** (was 0-3); games with attacks: **7/10** (was 1/12). Wins are emphatic, not
+flukes: game 2 = 17 spells / 19 attacks / opponent at -16; game 8 won at 25 life. Per-game median
+53.7s (real games run longer than durdles — both players actually fight). **The diagnosis held:
+one missing phase condition was the entire durdle.** N=10 is far too small to claim parity — the
+Wilson interval on 5/10 spans roughly [24%, 76%] — but V0 (zero self-play iterations, trained
+only on Default-vs-Default MAIN1 snapshots) playing recognizable, aggressive, winning Magic is
+the strongest result in this project's history. Proceeding to the N=300 gate per the
+pre-registered rule.
+
+### TICKET-V4-016: THE GATE — N=300, Ultron(NN) vs Default, 1v1 Monarch, null=0.50 [IN_PROGRESS 2026-07-25]
+
+Design (wedge-resilient, no duplicated seeds):
+- **6 rounds × 50 games** (2 shards × 25 each), each round a fresh `run_parallel` with a
+  round-distinct seed (20260726..20260731 — all distinct from the training corpus seed 20260724 and
+  every measurement lane). `repeat` batching is NOT used: each batch would re-run identical
+  (seedOffset + index) seeds → duplicate games in games.jsonl → corrupt gate stats. (Also found and
+  fixed while designing this: `run_simstats.sh`'s batch loop read `batch_exit=$?` after a bare
+  `java` under `set -e`, so any non-zero batch killed the wrapper and the "continue to next batch"
+  logic was dead code — latent since TICKET-101. Fixed with `|| batch_exit=$?`.)
+- Per-round progress watchdog (log-mtime stall >240s → kill that round's JVMs, move on) bounds any
+  wedge to ≤ one round's remainder. Expected total ~4-5h at ~100s/game avg incl. tails.
+- `timeoutSeconds=900` (the smoke's 360s cap caused at least part of its 2 timeouts; median
+  completed game is 54s, max 159s).
+- Gate stats: `gate.py <combined games.jsonl> --profile Ultron --null 0.5 --min-games 150`.
+  **The null is 0.50** (1v1), not the 4-player 0.25. Pass per plan §5.4 = beats null at p<0.05;
+  the honest expectation for V0 is "somewhere around parity," and the gate's job is to measure it,
+  not to flatter it.
+
 # BUILD TRAP: `mvn test` does NOT rebuild the jar the simulator runs
 
 **Recorded 2026-07-24 after it silently invalidated a verification run — read this before running

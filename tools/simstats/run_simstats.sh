@@ -96,8 +96,12 @@ for batch_num in $(seq 1 "$repeat"); do
   fi
 
   cd "$FORGE_GUI"
-  java $JVM_FLAGS -jar "$jar" simstats -config "$config" >> "$run_log" 2>&1
-  batch_exit=$?
+  # TICKET-V4-016: `|| batch_exit=$?` is load-bearing under `set -e` — with a bare invocation, a
+  # non-zero java exit (OOM, kill -9 from a watchdog) terminated this whole script before
+  # `batch_exit=$?` ever ran, so the multi-batch continue logic below was dead code (latent since
+  # TICKET-101; confirmed by shard wrapper.logs ending at "Killed" with no BATCH-finished line).
+  batch_exit=0
+  java $JVM_FLAGS -jar "$jar" simstats -config "$config" >> "$run_log" 2>&1 || batch_exit=$?
   echo "=== BATCH $batch_num/$repeat finished (exit=$batch_exit) at $(date) ===" | tee -a "$run_log"
   if [[ $batch_exit -ne 0 ]]; then
     overall_exit=$batch_exit
