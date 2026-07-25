@@ -647,9 +647,13 @@ public class UltronPlayerController extends PlayerControllerAi {
             // on whichever thread actually runs the search. See runWithDecisionTimeout's javadoc.
             AttackPlan __chosen = runWithDecisionTimeout("declareAttackers", () -> {
                 SIMULATION_IN_PROGRESS.set(Boolean.TRUE);
+                // TICKET-V4-014 (Version A, change 2): see chooseSpellAbilityToPlay's matching
+                // comment -- activates/clears this decision's hard per-decision copy budget.
+                UltronConfig.resetSimCopyBudget();
                 try {
                     return chooseAttackPlanViaSimulation(attacker, combat);
                 } finally {
+                    UltronConfig.clearSimCopyBudget();
                     SIMULATION_IN_PROGRESS.set(Boolean.FALSE);
                 }
             });
@@ -821,6 +825,16 @@ public class UltronPlayerController extends PlayerControllerAi {
                         + evaluatedCount + "/" + candidates.size() + " candidates; returning best-so-far");
                 break;
             }
+            // TICKET-V4-014 (Version A, change 2): hard copy-budget checkpoint, mirroring the
+            // deadline checkpoint above -- see UltronConfig.simCopyBudgetExceeded()'s javadoc. The
+            // first candidate ("attack with nothing") is always scored regardless (evaluatedCount ==
+            // 0 skips this check), matching the deadline checkpoint's own contract.
+            if (evaluatedCount > 0 && UltronConfig.simCopyBudgetExceeded()) {
+                Logger.warn("[Ultron] declareAttackers candidate search hit its copy budget ("
+                        + UltronConfig.maxSimCopiesPerDecision() + ") after " + evaluatedCount + "/"
+                        + candidates.size() + " candidates; returning best-so-far");
+                break;
+            }
             int score = scoreAttackCandidate(game, attacker, combat, candidate, evaluator);
             evaluatedCount++;
             if (score > bestScore) {
@@ -909,6 +923,15 @@ public class UltronPlayerController extends PlayerControllerAi {
     private int scoreAttackCandidate(Game game, Player attacker, Combat combat, List<Pair<Card, GameEntity>> candidate,
             StateEvaluator evaluator) {
         try {
+            // TICKET-V4-014 (Version A, change 2): the HARD copy-budget check, immediately before
+            // the actual GameCopier.makeCopy() this candidate pays -- see SpellAbilityPicker's
+            // matching evaluateSa checkpoint for the full "checked before allocating = true ceiling"
+            // rationale. Inert (never blocks) whenever no budget is active on this thread.
+            if (!UltronConfig.tryConsumeSimCopyBudget()) {
+                Logger.warn("[Ultron] declareAttackers candidate simulation skipped; per-decision "
+                        + "copy budget (" + UltronConfig.maxSimCopiesPerDecision() + ") exhausted");
+                return Integer.MIN_VALUE;
+            }
             GameCopier copier = new GameCopier(game);
             Game gameCopy = copier.makeCopy(null, attacker);
             Player attackerCopy = (Player) copier.find(attacker);
@@ -1165,9 +1188,13 @@ public class UltronPlayerController extends PlayerControllerAi {
             // inside the worker's own work rather than here on the calling thread.
             BlockPlan __chosen = runWithDecisionTimeout("declareBlockers", () -> {
                 SIMULATION_IN_PROGRESS.set(Boolean.TRUE);
+                // TICKET-V4-014 (Version A, change 2): see chooseSpellAbilityToPlay's matching
+                // comment -- activates/clears this decision's hard per-decision copy budget.
+                UltronConfig.resetSimCopyBudget();
                 try {
                     return chooseBlockPlanViaSimulation(defender, combat);
                 } finally {
+                    UltronConfig.clearSimCopyBudget();
                     SIMULATION_IN_PROGRESS.set(Boolean.FALSE);
                 }
             });
@@ -1244,6 +1271,14 @@ public class UltronPlayerController extends PlayerControllerAi {
             if (evaluatedCount > 0 && System.currentTimeMillis() > deadlineMillis) {
                 Logger.warn("[Ultron] declareBlockers candidate search hit its deadline after "
                         + evaluatedCount + "/" + candidates.size() + " candidates; returning best-so-far");
+                break;
+            }
+            // TICKET-V4-014 (Version A, change 2): hard copy-budget checkpoint, mirroring the
+            // deadline checkpoint above and declareAttackers' matching check.
+            if (evaluatedCount > 0 && UltronConfig.simCopyBudgetExceeded()) {
+                Logger.warn("[Ultron] declareBlockers candidate search hit its copy budget ("
+                        + UltronConfig.maxSimCopiesPerDecision() + ") after " + evaluatedCount + "/"
+                        + candidates.size() + " candidates; returning best-so-far");
                 break;
             }
             int score = scoreBlockCandidate(game, defender, candidate, evaluator);
@@ -1428,6 +1463,14 @@ public class UltronPlayerController extends PlayerControllerAi {
      */
     private int scoreBlockCandidate(Game game, Player defender, List<Pair<Card, Card>> candidate, StateEvaluator evaluator) {
         try {
+            // TICKET-V4-014 (Version A, change 2): the HARD copy-budget check, immediately before
+            // the actual GameCopier.makeCopy() this candidate pays -- see scoreAttackCandidate's
+            // matching checkpoint.
+            if (!UltronConfig.tryConsumeSimCopyBudget()) {
+                Logger.warn("[Ultron] declareBlockers candidate simulation skipped; per-decision "
+                        + "copy budget (" + UltronConfig.maxSimCopiesPerDecision() + ") exhausted");
+                return Integer.MIN_VALUE;
+            }
             GameCopier copier = new GameCopier(game);
             Game gameCopy = copier.makeCopy(null, defender);
             Player defenderCopy = (Player) copier.find(defender);
@@ -1611,15 +1654,31 @@ public class UltronPlayerController extends PlayerControllerAi {
             // search. See runWithDecisionTimeout's javadoc for the full thread-safety analysis.
             SpellPlanResult __planResult = runWithDecisionTimeout("chooseSpellAbilityToPlay", () -> {
                 SIMULATION_IN_PROGRESS.set(Boolean.TRUE);
+                // TICKET-V4-014 (Version A, change 2): activate this decision's hard per-decision
+                // copy budget (UltronConfig.maxSimCopiesPerDecision()) for the duration of the whole
+                // decision tree on this worker thread, including any recursive lookahead the picker's
+                // own search triggers -- see UltronConfig.SIM_COPY_BUDGET's javadoc for why a
+                // ThreadLocal is correct here. Cleared in the matching finally below so it can never
+                // leak into a later decision or a non-Ultron caller sharing the thread pool.
+                UltronConfig.resetSimCopyBudget();
                 try {
                     SpellAbilityPicker __picker = getAi().getSimulationPicker();
-                    // TICKET-V3-207 (Ultron v3, session 4): bound recursive lookahead to 1 ply for this
-                    // Battlebox-shaped decision surface -- see SimulationController's and SpellAbilityPicker's
-                    // matching javadoc for why the shared default (3) plus Battlebox's shared-zone GameCopier
-                    // cost was still OOM'ing a real 3-game smoke test at -Xmx3g even after this session's
-                    // other two fixes. Scoped to this picker instance only (does not touch the shared
-                    // SimulationController default any other AI profile/test relies on).
-                    __picker.setMaxRecursionDepth(1);
+                    // TICKET-V4-014 (Version A, change 1): flat afterstate scoring, no recursive
+                    // lookahead -- UltronConfig.maxSimRecursionDepth() defaults to 0. Verified by code
+                    // read (GameSimulator.simulateSpellAbility's eval.getScoreForGameState call is
+                    // unconditional, before the controller.shouldRecurse() gate that depth bounds) that
+                    // depth 0 still scores every top-level candidate by its own immediate afterstate --
+                    // it just removes cost source #1 of the three diagnosed in FORGE_TRACKER
+                    // TICKET-V4-014 (nested MAX_LOOKAHEAD_CANDIDATES-wide recursive search per
+                    // candidate), which V4-010/011/013's soft deadlines could not bound because
+                    // recursion multiplies candidate count exponentially with depth. Superseded
+                    // TICKET-V3-207 (Ultron v3, session 4)'s depth-1 bound -- see SimulationController's
+                    // and SpellAbilityPicker's matching javadoc for that session's original rationale;
+                    // depth 0 is strictly shallower and is now the default (configurable via
+                    // ULTRON_SIM_MAX_RECURSION_DEPTH for tuning). Scoped to this picker instance only
+                    // (does not touch the shared SimulationController default any other AI profile/test
+                    // relies on).
+                    __picker.setMaxRecursionDepth(UltronConfig.maxSimRecursionDepth());
                     // TICKET-V4-011 lever 1 (root-cause fix for the abandoned-worker OOM leak --
                     // FORGE_TRACKER TICKET-V4-011, diagnosed in TICKET-V4-003): give the picker's own
                     // top-level candidate search a cooperative deadline set to 80% of
@@ -1652,6 +1711,7 @@ public class UltronPlayerController extends PlayerControllerAi {
                         __picker.setMaxTopLevelCandidates(null);
                     }
                 } finally {
+                    UltronConfig.clearSimCopyBudget();
                     SIMULATION_IN_PROGRESS.set(Boolean.FALSE);
                 }
             });

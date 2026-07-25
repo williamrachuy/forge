@@ -183,6 +183,146 @@ public final class UltronConfig {
         return intEnv("ULTRON_SIM_MAX_TOP_LEVEL_CANDIDATES", 14);
     }
 
+    /**
+     * TICKET-V4-014 (Version A, change 1): recursive lookahead depth {@code
+     * UltronPlayerController#chooseSpellAbilityToPlay()} sets on the picker's {@code
+     * SimulationController} (via {@code SpellAbilityPicker#setMaxRecursionDepth}). Default 0 -- no
+     * lookahead recursion at all; each top-level candidate is scored by its own immediate afterstate
+     * only (verified by code read: {@code GameSimulator.simulateSpellAbility}'s {@code
+     * eval.getScoreForGameState} call happens unconditionally, before the {@code
+     * controller.shouldRecurse()} check that gates recursion -- so depth 0 yields "flat afterstate
+     * scoring, no lookahead", not "no evaluation at all"; see FORGE_TRACKER TICKET-V4-014). This
+     * removes cost source #1 of the three that made V4-010/011/013's soft-deadline patches
+     * insufficient: a depth-1 (or deeper) search multiplies candidate count by {@code
+     * MAX_LOOKAHEAD_CANDIDATES} at every recursion level, which the hard copy budget below cannot
+     * distinguish from useful work -- it would just make the budget exhaust faster on the SAME
+     * top-level candidate instead of being spent across more of them. Configurable (not hardcoded
+     * 0) via {@code ULTRON_SIM_MAX_RECURSION_DEPTH} for tuning; {@code intEnv}'s existing "value > 0
+     * else default" guard does not fit a legitimate 0 default, so this reads the env var directly
+     * rather than through {@code intEnv}.
+     */
+    public static int maxSimRecursionDepth() {
+        String value = System.getenv("ULTRON_SIM_MAX_RECURSION_DEPTH");
+        if (value == null || value.isBlank()) {
+            return 0;
+        }
+        try {
+            int v = Integer.parseInt(value.trim());
+            return v >= 0 ? v : 0;
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // TICKET-V4-014 (Version A, change 2): hard per-decision GameCopier.makeCopy() copy budget
+    // -----------------------------------------------------------------------
+
+    /**
+     * TICKET-V4-014: the key new mechanism the prior three cost-reduction attempts (V4-010/011/013)
+     * lacked -- a HARD ceiling, checked BEFORE each simulation copy is allocated, on how many
+     * {@code GameCopier.makeCopy()}-backed simulation copies ONE Ultron decision may spend, across
+     * every path that spends them ({@code SpellAbilityPicker#evaluateSa}'s target/mode fan-out,
+     * {@code UltronPlayerController}'s combat candidate scoring, and any recursive lookahead the
+     * fan-out triggers). Unlike {@code SpellAbilityPicker#deadlineMillis} (a soft wall-clock check
+     * that cannot interrupt a copy already in flight, or the several copies a single pathological
+     * candidate's target fan-out can trigger before the next checkpoint), a copy COUNT checked
+     * before allocating is a true hard bound: the (N+1)th copy is never made at all. Default 18 --
+     * generous enough that a normal decision's candidate count/target fan-out never approaches it,
+     * small enough that even a fully-exhausted budget completes in low single-digit seconds.
+     * Configurable via {@code ULTRON_SIM_MAX_COPIES_PER_DECISION}.
+     */
+    public static int maxSimCopiesPerDecision() {
+        return intEnv("ULTRON_SIM_MAX_COPIES_PER_DECISION", 18);
+    }
+
+    /**
+     * TICKET-V4-014: per-thread [used, max] counter. {@code null} (the default, and the state for
+     * every non-Ultron caller and every existing test that never calls {@link
+     * #resetSimCopyBudget()}) means "budget tracking inactive on this thread" -- {@link
+     * #tryConsumeSimCopyBudget()} and {@link #simCopyBudgetExceeded()} then always report
+     * "unlimited"/"not exceeded", byte-identical to before this mechanism existed. A plain {@code
+     * ThreadLocal} (rather than a JVM-wide counter) is correct because {@code
+     * UltronPlayerController#runWithDecisionTimeout} runs at most one Ultron simulation-decision
+     * worker at a time (see {@code SIMULATION_IN_PROGRESS}'s javadoc) and always on a single
+     * dedicated worker thread per decision -- recursion within that decision (lookahead, or a
+     * combat candidate's own nested scoring) runs synchronously on the SAME thread, so a
+     * thread-scoped counter correctly accumulates across the whole decision tree, not just one
+     * call site.
+     */
+    private static final ThreadLocal<int[]> SIM_COPY_BUDGET = new ThreadLocal<>();
+
+    /**
+     * Activates copy-budget tracking for the current thread's decision, using {@link
+     * #maxSimCopiesPerDecision()} as the cap. Called once, at the very start of each of Ultron's
+     * three simulation-based decisions ({@code chooseSpellAbilityToPlay}, {@code declareAttackers},
+     * {@code declareBlockers}) -- see those methods for the matching {@link #clearSimCopyBudget()}
+     * in a {@code finally}.
+     */
+    public static void resetSimCopyBudget() {
+        resetSimCopyBudget(maxSimCopiesPerDecision());
+    }
+
+    /**
+     * As {@link #resetSimCopyBudget()}, but with an explicit cap instead of {@link
+     * #maxSimCopiesPerDecision()}'s configured default. Public in the same spirit as {@code
+     * GameCopier#resetMakeCopyCallCount}/{@code getMakeCopyCallCount} -- test-support surface, not
+     * gated behind a flag, so any JUnit test can force a small deterministic budget without an env
+     * var (which cannot be mutated mid-JVM). Production code (the three decision entry points in
+     * {@code UltronPlayerController}) always calls the no-arg overload.
+     */
+    public static void resetSimCopyBudget(int max) {
+        SIM_COPY_BUDGET.set(new int[] { 0, Math.max(max, 0) });
+    }
+
+    /**
+     * Deactivates copy-budget tracking for the current thread, back to the default "unlimited"
+     * state. Called in a {@code finally} at the end of each of Ultron's three simulation-based
+     * decisions so a stale budget from one decision can never leak into the next (or into a
+     * non-Ultron caller sharing the thread pool).
+     */
+    public static void clearSimCopyBudget() {
+        SIM_COPY_BUDGET.remove();
+    }
+
+    /**
+     * Attempts to spend one unit of the current thread's per-decision copy budget. Returns {@code
+     * true} (and increments the used count) if a copy may proceed; {@code false} if the budget is
+     * already exhausted, in which case the caller must NOT make the copy. When no budget is active
+     * on this thread (the default -- {@link #resetSimCopyBudget()} was never called, or {@link
+     * #clearSimCopyBudget()} already ran), always returns {@code true}: unlimited, unchanged
+     * behavior for every non-Ultron caller.
+     */
+    public static boolean tryConsumeSimCopyBudget() {
+        int[] state = SIM_COPY_BUDGET.get();
+        if (state == null) {
+            return true;
+        }
+        if (state[0] >= state[1]) {
+            return false;
+        }
+        state[0]++;
+        return true;
+    }
+
+    /**
+     * Peek-only check (does not consume): whether the current thread's copy budget is already
+     * exhausted. Used by the between-candidate checkpoints (mirroring {@code SpellAbilityPicker}'s
+     * {@code deadlineExceeded()} pattern) to stop a loop before even attempting its next candidate,
+     * in addition to {@link #tryConsumeSimCopyBudget()}'s hard check immediately before each actual
+     * copy. Always {@code false} when no budget is active on this thread.
+     */
+    public static boolean simCopyBudgetExceeded() {
+        int[] state = SIM_COPY_BUDGET.get();
+        return state != null && state[0] >= state[1];
+    }
+
+    /** Test/logging introspection: copies consumed so far on this thread's active budget (0 if inactive). */
+    public static int getSimCopyBudgetUsed() {
+        int[] state = SIM_COPY_BUDGET.get();
+        return state == null ? 0 : state[0];
+    }
+
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------

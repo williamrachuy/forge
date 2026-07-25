@@ -77,6 +77,15 @@ public class SpellAbilityPicker {
     private boolean lastSearchHitDeadline;
 
     /**
+     * TICKET-V4-014 (Version A, change 2): set true whenever a search this instance ran most
+     * recently stopped early because {@code UltronConfig.simCopyBudgetExceeded()}/{@code
+     * tryConsumeSimCopyBudget()} fired, reset to false at the start of every top-level {@link
+     * #chooseSpellAbilityToPlay(SimulationController)} call -- mirrors {@link
+     * #lastSearchHitDeadline}'s pattern exactly. Package-private -- test/logging introspection only.
+     */
+    private boolean lastSearchHitCopyBudget;
+
+    /**
      * TICKET-V4-011 (lever 2, breadth cap for Ultron): optional cap on how many top-level candidates
      * {@link #chooseSpellAbilityToPlayImpl} will simulate. {@code null} (the default, and the value
      * every non-Ultron caller and every existing test leaves it at) means "no cap" -- unchanged
@@ -165,6 +174,11 @@ public class SpellAbilityPicker {
     /** TICKET-V4-011: test/logging introspection only -- see {@link #lastSearchHitDeadline}. */
     boolean wasDeadlineExceededForTesting() {
         return lastSearchHitDeadline;
+    }
+
+    /** TICKET-V4-014: test/logging introspection only -- see {@link #lastSearchHitCopyBudget}. */
+    boolean wasCopyBudgetExceededForTesting() {
+        return lastSearchHitCopyBudget;
     }
 
     /**
@@ -277,6 +291,7 @@ public class SpellAbilityPicker {
         // (a no-op whenever maxTopLevelCandidates is unset, i.e. every non-Ultron caller and every
         // existing test) before this decision's own top-level search below.
         lastSearchHitDeadline = false;
+        lastSearchHitCopyBudget = false;
         if (maxTopLevelCandidates != null && candidateSAs.size() > maxTopLevelCandidates) {
             candidateSAs = capTopLevelCandidates(candidateSAs, maxTopLevelCandidates);
         }
@@ -365,6 +380,22 @@ public class SpellAbilityPicker {
             if (deadlineExceeded()) {
                 lastSearchHitDeadline = true;
                 Logger.warn("[SpellAbilityPicker] TICKET-V4-011: deadline exceeded after evaluating "
+                        + i + "/" + candidateSAs.size() + " top-level candidates; returning best-so-far "
+                        + "instead of continuing the search");
+                break;
+            }
+            // TICKET-V4-014 (Version A, change 2): hard copy-budget checkpoint between top-level
+            // candidates, mirroring the deadline checkpoint above -- a peek (not a consume; the real
+            // consume-and-check happens immediately before each actual GameSimulator/GameCopier
+            // allocation in evaluateSa's own fan-out loop below) so the search stops trying further
+            // candidates as soon as the budget is known to be exhausted, rather than burning cycles
+            // on candidates that would immediately return MIN_VALUE with zero copies spent anyway.
+            // Inert (always false) whenever no budget is active on this thread -- see
+            // UltronConfig.simCopyBudgetExceeded()'s javadoc for the "unset = unlimited" contract.
+            if (UltronConfig.simCopyBudgetExceeded()) {
+                lastSearchHitCopyBudget = true;
+                Logger.warn("[SpellAbilityPicker] TICKET-V4-014: per-decision copy budget ("
+                        + UltronConfig.maxSimCopiesPerDecision() + ") exhausted after evaluating "
                         + i + "/" + candidateSAs.size() + " top-level candidates; returning best-so-far "
                         + "instead of continuing the search");
                 break;
@@ -574,6 +605,24 @@ public class SpellAbilityPicker {
             // the caller's loop treats like any other candidate score.
             if (deadlineExceeded()) {
                 lastSearchHitDeadline = true;
+                break;
+            }
+            // TICKET-V4-014 (Version A, change 2): the HARD copy-budget check -- immediately before
+            // the actual GameSimulator construction (which pays a full GameCopier.makeCopy() in its
+            // constructor), checked-and-consumed atomically so the (budget+1)th copy is never made
+            // at all. This is what bounds a single candidate's own target/mode fan-out (cost source
+            // #2 in FORGE_TRACKER TICKET-V4-014's diagnosis -- a spell with many legal targets could
+            // otherwise construct many GameSimulators for ONE top-level candidate, unreachable by the
+            // between-candidate checkpoints above/in chooseSpellAbilityToPlayImpl). Breaking here
+            // mid-candidate is safe for the same reason the deadline break above is: bestScore
+            // already holds whatever this candidate's best choice scored so far (or MIN_VALUE if
+            // none yet), which the caller's loop treats like any other candidate score. Inert
+            // (always true, i.e. never blocks) whenever no budget is active on this thread.
+            if (!UltronConfig.tryConsumeSimCopyBudget()) {
+                lastSearchHitCopyBudget = true;
+                Logger.warn("[SpellAbilityPicker] TICKET-V4-014: per-decision copy budget ("
+                        + UltronConfig.maxSimCopiesPerDecision() + ") exhausted mid target/mode "
+                        + "fan-out for one candidate; returning best-so-far for this candidate");
                 break;
             }
             // TODO: MyRandom should be an instance on the game object, so that we could do

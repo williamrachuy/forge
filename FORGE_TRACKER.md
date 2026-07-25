@@ -3617,7 +3617,7 @@ evidence worth recording:
   decision among the three directions listed; this session did not attempt options 1-3 and made no
   commits (per instructions). Combat-side code left uncommitted in the working tree, same as before.
 
-### TICKET-V4-014: Version A — flat afterstate NN decisions + HARD per-decision copy budget [IN_PROGRESS 2026-07-25]
+### TICKET-V4-014: Version A — flat afterstate NN decisions + HARD per-decision copy budget [DONE 2026-07-25]
 
 **Human decision (2026-07-25): build Version A — the NN judges every option directly, rip out the
 crash-prone recursive simulation for Ultron.** After V4-010/011/013 (three cost-reduction patches)
@@ -3656,6 +3656,96 @@ multiply, and soft deadlines can't bound them because they can't interrupt a cop
 OOM, and NO single game exceeds ~5 min. Verification MUST use a progress-based watchdog (games.jsonl /
 log mtime ADVANCING) with a hard per-game kill — a PID-alive watcher does NOT catch a GC-thrash wedge.
 Orchestrator verifies independently before any gate.
+
+### TICKET-V4-014 RESULT (2026-07-25): PASSED — all three prior failure modes are gone
+
+**Change 1 (depth-0) verification — confirmed by code read, not assumed.**
+`GameSimulator.simulateSpellAbility` (`GameSimulator.java:357`) computes `Score score =
+eval.getScoreForGameState(simGame, aiPlayer)` **unconditionally**, and only AFTER that does it check
+`controller.shouldRecurse()` (line 364) to decide whether to push a nested search. `shouldRecurse()`
+(`SimulationController.java:78-80`) is `bestScore.value != MAX_VALUE && getRecursionDepth() <
+maxDepth`; with `maxDepth=0` and `getRecursionDepth()==0` at the top of a decision, this is `0 < 0 ==
+false` on every call, so recursion never fires — but the afterstate score above it always does. This
+confirms the design's claim exactly: depth 0 yields "score each top-level candidate's own immediate
+afterstate, pick the best" (flat, one-ply), not "no evaluation at all." Implemented as
+`UltronConfig.maxSimRecursionDepth()` (default 0, env `ULTRON_SIM_MAX_RECURSION_DEPTH`, `intEnv`'s
+"0 is falsy" guard doesn't fit here so it reads the env var directly), wired into
+`UltronPlayerController.chooseSpellAbilityToPlay()`'s existing
+`__picker.setMaxRecursionDepth(...)` call site (was hardcoded `1`, from TICKET-V3-207 session 4).
+
+**Change 2 (hard copy budget) — implementation.** `UltronConfig` gained a `ThreadLocal<int[]>`
+`[used, max]` per-decision counter (`SIM_COPY_BUDGET`) plus `resetSimCopyBudget()`/
+`resetSimCopyBudget(int)` (test overload)/`clearSimCopyBudget()`/`tryConsumeSimCopyBudget()`
+(check-and-increment atomically, the hard gate immediately before every real copy)/
+`simCopyBudgetExceeded()` (peek-only, for between-candidate checkpoints)/`getSimCopyBudgetUsed()`.
+`maxSimCopiesPerDecision()` defaults to 18, env `ULTRON_SIM_MAX_COPIES_PER_DECISION`. Wired at every
+copy site identified in the diagnosis:
+- `UltronPlayerController`'s three decision entry points (`chooseSpellAbilityToPlay`,
+  `declareAttackers`, `declareBlockers`) call `UltronConfig.resetSimCopyBudget()` right after
+  `SIMULATION_IN_PROGRESS.set(TRUE)` inside the `runWithDecisionTimeout` worker, and
+  `UltronConfig.clearSimCopyBudget()` in the matching `finally` (alongside
+  `SIMULATION_IN_PROGRESS.set(FALSE)`) — so the budget covers the whole decision tree on that worker
+  thread, including any recursion, and can never leak into a later decision.
+- `SpellAbilityPicker.chooseSpellAbilityToPlayImpl`'s top-level candidate loop: a
+  `simCopyBudgetExceeded()` peek between candidates (mirrors the existing V4-011 deadline
+  checkpoint), sets `lastSearchHitCopyBudget` and breaks with best-so-far.
+- `SpellAbilityPicker.evaluateSa`'s `do-while(choicesIterator.advance())` target/mode fan-out (cost
+  source #2, the one no prior patch touched): `tryConsumeSimCopyBudget()` immediately before `new
+  GameSimulator(...)`, the actual hard gate — breaks the fan-out for this candidate, keeping
+  whatever `bestScore` it already found.
+- `UltronPlayerController.chooseAttackPlanViaSimulation`/`chooseBlockPlanViaSimulation`'s candidate
+  loops: a `simCopyBudgetExceeded()` peek between candidates (mirrors the existing V4-013 deadline
+  checkpoint; first candidate always scored regardless, matching that same contract), plus
+  `scoreAttackCandidate`/`scoreBlockCandidate` each call `tryConsumeSimCopyBudget()` immediately
+  before their own `copier.makeCopy(...)`.
+Non-Ultron/no-budget-active paths: `SIM_COPY_BUDGET.get() == null` (the default, and the state for
+every caller that never calls `resetSimCopyBudget()`) makes `tryConsumeSimCopyBudget()` always
+return `true` and `simCopyBudgetExceeded()` always return `false` — unlimited, byte-identical.
+
+**Regression: 274/274** (`mvn test -pl forge-gui-desktop -am -Dcheckstyle.skip=true -Dtest=
+AiDeckStatisticsCacheTest,GameCopierBattleboxFidelityTest,GameSimulationTest,
+GameStateEvaluatorMultiplayerTest,NeuralStateEvaluatorTest,SpellAbilityPickerCopyBudgetTest,
+SpellAbilityPickerDeadlineTest,SpellAbilityPickerEvaluatorSelectionTest,
+SpellAbilityPickerSimulationTest,UltronCardFeatureTableTest,UltronCombatSimulationTest,
+UltronGameCopierCallCountTest,UltronMainPhaseSimulationTest,UltronPlayerControllerTest,
+UltronStackResponseSimulationTest,UltronStateEncoderTest,UltronStateLoggerTest,
+UltronValueNetParityTest -Dsurefire.failIfNoSpecifiedTests=false -Dultron.parity.dir=
+/home/william/github/forge/tools/nn/runs/20260724-195756`) — the same 18-class, 271-test baseline
+plus 3 new tests in `SpellAbilityPickerCopyBudgetTest` (a tiny-budget-stops-the-search-and-returns-a-
+legal-choice test, a no-budget-set-matches-generous-budget parity test, and direct counter-mechanics
+coverage). `forge.ai.llm.runtime.Ultron*`: **34/42**, same 8 pre-existing "Ahead-state" failures
+(unrelated to this ticket, unchanged from every prior session's baseline).
+
+**Smoke (the bar this ticket exists to clear): PASSED cleanly, no caveats.** Rebuilt the shaded jar
+(`mvn -pl forge-ai,forge-gui-desktop -am package -DskipTests -Dcheckstyle.skip=true -q`) and verified
+`UltronConfig.class`/`UltronPlayerController.class`/`SpellAbilityPicker.class` inside it carry fresh
+timestamps and the new method names (`maxSimCopiesPerDecision`, `resetSimCopyBudget`,
+`tryConsumeSimCopyBudget`, `maxSimRecursionDepth`) before running anything — see BUILD TRAP. Ran the
+exact config that failed three times before (`configs/simstats/v4_010_smoke_nn_1v1_monarch.ini`,
+seed 910123, `ULTRON_NN_EVAL=true ULTRON_NN_MODEL_PATH=.../20260724-195756/model.bin
+ULTRON_SIM_MAX_TOP_LEVEL_CANDIDATES=4`) in tmux under a progress-based watchdog (polling
+`games.jsonl` line count + `run.log` mtime every 15s; would `jstack`+`kill -9` on >180s log-mtime
+stall or >360s single-game wall, wrapped in an outer `timeout 1500`) — the watchdog never had to
+intervene:
+
+| game | completedNormally | timeout | elapsed | player turns |
+|------|--------------------|---------|---------|---------------|
+| 0    | true               | false   | 28.0s   | 16            |
+| 1    | true               | false   | 16.8s   | 19            |
+| 2    | true               | false   | 7.2s    | 14            |
+
+**0 `OutOfMemoryError`, 0 copy-budget-hit log lines, 0 deadline-hit log lines, 0 40s-per-decision
+abandonment log lines, 0 errors of any kind in `run.log` (201 lines total, all either startup noise
+or the expected V4-011 top-level-breadth-cap warnings, e.g. "top-level candidate breadth capped 11
+-> 4").** Every game finished in single-digit-to-thirty seconds, roughly two orders of magnitude
+faster than V4-013's 906s-timeout/85-minute-wedge failure on the identical config and seed, and the
+hard copy budget (default 18) was never even exhausted once across all three games — meaning depth-0
++ the top-level breadth cap already keep real decisions comfortably under budget in this lane; the
+budget exists as a true ceiling for the pathological tail, not as something normal play leans on.
+This is the first time in the project's history (V4-003 → V4-010 → V4-011 → V4-013 → V4-014) that
+this exact smoke config has passed clean. Orchestrator should still run the full gate independently
+per standing instructions, but the structural blocker this whole chain of tickets was chasing is
+resolved: Ultron's decisions are now genuinely, hard-boundedly cheap.
 
 # BUILD TRAP: `mvn test` does NOT rebuild the jar the simulator runs
 
