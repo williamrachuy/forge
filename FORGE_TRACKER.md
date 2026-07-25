@@ -3921,6 +3921,44 @@ implementation — hand it to a Sonnet session. The 25% V0 baseline (V4-016) alr
 project's first honest result; the monster is an efficiency blocker for V4-018 data generation
 (it tanked the gate to ~16% yield), not a blocker on the result itself.
 
+### TICKET-V4-019: Kill the reparse monster via per-copy PRUNE_HIDDEN_INFO (Ultron-NN-gated) [IN_PROGRESS 2026-07-25]
+
+**The machinery already exists** — `GameCopier.java:359 PRUNE_HIDDEN_INFO = false` (a `static final`
+flag, currently off). When true, `createCardCopy` replaces any card the simulating player can't see
+(`!c.getView().canBeShownTo(aiPlayer)` — which includes the entire hidden shared Battlebox library)
+with the cheap `hidden_info_card` placeholder INSTEAD of `Card.fromPaperCard` (the expensive full
+reparse the V4-017 OOM stack blamed). GameCopier.java:380 has a standing TODO confirming
+`fromPaperCard` "accounts for the vast majority of GameCopier execution time." Enabling pruning for
+the reparse-heavy path is the real monster fix (supersedes the V4-017 "cache Card objects" option (a):
+this reuses tested machinery, less code).
+
+**Why it can't just be flipped:** `PRUNE_HIDDEN_INFO` is `static final` and global — flipping it
+changes EVERY `GameCopier` copy, including the Default AI's own `useSimulation` path and all existing
+`forge.ai.simulation.*` tests, and would violate the Default-byte-identical invariant. It must be
+**per-copy and gated to the Ultron neural-eval path**, where pruning hidden cards is provably safe:
+the neural encoder uses only the library's COUNT, never its contents (`UltronStateEncoder` encodes
+`shared library = count only`), so replacing hidden library cards with placeholders cannot change the
+afterstate score.
+
+**Task:** thread a `pruneHiddenInfo` boolean through `GameCopier.makeCopy` / its constructor (mirror
+how V4-010 threaded the `StateEvaluator` — an optional param defaulting to today's behavior), set true
+ONLY when the copy is made for an Ultron NN-eval decision (same triple-gate:
+`nnEvalEnabled() && isUltronPlayer && NeuralStateEvaluator.isAvailable()`), false everywhere else.
+Default/heuristic/tests: `PRUNE_HIDDEN_INFO` effectively stays false → byte-identical.
+
+**Known correctness limit (document, don't block):** pruning hidden info is a determinization — it
+mis-simulates effects that READ hidden zones (mill / tutor / scry / cast-from-top) during the
+afterstate resolution, since they'd see placeholders. Acceptable for V0's afterstate value path (rare,
+and the fallback is just an imperfect score on those specific spells); note it for the future
+belief-state work (plan §7). Do NOT prune the aiPlayer's OWN hand/visible cards — only genuinely
+hidden-to-them cards, which the existing `canBeShownTo` check already handles.
+
+**Verify:** (1) monster diag `configs/simstats/v4_017_monster_diag_1v1.ini`, 30 games, NN eval on →
+**0 OOM, ≥25/30 complete, no wedge** (before: 4 games / 6 OOM / wedge; after V4-017 Keyword fix:
+4 games / 1 OOM / wedge; this should finish clean). (2) Full regression 273/273 green with flag off
+(Default byte-identical). (3) Report throughput — pruning should also speed up completed games.
+Progress-based watchdog (log-mtime > 450s → kill), NEVER a bare PID/self-matching pattern.
+
 # BUILD TRAP: `mvn test` does NOT rebuild the jar the simulator runs
 
 **Recorded 2026-07-24 after it silently invalidated a verification run — read this before running
