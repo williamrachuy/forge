@@ -3788,6 +3788,35 @@ broke the play.** This is a fundamental tension, not a bug to patch.
 The value network itself is fine as a *predictor* (64.9% held-out); the failure is using it as a
 depth-0 *policy*. Diagnosis first, next session, rested.
 
+### TICKET-V4-015: The durdle root cause — unconditional summon-sick mask (a SPEC bug, now fixed) [IN_PROGRESS 2026-07-25]
+
+**Root cause of V4-014's 0/12 passive loss streak, found by code read — and it was a spec error in
+`ULTRON_V4_NEURAL_PLAN.md` §4.4 itself (orchestrator's own), faithfully implemented by V4-010:**
+`NeuralStateEvaluator` computed `summonSickValue` from a masked pass **unconditionally**, but the
+heuristic it imitates (`GameStateEvaluator:219`) masks only `gamePhase.isBefore(MAIN2)`. With the
+unconditional mask, a "cast creature" afterstate always shows: hand card gone + creature invisible
+→ `summonSickValue` strictly below the pre-cast state → `SpellAbilityPicker:226` nulls the play —
+**at every phase, forever**. Ultron could never develop a board; with no board it could never
+attack (confirming evidence: game 11, the only game with real spell activity, is also the only game
+with attacks). The 2 a.m. "depth-0 removed the lookahead the value function needs" hypothesis was
+**wrong** — the failure was mechanical, not architectural.
+
+**Fix (3 lines + docs + regression pin):** mask only before MAIN2; at MAIN2+ `summonSickValue =
+value`, matching heuristic semantics exactly ("defer creatures to MAIN2", not "never cast").
+Plan §4.4 corrected. New test `summonSickMaskIsPhaseConditionalNotUnconditional` pins both halves.
+
+**Pre-registered decision rule for the 15-game re-run (same seed 44556677, same config — written
+BEFORE seeing results):**
+- Activity normalizes (median Ultron spells ≥5, attacks in ≥6 of completed games) → mechanical fix
+  confirmed; the win rate is then the first honest read of the value net as a depth-0 policy.
+- Activity normal + ≥3 wins of ~12 → promising; proceed to gate prep + quality work (multi-phase
+  corpus, retrain) as improvement, not rescue.
+- Activity normal + 0-1 wins → net quality/distribution is the binding constraint (trained only on
+  MAIN1 states of Default-vs-Default games; asked to rank afterstates it has never seen). Next step
+  is Fix B: multi-phase logging + retrain — BEFORE any gate.
+- Activity still dead → diagnosis wrong again → stop, instrument per-decision scores, no more fixes
+  without data.
+
 # BUILD TRAP: `mvn test` does NOT rebuild the jar the simulator runs
 
 **Recorded 2026-07-24 after it silently invalidated a verification run — read this before running

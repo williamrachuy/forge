@@ -132,10 +132,26 @@ public final class NeuralStateEvaluator implements StateEvaluator {
         // Second forward pass with aiPlayer's own summon-sick creatures masked out of battlefield
         // pooling -- the neural-eval analogue of GameStateEvaluator's summonSickScore, which
         // SpellAbilityPicker.chooseSpellAbilityToPlayImpl uses to hold creatures in MAIN1 when they
-        // give no benefit beyond just being cast. Two forward passes are still ~1000x cheaper than
-        // the heuristic path's copy+combat-sim (plan sect. 4.4).
-        float[] ssInput = UltronStateEncoder.encode(game, aiPlayer, true);
-        int summonSickValue = Math.round(winProbability(net, ssInput, game, aiPlayer) * 100_000f);
+        // give no benefit beyond just being cast.
+        //
+        // TICKET-V4-015: the mask applies ONLY before MAIN2, exactly mirroring GameStateEvaluator's
+        // `gamePhase.isBefore(PhaseType.MAIN2) && c.isSick()` condition. The original V4-010
+        // implementation masked UNCONDITIONALLY (a spec error in plan sect. 4.4, faithfully
+        // implemented), which made "cast a creature" score strictly worse than "pass" at EVERY
+        // phase -- the masked afterstate shows the hand card gone and the creature invisible --
+        // so SpellAbilityPicker's summonSickValue comparison nulled every creature cast, forever.
+        // That single missing phase check produced the 0/12 all-passive loss streak in the
+        // TICKET-V4-014 15-game run. With the phase condition, the semantics match the heuristic:
+        // defer creature casts to MAIN2 (where the unmasked pass values the creature fully), not
+        // "never cast".
+        final int summonSickValue;
+        if (game.getPhaseHandler().getPhase().isBefore(forge.game.phase.PhaseType.MAIN2)) {
+            float[] ssInput = UltronStateEncoder.encode(game, aiPlayer, true);
+            summonSickValue = Math.round(winProbability(net, ssInput, game, aiPlayer) * 100_000f);
+        } else {
+            // MAIN2 or later: heuristic counts sick creatures fully; one forward pass suffices.
+            summonSickValue = value;
+        }
 
         return new Score(value, summonSickValue);
     }

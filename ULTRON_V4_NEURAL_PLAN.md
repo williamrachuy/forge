@@ -205,8 +205,13 @@ public interface StateEvaluator {           // forge.ai.simulation
   untouched. Terminal states keep the existing `MAX_VALUE`/`MIN_VALUE` short-circuit.
 - **`summonSickValue` handling** (`SpellAbilityPicker.java:226` compares it, not `value`): run the
   forward pass twice, second time with summon-sick own creatures masked out of the battlefield
-  pooling. Two forward passes ≈ 0.2 ms, still ~1000× cheaper than today's copy+combat-sim, and it
-  preserves the "don't pre-combat-cast for no reason" semantics without touching the picker.
+  pooling — **but ONLY when the phase is before MAIN2**, mirroring `GameStateEvaluator`'s
+  `gamePhase.isBefore(PhaseType.MAIN2) && c.isSick()` condition exactly; at MAIN2+,
+  `summonSickValue = value`. (CORRECTED 2026-07-25 / TICKET-V4-015: this spec originally omitted
+  the phase condition; unconditional masking makes "cast a creature" lose to "pass" at every phase
+  — masked afterstate = hand card gone, creature invisible — which produced a fully passive AI
+  that lost 0/12. The phase condition is what turns the mask from "never cast" into "defer to
+  MAIN2".) Two forward passes ≈ 0.2 ms, still ~1000× cheaper than today's copy+combat-sim.
 - Wired only through `UltronPlayerController`'s three guarded entry points via `UltronConfig`
   (`ULTRON_NN_EVAL=true`). Existing `RuntimeException` → `answeredBy=inherited` fallback and the
   40s decision timeout already protect against a broken model file.
