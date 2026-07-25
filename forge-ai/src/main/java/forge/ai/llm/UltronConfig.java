@@ -160,6 +160,29 @@ public final class UltronConfig {
         return intEnv("ULTRON_SIM_DECISION_TIMEOUT_SECONDS", 40);
     }
 
+    /**
+     * TICKET-V4-011: lever 2 of the abandoned-worker-OOM fix (see FORGE_TRACKER TICKET-V4-011 and
+     * TICKET-V4-003's diagnosis). {@code SpellAbilityPicker}'s top-level candidate list (the real,
+     * once-per-decision list -- distinct from {@code MAX_LOOKAHEAD_CANDIDATES}, which only bounds
+     * the recursive hypothetical-future-turn branch) is otherwise unbounded: on a complex board it
+     * can run 10-20+ candidates, each paying a full {@code GameCopier.makeCopy()}, which is what let
+     * a single decision blow past {@link #maxSimDecisionTimeoutSeconds()} in the first place. This
+     * caps how many top-level candidates {@code UltronPlayerController} lets the picker simulate,
+     * selected by a cheap pre-ranking (reuses {@code ComputerUtilAbility.saEvaluator} -- the same
+     * comparator {@code AiController} already sorts its own candidate list with -- rather than
+     * spending a real simulation just to rank candidates). Default 14: generous enough that it
+     * essentially never bites a normal Battlebox hand (session data has not observed >12 legal
+     * top-level candidates in one decision), but bounds the pathological-board tail this ticket
+     * exists to fix. Only {@code UltronPlayerController} ever calls {@code
+     * SpellAbilityPicker#setMaxTopLevelCandidates} with this value -- every other caller of {@code
+     * SpellAbilityPicker} (Default AI's own {@code USE_SIMULATION} path in {@code AiController},
+     * every existing {@code forge.ai.simulation.*} test) leaves it {@code null}/unset and is
+     * therefore unaffected. Configurable via {@code ULTRON_SIM_MAX_TOP_LEVEL_CANDIDATES}.
+     */
+    public static int maxSimTopLevelCandidates() {
+        return intEnv("ULTRON_SIM_MAX_TOP_LEVEL_CANDIDATES", 14);
+    }
+
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------

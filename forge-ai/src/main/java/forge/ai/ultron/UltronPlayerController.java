@@ -1513,10 +1513,37 @@ public class UltronPlayerController extends PlayerControllerAi {
                     // other two fixes. Scoped to this picker instance only (does not touch the shared
                     // SimulationController default any other AI profile/test relies on).
                     __picker.setMaxRecursionDepth(1);
-                    int candidateCount = __picker.getCandidateSpellsAndAbilities().size();
-                    SpellAbility chosen = __picker.chooseSpellAbilityToPlay(null);
-                    GameStateEvaluator.Score score = __picker.getScoreForChosenAbility();
-                    return new SpellPlanResult(chosen, candidateCount, score == null ? null : score.value);
+                    // TICKET-V4-011 lever 1 (root-cause fix for the abandoned-worker OOM leak --
+                    // FORGE_TRACKER TICKET-V4-011, diagnosed in TICKET-V4-003): give the picker's own
+                    // top-level candidate search a cooperative deadline set to 80% of
+                    // maxSimDecisionTimeoutSeconds(), so the search itself stops and returns
+                    // best-so-far comfortably BEFORE runWithDecisionTimeout's FutureTask would
+                    // otherwise abandon this worker thread mid-allocation -- that abandonment (the
+                    // thread keeps running and keeps allocating GameCopier trees with no way to be
+                    // stopped) is the actual OOM mechanism TICKET-V4-003 identified. The 20% margin
+                    // leaves headroom for this method's own setup/teardown and the final candidate's
+                    // in-flight GameSimulator work outside the picker's own per-candidate checkpoints.
+                    // Only this call site ever calls setDeadlineMillis -- every other caller of
+                    // SpellAbilityPicker (Default AI's own USE_SIMULATION path, every existing test)
+                    // never sets it, so deadlineExceeded() is always false there: unchanged behavior.
+                    long __budgetMillis = (long) (UltronConfig.maxSimDecisionTimeoutSeconds() * 1000L * 0.8);
+                    __picker.setDeadlineMillis(System.currentTimeMillis() + __budgetMillis);
+                    // TICKET-V4-011 lever 2: Ultron-only cap on top-level candidate breadth, so a
+                    // pathological hand size doesn't need the deadline to even fire. Generous default
+                    // (UltronConfig.maxSimTopLevelCandidates()) so it rarely bites in normal play.
+                    __picker.setMaxTopLevelCandidates(UltronConfig.maxSimTopLevelCandidates());
+                    try {
+                        int candidateCount = __picker.getCandidateSpellsAndAbilities().size();
+                        SpellAbility chosen = __picker.chooseSpellAbilityToPlay(null);
+                        GameStateEvaluator.Score score = __picker.getScoreForChosenAbility();
+                        return new SpellPlanResult(chosen, candidateCount, score == null ? null : score.value);
+                    } finally {
+                        // Clear back to the "unset" state: getSimulationPicker() returns a single
+                        // instance reused across every future decision for this player, and a stale
+                        // deadline/cap must not leak into an unrelated later decision.
+                        __picker.setDeadlineMillis(0);
+                        __picker.setMaxTopLevelCandidates(null);
+                    }
                 } finally {
                     SIMULATION_IN_PROGRESS.set(Boolean.FALSE);
                 }

@@ -17,6 +17,7 @@ import forge.game.spellability.SpellAbilityCondition;
 import forge.game.zone.ZoneType;
 import forge.util.MyRandom;
 import forge.util.TextUtil;
+import org.tinylog.Logger;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -48,6 +49,42 @@ public class SpellAbilityPicker {
     // MAX_LOOKAHEAD_CANDIDATES breadth cap alone insufficient -- a real 3-game smoke test at
     // -Xmx3g still OOM'd. See SimulationController's matching constructor javadoc.
     private Integer maxRecursionDepth;
+
+    /**
+     * TICKET-V4-011 (root-cause fix for the abandoned-worker OOM leak, FORGE_TRACKER TICKET-V4-011,
+     * diagnosed in TICKET-V4-003): optional cooperative deadline, in epoch millis, for the top-level
+     * candidate search below. {@code 0} (the default, and the value every non-Ultron caller and
+     * every existing test leaves it at) means "no deadline" -- {@link #deadlineExceeded()} is then
+     * always {@code false} and the search loops run to completion exactly as they always have,
+     * byte-identical control flow to before this field existed. Only {@code
+     * UltronPlayerController#chooseSpellAbilityToPlay()} ever calls {@link #setDeadlineMillis}, to a
+     * safe margin below {@code UltronConfig#maxSimDecisionTimeoutSeconds()} -- see that call site's
+     * comment for why. The point of checking this cooperatively, inside the search, rather than
+     * relying solely on {@code UltronPlayerController}'s outer {@code FutureTask} timeout: a
+     * checkpoint here lets the search finish ON ITS OWN WORKER THREAD within budget, returning a
+     * real best-so-far candidate, instead of being abandoned mid-allocation by the outer timeout --
+     * which is exactly the mechanism TICKET-V4-003 identified as the leak's root cause ("no
+     * cooperative interrupt checkpoint deep inside the search").
+     */
+    private volatile long deadlineMillis;
+
+    /**
+     * TICKET-V4-011: set true whenever a search this instance ran most recently stopped early
+     * because {@link #deadlineExceeded()} fired, reset to false at the start of every top-level
+     * {@link #chooseSpellAbilityToPlay(SimulationController)} call. Package-private -- test/logging
+     * introspection only, mirroring {@link #getEvaluatorForTesting()}'s seam.
+     */
+    private boolean lastSearchHitDeadline;
+
+    /**
+     * TICKET-V4-011 (lever 2, breadth cap for Ultron): optional cap on how many top-level candidates
+     * {@link #chooseSpellAbilityToPlayImpl} will simulate. {@code null} (the default, and the value
+     * every non-Ultron caller and every existing test leaves it at) means "no cap" -- unchanged
+     * behavior. Only {@code UltronPlayerController} sets this, to {@code
+     * UltronConfig#maxSimTopLevelCandidates()}. See {@link #capTopLevelCandidates} for the
+     * pre-ranking used to choose which candidates survive the cap.
+     */
+    private Integer maxTopLevelCandidates;
 
     /**
      * TICKET-V4-010 (Ultron v4 Phase 2, P2.4): the {@link StateEvaluator} this picker's decisions
@@ -109,6 +146,55 @@ public class SpellAbilityPicker {
 
     public void setMaxRecursionDepth(int maxRecursionDepth) {
         this.maxRecursionDepth = maxRecursionDepth;
+    }
+
+    /**
+     * TICKET-V4-011: see {@link #deadlineMillis}'s javadoc. Pass {@code 0} to clear (the default,
+     * "no deadline" state) -- callers that set a deadline for one decision should clear it
+     * afterwards, since the underlying {@code SpellAbilityPicker} instance is reused across
+     * decisions ({@code AiController} constructs exactly one per player).
+     */
+    public void setDeadlineMillis(long deadlineMillis) {
+        this.deadlineMillis = deadlineMillis;
+    }
+
+    private boolean deadlineExceeded() {
+        return deadlineMillis > 0 && System.currentTimeMillis() > deadlineMillis;
+    }
+
+    /** TICKET-V4-011: test/logging introspection only -- see {@link #lastSearchHitDeadline}. */
+    boolean wasDeadlineExceededForTesting() {
+        return lastSearchHitDeadline;
+    }
+
+    /**
+     * TICKET-V4-011 (lever 2): see {@link #maxTopLevelCandidates}'s javadoc. Pass {@code null} to
+     * clear (the default, "no cap" state).
+     */
+    public void setMaxTopLevelCandidates(Integer maxTopLevelCandidates) {
+        this.maxTopLevelCandidates = maxTopLevelCandidates;
+    }
+
+    /**
+     * TICKET-V4-011 (lever 2): cheap pre-ranking used to decide which top-level candidates survive
+     * the breadth cap, when one is set. Reuses {@code ComputerUtilAbility.saEvaluator} -- the exact
+     * comparator {@code AiController} (line ~744) already sorts its own non-simulation candidate
+     * list with ("put best spells first") -- rather than inventing a new heuristic or spending a
+     * real simulation just to rank candidates, which would defeat the point of capping (the cost
+     * this lever exists to avoid is per-candidate {@code GameCopier.makeCopy()}, and a full
+     * simulation pays exactly that cost). Deliberately not {@link #MAX_LOOKAHEAD_CANDIDATES}'s
+     * plain {@code subList} truncation: the top-level candidate list here is NOT pre-sorted by
+     * desirability the way the recursive branch's caller sometimes is, so truncating without ranking
+     * first would drop candidates arbitrarily rather than by any notion of quality.
+     */
+    private List<SpellAbility> capTopLevelCandidates(List<SpellAbility> candidateSAs, int cap) {
+        List<SpellAbility> ranked = new ArrayList<>(candidateSAs);
+        ranked.sort(ComputerUtilAbility.saEvaluator);
+        List<SpellAbility> capped = new ArrayList<>(ranked.subList(0, cap));
+        Logger.warn("[SpellAbilityPicker] TICKET-V4-011: top-level candidate breadth capped "
+                + candidateSAs.size() + " -> " + cap + " via ComputerUtilAbility.saEvaluator "
+                + "pre-ranking (Ultron-only bound on pathological-board decision cost)");
+        return capped;
     }
 
     private void print(String str) {
@@ -187,6 +273,14 @@ public class SpellAbilityPicker {
             return chooseSpellAbilityToPlayImpl(controller, candidateSAs, origGameScore, null);
         }
 
+        // TICKET-V4-011: reset per-decision deadline-hit tracking, and apply lever 2's breadth cap
+        // (a no-op whenever maxTopLevelCandidates is unset, i.e. every non-Ultron caller and every
+        // existing test) before this decision's own top-level search below.
+        lastSearchHitDeadline = false;
+        if (maxTopLevelCandidates != null && candidateSAs.size() > maxTopLevelCandidates) {
+            candidateSAs = capTopLevelCandidates(candidateSAs, maxTopLevelCandidates);
+        }
+
         printPhaseInfo();
         SpellAbility sa = getPlannedSpellAbility(origGameScore, candidateSAs);
         if (sa != null) {
@@ -262,6 +356,19 @@ public class SpellAbilityPicker {
         Score bestSaValue = origGameScore;
         print("Evaluating... (orig score = " + origGameScore +  ")");
         for (int i = 0; i < candidateSAs.size(); i++) {
+            // TICKET-V4-011 (lever 1, root-cause fix): cooperative deadline checkpoint between
+            // top-level candidates. Only ever true when a caller (UltronPlayerController) has set a
+            // deadline for this decision -- see deadlineMillis's javadoc for the full "no deadline
+            // set = unchanged" argument. Returning the best candidate found so far here is what lets
+            // this search finish on its own worker thread within budget instead of being abandoned
+            // mid-allocation by the outer per-decision timeout.
+            if (deadlineExceeded()) {
+                lastSearchHitDeadline = true;
+                Logger.warn("[SpellAbilityPicker] TICKET-V4-011: deadline exceeded after evaluating "
+                        + i + "/" + candidateSAs.size() + " top-level candidates; returning best-so-far "
+                        + "instead of continuing the search");
+                break;
+            }
             Score value = evaluateSa(controller, phase, candidateSAs, i, origGameScore);
             if (value.value > bestSaValue.value) {
                 bestSaValue = value;
@@ -459,6 +566,16 @@ public class SpellAbilityPicker {
         final SpellAbilityChoicesIterator choicesIterator = new SpellAbilityChoicesIterator(controller);
         Score lastScore;
         do {
+            // TICKET-V4-011 (lever 1): also check the deadline right before each GameSimulator
+            // construction -- a single candidate's own multi-choice fan-out (different
+            // targets/modes) can itself construct several GameSimulators, each paying a full
+            // GameCopier.makeCopy(). Breaking here mid-candidate is safe: bestScore already holds
+            // whatever this candidate's best choice scored so far (or MIN_VALUE if none yet), which
+            // the caller's loop treats like any other candidate score.
+            if (deadlineExceeded()) {
+                lastSearchHitDeadline = true;
+                break;
+            }
             // TODO: MyRandom should be an instance on the game object, so that we could do
             // simulations in parallel without messing up global state.
             MyRandom.setRandom(new Random(randomSeedToUse));
