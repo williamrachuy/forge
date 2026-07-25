@@ -645,7 +645,7 @@ public class UltronPlayerController extends PlayerControllerAi {
             // SIMULATION_IN_PROGRESS is set/cleared INSIDE the worker thread's own work, not here on
             // the calling thread, since nested recursion (see javadoc above) happens synchronously
             // on whichever thread actually runs the search. See runWithDecisionTimeout's javadoc.
-            AttackPlan __chosen = runWithDecisionTimeout("declareAttackers", () -> {
+            AttackPlan __chosen = runWithDecisionTimeout("declareAttackers", attacker.getGame(), () -> {
                 SIMULATION_IN_PROGRESS.set(Boolean.TRUE);
                 // TICKET-V4-014 (Version A, change 2): see chooseSpellAbilityToPlay's matching
                 // comment -- activates/clears this decision's hard per-decision copy budget.
@@ -1031,7 +1031,26 @@ public class UltronPlayerController extends PlayerControllerAi {
      * guard at the top of each method to keep working correctly.
      */
     private static <T> T runWithDecisionTimeout(String methodName, Callable<T> work) {
+        return runWithDecisionTimeout(methodName, null, work);
+    }
+
+    /**
+     * TICKET-V4-017: overload that additionally accepts the real (not-yet-copied) {@code Game} the
+     * decision is being made about, so the timeout/abandon WARN below can be enriched with a cheap
+     * board census -- turn number, total permanent count, and per-player battlefield card names/
+     * counts -- to help identify a "monster" board state that makes {@code GameCopier.makeCopy}
+     * allocate pathologically (TICKET-V4-003/016's OOM mechanism). {@code game} may be null (falls
+     * back to the plain message) for call sites that don't have one handy; the census itself is built
+     * from the REAL game object on the calling thread BEFORE the worker/copy even starts, so it costs
+     * a battlefield scan, not a copy -- cheap by construction and only ever run on this already-rare
+     * timeout path.
+     */
+    private static <T> T runWithDecisionTimeout(String methodName, Game game, Callable<T> work) {
         if (!SIM_WORKER_BUSY.compareAndSet(false, true)) {
+            Logger.warn("[Ultron] " + methodName + ": a prior timed-out simulation worker is still "
+                    + "draining in the background; skipping simulation for this decision to avoid a "
+                    + "concurrent-access race on shared simulation state (see FORGE_TRACKER "
+                    + "TICKET-V3-207 session 6). " + describeBoardForTimeoutLog(game));
             throw new UltronDecisionTimeoutException("[Ultron] " + methodName + ": a prior timed-out "
                     + "simulation worker is still draining in the background; skipping simulation for "
                     + "this decision to avoid a concurrent-access race on shared simulation state "
@@ -1055,7 +1074,7 @@ public class UltronPlayerController extends PlayerControllerAi {
                     + "timeout; abandoning this decision and falling back to inherited behavior. The "
                     + "worker thread may keep running in the background until it finishes naturally -- "
                     + "no new Ultron simulation worker will start until then (see FORGE_TRACKER "
-                    + "TICKET-V3-207 session 6).");
+                    + "TICKET-V3-207 session 6). " + describeBoardForTimeoutLog(game));
             future.cancel(true);
             throw new UltronDecisionTimeoutException(methodName + " exceeded " + timeoutSeconds + "s timeout");
         } catch (ExecutionException e) {
@@ -1065,8 +1084,64 @@ public class UltronPlayerController extends PlayerControllerAi {
             }
             throw new RuntimeException(cause);
         } catch (InterruptedException e) {
+            // TICKET-V4-017: observed in practice to be the DOMINANT abandonment path for monster
+            // games, not the TimeoutException branch above -- the whole-game timeoutSeconds watchdog
+            // interrupts this thread while it's blocked in future.get() before this decision's own
+            // maxSimDecisionTimeoutSeconds() elapses (e.g. many moderately-slow decisions compounding
+            // past the game-level budget, or one decision that outlives it). Same cheap board census
+            // as the TimeoutException branch, since this is just as valuable (arguably more so, since
+            // the data shows it fires more often) for identifying the monster board state.
+            Logger.warn("[Ultron] " + methodName + " interrupted while waiting for its simulation "
+                    + "result (likely the whole-game timeout backstop firing, not this decision's own "
+                    + "per-decision timeout -- see FORGE_TRACKER TICKET-V4-017). " + describeBoardForTimeoutLog(game));
             Thread.currentThread().interrupt();
             throw new UltronDecisionTimeoutException(methodName + " interrupted while waiting for simulation result");
+        }
+    }
+
+    /**
+     * TICKET-V4-017: cheap, one-line board census for the per-decision timeout WARN above, so a
+     * "monster" board state (a specific card/token producing a huge or heavy board that makes
+     * {@code GameCopier.makeCopy} allocate pathologically) shows up directly in the timeout log
+     * instead of requiring a separate repro. Reads the REAL (not-yet-copied) game object on the
+     * calling thread -- a battlefield scan, never a copy -- so it is safe to run on every timeout
+     * without adding meaningfully to the cost that already occurred. Returns an empty string if
+     * {@code game} is null (some call sites don't have one handy) so the caller's message still
+     * reads cleanly.
+     */
+    private static String describeBoardForTimeoutLog(Game game) {
+        if (game == null) {
+            return "";
+        }
+        try {
+            int turn = game.getPhaseHandler().getTurn();
+            int totalPerms = 0;
+            StringBuilder sb = new StringBuilder();
+            sb.append("[board census] turn=").append(turn);
+            for (Player p : game.getPlayers()) {
+                CardCollectionView battlefield = p.getCardsIn(ZoneType.Battlefield);
+                totalPerms += battlefield.size();
+                Multiset<String> counts = HashMultiset.create();
+                for (Card c : battlefield) {
+                    counts.add(c.getName());
+                }
+                StringBuilder perms = new StringBuilder();
+                for (Multiset.Entry<String> entry : counts.entrySet()) {
+                    if (perms.length() > 0) {
+                        perms.append(", ");
+                    }
+                    perms.append(entry.getElement());
+                    if (entry.getCount() > 1) {
+                        perms.append(" x").append(entry.getCount());
+                    }
+                }
+                sb.append(" ").append(p.getName()).append("=[").append(perms).append("]");
+            }
+            sb.insert(sb.indexOf("turn=") + ("turn=" + turn).length(), " perms=" + totalPerms);
+            return sb.toString();
+        } catch (RuntimeException ex) {
+            // Never let diagnostics logging itself throw and mask the real timeout.
+            return "[board census unavailable: " + ex + "]";
         }
     }
 
@@ -1186,7 +1261,7 @@ public class UltronPlayerController extends PlayerControllerAi {
             // TICKET-V3-207 (session 6): bounded to UltronConfig.maxSimDecisionTimeoutSeconds() --
             // see runWithDecisionTimeout's javadoc for why SIMULATION_IN_PROGRESS is set/cleared
             // inside the worker's own work rather than here on the calling thread.
-            BlockPlan __chosen = runWithDecisionTimeout("declareBlockers", () -> {
+            BlockPlan __chosen = runWithDecisionTimeout("declareBlockers", defender.getGame(), () -> {
                 SIMULATION_IN_PROGRESS.set(Boolean.TRUE);
                 // TICKET-V4-014 (Version A, change 2): see chooseSpellAbilityToPlay's matching
                 // comment -- activates/clears this decision's hard per-decision copy budget.
@@ -1652,7 +1727,7 @@ public class UltronPlayerController extends PlayerControllerAi {
             // calling thread) since a nested combat-lookahead call reentering declareAttackers/
             // declareBlockers during scoring happens synchronously on whichever thread runs the
             // search. See runWithDecisionTimeout's javadoc for the full thread-safety analysis.
-            SpellPlanResult __planResult = runWithDecisionTimeout("chooseSpellAbilityToPlay", () -> {
+            SpellPlanResult __planResult = runWithDecisionTimeout("chooseSpellAbilityToPlay", getGame(), () -> {
                 SIMULATION_IN_PROGRESS.set(Boolean.TRUE);
                 // TICKET-V4-014 (Version A, change 2): activate this decision's hard per-decision
                 // copy budget (UltronConfig.maxSimCopiesPerDecision()) for the duration of the whole
