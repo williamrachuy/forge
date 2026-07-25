@@ -285,6 +285,63 @@ public class GameCopierBattleboxFidelityTest extends SimulationTest {
         assertSnapshotsMatch(origSnapshot, copySnapshot);
     }
 
+    /**
+     * TICKET-V4-019: exercises the new per-copy {@code pruneHiddenInfo} flag ({@link
+     * GameCopier#GameCopier(Game, boolean)}) directly, independent of the Ultron-NN gating that
+     * decides when production code turns it on. With {@code pruneHiddenInfo=true} and {@code
+     * aiPlayer=p0}: the shared library (hidden to everyone, including its owner, per {@code
+     * CardView.canBeShownTo}'s Library-zone case) must come back as the cheap placeholder for
+     * every card, while p0's OWN hand card -- genuinely visible to p0 -- must stay a real,
+     * unpruned copy. This is the exact correctness boundary the ticket calls out: prune only
+     * cards genuinely hidden to the simulating player, never their own hand/battlefield.
+     *
+     * <p>The placeholder is built via {@code GameCopier}'s bare {@code new Card(id, paperCard,
+     * game)} constructor rather than {@code Card.fromPaperCard}'s normal parse path, so it never
+     * gets a name copied onto it ({@code Card}'s raw constructor doesn't call {@code setName}) --
+     * its {@code getName()} comes back empty, not literally the string {@code "hidden"} (that's
+     * only the backing {@code PaperCard}'s script name). Emptiness (and NOT being one of the 4
+     * real library card names) is exactly the cheap/never-parsed signature this test is checking
+     * for.
+     */
+    @Test
+    public void testPruneHiddenInfoReplacesHiddenLibraryButKeepsOwnHandReal() {
+        initAndCreateGame();
+        Game game = createBattleboxGame();
+        populateMidGameState(game);
+
+        Player p0 = game.getPlayers().get(0);
+        GameCopier copier = new GameCopier(game, true);
+        Game copy = copier.makeCopy(null, p0);
+
+        // Sanity: fixture actually has 4 library cards and p0's hand still has its 1 card.
+        Assert.assertEquals(game.getCardsIn(ZoneType.Library).size(), 4);
+
+        // Every shared-library card in the copy must be the cheap placeholder -- Library-zone
+        // cards are hidden to ALL players (including their own owner) per canBeShownTo, so with
+        // pruning on, none of Forest/Island/Plains/Swamp should survive as themselves (their real
+        // names never get copied onto the placeholder -- see the javadoc above).
+        for (Card c : copy.getCardsIn(ZoneType.Library)) {
+            Assert.assertEquals(c.getName(), "",
+                    "Library card should have been replaced with the (nameless) hidden-info "
+                            + "placeholder, but was '" + c.getName() + "'");
+        }
+
+        // p0's own hand card ("Giant Growth") is genuinely visible to p0 -- must remain real.
+        boolean foundRealGiantGrowth = false;
+        for (Card c : copy.getCardsIn(ZoneType.Hand)) {
+            if (c.getController().getLobbyPlayer().getName().equals("p0")) {
+                Assert.assertEquals(c.getName(), "Giant Growth",
+                        "p0's own hand card must NOT be pruned even with pruneHiddenInfo=true");
+                foundRealGiantGrowth = true;
+            } else {
+                // p1's hand card is hidden to p0 and must be pruned.
+                Assert.assertEquals(c.getName(), "",
+                        "Other player's hand card should have been replaced with the (nameless) hidden-info placeholder");
+            }
+        }
+        Assert.assertTrue(foundRealGiantGrowth, "Expected to find p0's own real hand card in the copy");
+    }
+
     @Test
     public void benchmarkGameCopierThroughputOnBattleboxMidGameState() {
         initAndCreateGame();

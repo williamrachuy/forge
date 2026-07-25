@@ -932,7 +932,10 @@ public class UltronPlayerController extends PlayerControllerAi {
                         + "copy budget (" + UltronConfig.maxSimCopiesPerDecision() + ") exhausted");
                 return Integer.MIN_VALUE;
             }
-            GameCopier copier = new GameCopier(game);
+            // TICKET-V4-019: prune hidden-info cards exactly when this candidate is being scored
+            // with the neural evaluator -- same triple gate resolveCombatEvaluator() already
+            // checked to select NeuralStateEvaluator over the heuristic.
+            GameCopier copier = new GameCopier(game, evaluator instanceof NeuralStateEvaluator);
             Game gameCopy = copier.makeCopy(null, attacker);
             Player attackerCopy = (Player) copier.find(attacker);
             Combat combatCopy = gameCopy.getPhaseHandler().getCombat();
@@ -1546,7 +1549,9 @@ public class UltronPlayerController extends PlayerControllerAi {
                         + "copy budget (" + UltronConfig.maxSimCopiesPerDecision() + ") exhausted");
                 return Integer.MIN_VALUE;
             }
-            GameCopier copier = new GameCopier(game);
+            // TICKET-V4-019: prune hidden-info cards exactly when this candidate is being scored
+            // with the neural evaluator -- see scoreAttackCandidate's matching change.
+            GameCopier copier = new GameCopier(game, evaluator instanceof NeuralStateEvaluator);
             Game gameCopy = copier.makeCopy(null, defender);
             Player defenderCopy = (Player) copier.find(defender);
             Combat combatCopy = gameCopy.getPhaseHandler().getCombat();

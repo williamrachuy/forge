@@ -71,9 +71,28 @@ public class GameCopier {
     private BiMap<Card, Card> cardMap = HashBiMap.create();
     private CopiedGameObjectMap gameObjectMap;
     private GameSnapshot snapshot = null;
+    private final boolean pruneHiddenInfo;
 
     public GameCopier(Game origGame) {
+        this(origGame, PRUNE_HIDDEN_INFO);
+    }
+
+    /**
+     * TICKET-V4-019: as {@link #GameCopier(Game)}, but lets the caller override whether cards
+     * hidden to the copy's {@code aiPlayer} (see {@link #createCardCopy}'s {@code canBeShownTo}
+     * check) are replaced with the cheap {@link #hidden_info_card} placeholder instead of paying a
+     * full {@code Card.fromPaperCard} reparse -- the dominant per-copy cost the V4-017 OOM stack
+     * traced (GameCopier.java:380's TODO). {@code pruneHiddenInfo == PRUNE_HIDDEN_INFO} (today
+     * {@code false}) for the single-arg constructor preserves the exact existing behavior for
+     * every pre-existing call site, so this constructor is the ONLY way to get pruning turned on.
+     * Production callers gate this to the Ultron neural-eval decision path (same triple gate
+     * {@code SpellAbilityPicker.selectEvaluator}/{@code UltronPlayerController.resolveCombatEvaluator}
+     * already resolve for choosing {@code NeuralStateEvaluator}), where it is provably safe: the
+     * neural encoder only ever reads the shared library's COUNT, never its contents.
+     */
+    public GameCopier(Game origGame, boolean pruneHiddenInfo) {
         this.origGame = origGame;
+        this.pruneHiddenInfo = pruneHiddenInfo;
         if (origGame.EXPERIMENTAL_RESTORE_SNAPSHOT) {
             this.snapshot = new GameSnapshot(origGame);
         }
@@ -366,7 +385,7 @@ public class GameCopier {
         }
         if (USE_FROM_PAPER_CARD && !c.isImmutable() && c.getPaperCard() != null) {
             Card newCard;
-            if (PRUNE_HIDDEN_INFO && !c.getView().canBeShownTo(aiPlayer.getView())) {
+            if (pruneHiddenInfo && !c.getView().canBeShownTo(aiPlayer.getView())) {
                 // TODO also check REVEALED_CARDS memory
                 newCard = new Card(newGame.nextCardId(), hidden_info_card, newGame);
                 newCard.setOwner(newOwner);

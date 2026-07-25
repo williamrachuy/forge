@@ -75,8 +75,23 @@ public class GameSimulator {
      * neural model loaded successfully.
      */
     public GameSimulator(SimulationController controller, Game origGame, Player origAiPlayer, PhaseType advanceToPhase, Score precomputedOrigScore, StateEvaluator evaluator) {
+        this(controller, origGame, origAiPlayer, advanceToPhase, precomputedOrigScore, evaluator, false);
+    }
+
+    /**
+     * TICKET-V4-019: as {@link #GameSimulator(SimulationController, Game, Player, PhaseType, Score,
+     * StateEvaluator)}, but lets the caller additionally request that the underlying {@link
+     * GameCopier} prune hidden-info cards (see {@link GameCopier#GameCopier(Game, boolean)}).
+     * {@code pruneHiddenInfo == false} (the 6-arg constructor's fixed value) is byte-identical to
+     * the original behavior, so this constructor is the only way to turn pruning on. The sole
+     * production caller ({@code SpellAbilityPicker.evaluateSa}) passes {@code true} only when
+     * {@code evaluator} is the resolved {@code NeuralStateEvaluator} (i.e. the same triple gate
+     * that chose it in the first place) -- never for the heuristic evaluator, and never for any
+     * non-Ultron profile.
+     */
+    public GameSimulator(SimulationController controller, Game origGame, Player origAiPlayer, PhaseType advanceToPhase, Score precomputedOrigScore, StateEvaluator evaluator, boolean pruneHiddenInfo) {
         this.controller = controller;
-        copier = new GameCopier(origGame);
+        copier = new GameCopier(origGame, pruneHiddenInfo);
         simGame = copier.makeCopy(advanceToPhase, origAiPlayer);
 
         aiPlayer = (Player) copier.find(origAiPlayer);

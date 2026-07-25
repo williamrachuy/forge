@@ -628,7 +628,13 @@ public class SpellAbilityPicker {
             // TODO: MyRandom should be an instance on the game object, so that we could do
             // simulations in parallel without messing up global state.
             MyRandom.setRandom(new Random(randomSeedToUse));
-            GameSimulator simulator = new GameSimulator(controller, game, player, phase, origGameScore, eval());
+            // TICKET-V4-019: prune hidden-info cards (cheap placeholder instead of a full
+            // Card.fromPaperCard reparse) exactly when eval() resolved to the neural evaluator --
+            // that is precisely the same triple gate (nnEvalEnabled() && isUltronPlayer &&
+            // NeuralStateEvaluator.isAvailable()) selectEvaluator() already checked to pick it, so
+            // this can never fire for the heuristic evaluator or a non-Ultron profile.
+            GameSimulator simulator = new GameSimulator(controller, game, player, phase, origGameScore, eval(),
+                    eval() instanceof NeuralStateEvaluator);
             simulator.setInterceptor(choicesIterator);
             // I feel like something here is making a wrong assumption about what the target is
             lastScore = simulator.simulateSpellAbility(sa);
