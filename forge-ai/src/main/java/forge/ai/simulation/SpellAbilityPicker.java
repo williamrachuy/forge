@@ -3,6 +3,8 @@ package forge.ai.simulation;
 import forge.ai.*;
 import forge.ai.ability.ChangeZoneAi;
 import forge.ai.ability.LearnAi;
+import forge.ai.llm.UltronConfig;
+import forge.ai.nn.NeuralStateEvaluator;
 import forge.ai.simulation.GameStateEvaluator.Score;
 import forge.game.Game;
 import forge.game.ability.ApiType;
@@ -47,9 +49,58 @@ public class SpellAbilityPicker {
     // -Xmx3g still OOM'd. See SimulationController's matching constructor javadoc.
     private Integer maxRecursionDepth;
 
+    /**
+     * TICKET-V4-010 (Ultron v4 Phase 2, P2.4): the {@link StateEvaluator} this picker's decisions
+     * are scored with -- {@link GameStateEvaluator} (the heuristic) for every non-Ultron profile
+     * and for Ultron whenever the neural path is disabled or unavailable; {@link
+     * NeuralStateEvaluator} only when {@code ULTRON_NN_EVAL=true} AND {@link #player} is
+     * Ultron-profiled AND a model loaded successfully. This is the injection point plan sect. 4.4
+     * calls for "threading the choice from SpellAbilityPicker (which knows its player) over a bare
+     * global flag" -- a hypothetical Default-profile simulation caller (there is none today, see
+     * FORGE_TRACKER TICKET-V4-010) would resolve {@code isUltronPlayer(player)} false and get the
+     * exact same heuristic evaluator as always.
+     *
+     * <p><b>Resolved lazily, NOT in the constructor.</b> {@code AiController}'s constructor
+     * unconditionally builds a {@code SpellAbilityPicker} (its {@code simPicker} field) for every
+     * AI-controlled player, and that construction happens from inside {@code
+     * LobbyPlayerAi.createControllerFor} -- BEFORE {@code Player.setFirstController(...)} runs.
+     * {@code UltronConfig.isUltronPlayer} calls {@code Player.getLobbyPlayer()}, which itself
+     * delegates to {@code getController().getLobbyPlayer()}: calling it eagerly in this
+     * constructor NPEs on {@code getController() == null} for every single AI player, every
+     * profile, unconditionally -- this was caught by TICKET-V4-010's own smoke run (a real
+     * {@code SimulateStats} game construction), not by any unit test, because every unit test in
+     * this suite happens to construct its {@code SpellAbilityPicker} fixtures directly against an
+     * already-fully-wired {@code Player}, well after {@code Game} construction completes -- the
+     * exact ordering that does NOT reproduce the bug. Resolving lazily on first actual use (i.e.
+     * once a real decision is being made, long after controller wiring is done) sidesteps this
+     * bootstrapping hazard entirely and is also strictly cheaper for the common (never-simulates)
+     * case, since {@link #chooseSpellAbilityToPlay} is not guaranteed to be called for every
+     * picker that gets constructed.
+     */
+    private StateEvaluator eval;
+
     public SpellAbilityPicker(Game game, Player player) {
         this.game = game;
         this.player = player;
+    }
+
+    private StateEvaluator eval() {
+        if (eval == null) {
+            eval = selectEvaluator(player);
+        }
+        return eval;
+    }
+
+    private static StateEvaluator selectEvaluator(Player player) {
+        if (UltronConfig.nnEvalEnabled() && UltronConfig.isUltronPlayer(player) && NeuralStateEvaluator.isAvailable()) {
+            return new NeuralStateEvaluator();
+        }
+        return new GameStateEvaluator();
+    }
+
+    /** Test-only introspection of which {@link StateEvaluator} this picker resolves to. */
+    StateEvaluator getEvaluatorForTesting() {
+        return eval();
     }
 
     public void setInterceptor(SpellAbilityChoicesIterator in) {
@@ -108,7 +159,7 @@ public class SpellAbilityPicker {
             return null;
         }
 
-        Score origGameScore = new GameStateEvaluator().getScoreForGameState(game, player);
+        Score origGameScore = eval().getScoreForGameState(game, player);
         List<SpellAbility> candidateSAs = getCandidateSpellsAndAbilities();
         if (controller != null) {
             // This is a recursion during a higher-level simulation. Just return the head of the best
@@ -411,7 +462,7 @@ public class SpellAbilityPicker {
             // TODO: MyRandom should be an instance on the game object, so that we could do
             // simulations in parallel without messing up global state.
             MyRandom.setRandom(new Random(randomSeedToUse));
-            GameSimulator simulator = new GameSimulator(controller, game, player, phase, origGameScore);
+            GameSimulator simulator = new GameSimulator(controller, game, player, phase, origGameScore, eval());
             simulator.setInterceptor(choicesIterator);
             // I feel like something here is making a wrong assumption about what the target is
             lastScore = simulator.simulateSpellAbility(sa);

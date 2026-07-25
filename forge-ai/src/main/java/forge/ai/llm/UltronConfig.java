@@ -75,6 +75,31 @@ public final class UltronConfig {
         return boolEnv("ULTRON_USE_SIMULATION_EVAL", false);
     }
 
+    /**
+     * TICKET-V4-010 (Ultron v4 Phase 2, P2.4): use the learned {@code NeuralStateEvaluator} inside
+     * simulation search instead of the hand-tuned {@code GameStateEvaluator} heuristic. Disabled by
+     * default -- this is the single flag that keeps the Default AI (and Ultron itself, until
+     * explicitly opted in) byte-identical to pre-neural behavior. Even when true, the neural
+     * evaluator is only actually used for a given decision if (a) the simulating player is
+     * Ultron-profiled and (b) a model loaded successfully at {@link #nnModelPath()}; otherwise the
+     * simulation falls back to the heuristic evaluator exactly as before. Enable with
+     * {@code ULTRON_NN_EVAL=true}.
+     */
+    public static boolean nnEvalEnabled() {
+        return boolEnv("ULTRON_NN_EVAL", false);
+    }
+
+    /**
+     * TICKET-V4-010: filesystem path to the trained {@code UltronValueNet} model artifact (see
+     * {@code forge.ai.nn.UltronValueNet}'s binary format javadoc). {@code null} if unset -- callers
+     * must treat a null/blank path as "no model configured" and fall back cleanly, never crash.
+     * Set with {@code ULTRON_NN_MODEL_PATH=/path/to/model.bin}.
+     */
+    public static String nnModelPath() {
+        String value = System.getenv("ULTRON_NN_MODEL_PATH");
+        return (value == null || value.isBlank()) ? null : value.trim();
+    }
+
     // -----------------------------------------------------------------------
     // Timing budgets
     // -----------------------------------------------------------------------

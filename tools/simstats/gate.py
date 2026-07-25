@@ -191,7 +191,12 @@ def main():
                         help="fallback seat index when run.aiProfiles is absent/doesn't contain --profile")
     parser.add_argument("--min-games", type=int, default=150,
                         help="below this many counted games, warn SAMPLE TOO SMALL (default 150)")
+    parser.add_argument("--null", type=float, default=NULL_WIN_RATE,
+                        help="null-hypothesis win rate to test against (default 0.25 for 4-player "
+                             "FFA). MUST be 0.5 for 1v1 gates — the 4-player 0.25 null would falsely "
+                             "pass a 1v1 loss. See FORGE_TRACKER TICKET-V4-003.")
     args = parser.parse_args()
+    null_win_rate = args.null
 
     games = load_games(args.candidate)
     if not games:
@@ -218,10 +223,10 @@ def main():
 
     win_rate = wins / counted
     lo, hi = wilson_ci(wins, counted)
-    p_value_null = exact_binomial_sf(wins, counted, NULL_WIN_RATE)
+    p_value_null = exact_binomial_sf(wins, counted, null_win_rate)
 
     print(f"\nWin rate: {fmt_pct(win_rate)}  (Wilson 95% CI: [{fmt_pct(lo)}, {fmt_pct(hi)}])")
-    print(f"Exact one-sided binomial p-value vs {fmt_pct(NULL_WIN_RATE)} null: {p_value_null:.4f}")
+    print(f"Exact one-sided binomial p-value vs {fmt_pct(null_win_rate)} null: {p_value_null:.4f}")
 
     if counted < args.min_games:
         print(f"\n*** SAMPLE TOO SMALL — NOISE *** (counted={counted} < --min-games={args.min_games})")
@@ -271,12 +276,12 @@ def main():
     else:
         if counted < args.min_games:
             print("PASS/FAIL: withheld — sample too small (see warning above).")
-        elif p_value_null < 0.05 and win_rate > NULL_WIN_RATE:
+        elif p_value_null < 0.05 and win_rate > null_win_rate:
             print(f"PASS — {args.profile} win rate ({fmt_pct(win_rate)}) beats the {fmt_pct(NULL_WIN_RATE)} "
                   f"null baseline at p<0.05 (no control file given).")
         else:
             print(f"FAIL — {args.profile} win rate ({fmt_pct(win_rate)}) does not beat the "
-                  f"{fmt_pct(NULL_WIN_RATE)} null baseline at p<0.05 (no control file given).")
+                  f"{fmt_pct(null_win_rate)} null baseline at p<0.05 (no control file given).")
 
     return 0
 

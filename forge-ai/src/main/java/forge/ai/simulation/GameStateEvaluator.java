@@ -25,7 +25,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
 
-public class GameStateEvaluator {
+public class GameStateEvaluator implements StateEvaluator {
     // TICKET-V3-207 (session 4): call-count instrumentation, same rationale/thread-safety as
     // GameCopier.makeCopyCallCount -- counts every top-level entry into getScoreForGameState(),
     // which is the entrypoint that (via simulateUpcomingCombatThisTurn) can itself trigger a

@@ -190,6 +190,26 @@ public final class UltronStateEncoder {
 
     /** Encodes {@code game} from {@code self}'s perspective into a fresh fixed-length {@code float[]}. */
     public static float[] encode(Game game, Player self) {
+        return encode(game, self, false);
+    }
+
+    /**
+     * As {@link #encode(Game, Player)}, but when {@code maskOwnSummonSick} is true, {@code self}'s
+     * own summon-sick creatures are excluded entirely from the self battlefield-creature pooling
+     * (TICKET-V4-010, plan sect. 4.4). This is the encoder-side half of {@code
+     * NeuralStateEvaluator}'s second forward pass, which populates {@code Score.summonSickValue}
+     * the same way {@code GameStateEvaluator} does for the heuristic path -- without this, a
+     * neural-evaluated Ultron would happily main-phase-cast summon-sick creatures for no board
+     * benefit instead of holding them for a post-combat decision.
+     *
+     * <p>Same feature layout as {@link #encode(Game, Player)} -- this is a caller choice about
+     * which board state to encode (a subset of the same battlefield, same slots, same semantics),
+     * not a change to what a feature slot means, so it does not bump {@link
+     * #ENCODER_SEMANTIC_VERSION} or change {@link #SCHEMA_HASH}. Opponent blocks and every other
+     * self-block field (hand, graveyard, exile, mana base, scalars) are unaffected; only self's
+     * battlefield-creature pooling changes.
+     */
+    public static float[] encode(Game game, Player self, boolean maskOwnSummonSick) {
         float[] out = new float[VECTOR_LENGTH];
         if (game == null || self == null) {
             return out;
@@ -197,7 +217,7 @@ public final class UltronStateEncoder {
 
         List<Player> seats = orderedRealOpponents(game, self);
 
-        writeSelfBlock(out, SELF_OFFSET, self);
+        writeSelfBlock(out, SELF_OFFSET, self, maskOwnSummonSick);
 
         for (int i = 0; i < NUM_OPPONENTS; i++) {
             int offset = OPP_BASE_OFFSET + i * OPP_BLOCK_SIZE;
@@ -216,8 +236,16 @@ public final class UltronStateEncoder {
         return out;
     }
 
-    /** Real (non-self) players in turn order starting right after self, NOT padded to length 3. */
-    private static List<Player> orderedRealOpponents(Game game, Player self) {
+    /**
+     * Real (non-self) players in turn order starting right after self, NOT padded to length 3.
+     * Package-visibility-plus (public): this is the canonical seat-order definition used to
+     * assign opponent slots 1..{@link #NUM_OPPONENTS} in the encoded vector, and {@code
+     * NeuralStateEvaluator} (TICKET-V4-010) needs the exact same ordering to know which value-head
+     * softmax slot corresponds to which live/eliminated seat when masking win probability to
+     * living seats -- reimplementing this logic separately would risk it silently drifting out of
+     * sync with the encoder.
+     */
+    public static List<Player> orderedRealOpponents(Game game, Player self) {
         List<Player> all = game.getPlayers();
         List<Player> ordered = new ArrayList<>();
         int selfIdx = all.indexOf(self);
@@ -235,12 +263,15 @@ public final class UltronStateEncoder {
     // Self block
     // -----------------------------------------------------------------------
 
-    private static void writeSelfBlock(float[] out, int base, Player self) {
+    private static void writeSelfBlock(float[] out, int base, Player self, boolean maskOwnSummonSick) {
         CardCollectionView battlefield = self.getCardsIn(ZoneType.Battlefield);
         List<Card> creatures = new ArrayList<>();
         List<Card> noncreatures = new ArrayList<>();
         for (Card c : battlefield) {
             if (c.isCreature()) {
+                if (maskOwnSummonSick && c.isSick()) {
+                    continue; // TICKET-V4-010: excluded from self battlefield-creature pooling
+                }
                 creatures.add(c);
             } else {
                 noncreatures.add(c);

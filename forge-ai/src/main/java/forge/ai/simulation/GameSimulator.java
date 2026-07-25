@@ -50,13 +50,66 @@ public class GameSimulator {
     private GameCopier copier;
     private Game simGame;
     private Player aiPlayer;
-    private GameStateEvaluator eval;
+    private StateEvaluator eval;
     private List<String> origLines;
     private Score origScore;
     private SpellAbilityChoicesIterator interceptor;
 
     public GameSimulator(SimulationController controller, Game origGame, Player origAiPlayer, PhaseType advanceToPhase) {
         this(controller, origGame, origAiPlayer, advanceToPhase, null);
+    }
+
+    /**
+     * TICKET-V4-010 (Ultron v4 Phase 2, P2.4): as {@link #GameSimulator(SimulationController, Game,
+     * Player, PhaseType, Score)}, but lets the caller (currently only {@link SpellAbilityPicker},
+     * the sole production construction site -- see its {@code evaluateSa}) supply the {@link
+     * StateEvaluator} to use for every {@code getScoreForGameState} call this simulator makes,
+     * instead of unconditionally constructing a fresh {@link GameStateEvaluator}.
+     *
+     * <p>{@code evaluator == null} preserves the exact original behavior (new heuristic evaluator),
+     * so every existing caller (the 4-arg and 5-arg constructors, both of which delegate here with
+     * {@code null}) is completely unaffected. This is what keeps the Default AI byte-identical: the
+     * only way to get a non-heuristic evaluator into a {@code GameSimulator} is to explicitly pass
+     * one, and the only caller that ever does is {@code SpellAbilityPicker}, and only when {@code
+     * UltronConfig.nnEvalEnabled()} is true AND the simulating player is Ultron-profiled AND a
+     * neural model loaded successfully.
+     */
+    public GameSimulator(SimulationController controller, Game origGame, Player origAiPlayer, PhaseType advanceToPhase, Score precomputedOrigScore, StateEvaluator evaluator) {
+        this.controller = controller;
+        copier = new GameCopier(origGame);
+        simGame = copier.makeCopy(advanceToPhase, origAiPlayer);
+
+        aiPlayer = (Player) copier.find(origAiPlayer);
+        eval = evaluator != null ? evaluator : new GameStateEvaluator();
+
+        origLines = new ArrayList<>();
+        debugLines = origLines;
+
+        debugPrint = false;
+        origScore = precomputedOrigScore != null ? precomputedOrigScore : eval.getScoreForGameState(origGame, origAiPlayer);
+
+        if (advanceToPhase == null && VERIFY_GAME_COPY && eval instanceof GameStateEvaluator) {
+            // The consistency check recomputes GameStateEvaluator-specific debug state
+            // (setDebugging) and is only a meaningful invariant for the heuristic evaluator's
+            // copy-then-recompute contract; it does not apply to a learned evaluator and is
+            // skipped for one (opt-in dev-only check either way, off by default).
+            ensureGameCopyScoreMatches(origGame, origAiPlayer);
+        }
+
+        // If the stack on the original game is not empty, resolve it
+        // first and get the updated eval score, since this is what we'll
+        // want to compare to the eval score after simulating.
+        if (COPY_STACK && !origGame.getStackZone().isEmpty()) {
+            origLines = new ArrayList<>();
+            debugLines = origLines;
+            Game copyOrigGame = copier.makeCopy();
+            Player copyOrigAiPlayer = copyOrigGame.getPlayers().get(1);
+            resolveStack(copyOrigGame, copyOrigGame.getPlayers().get(0));
+            origScore = eval.getScoreForGameState(copyOrigGame, copyOrigAiPlayer);
+        }
+
+        debugPrint = false;
+        debugLines = null;
     }
 
     /**
@@ -121,7 +174,9 @@ public class GameSimulator {
     }
 
     private void ensureGameCopyScoreMatches(Game origGame, Player origAiPlayer) {
-        eval.setDebugging(true);
+        // Only called when eval instanceof GameStateEvaluator -- see the constructors' call sites.
+        GameStateEvaluator heuristicEval = (GameStateEvaluator) eval;
+        heuristicEval.setDebugging(true);
         List<String> simLines = new ArrayList<>();
         debugLines = simLines;
         Score simScore = eval.getScoreForGameState(simGame, aiPlayer);
@@ -136,7 +191,7 @@ public class GameSimulator {
             System.out.flush();
             throw new RuntimeException("Game copy error. See diff output above for details.");
         }
-        eval.setDebugging(false);
+        heuristicEval.setDebugging(false);
     }
 
     public void setInterceptor(SpellAbilityChoicesIterator interceptor) {
@@ -225,7 +280,7 @@ public class GameSimulator {
     public Score simulateSpellAbility(SpellAbility origSa, boolean resolve) {
         return simulateSpellAbility(origSa, this.eval, resolve);
     }
-    public Score simulateSpellAbility(SpellAbility origSa, GameStateEvaluator eval, boolean resolve) {
+    public Score simulateSpellAbility(SpellAbility origSa, StateEvaluator eval, boolean resolve) {
         SpellAbility sa;
         if (origSa.isLandAbility()) {
             Card hostCard = (Card) copier.find(origSa.getHostCard());
