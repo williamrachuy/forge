@@ -3466,6 +3466,32 @@ ever gets to comparing outputs — not a parity bug, a path bug. 3/3 tests passe
 
 ---
 
+### TICKET-V4-010: Wire NeuralStateEvaluator into the simulation search [IN_PROGRESS 2026-07-24]
+
+Dispatched. Plan §4.4. **Highest clobber-risk ticket so far** — the evaluator lives inside
+`GameSimulator` (`GameSimulator.java:95: eval = new GameStateEvaluator()`), which is shared by
+every AI profile, so the wiring must leave the Default AI byte-identical. Integration surface
+verified before dispatch:
+- `GameStateEvaluator.getScoreForGameState(Game, Player)` is called at `GameSimulator.java:101,116,
+  127,132,302`. That is the single method the interface abstracts.
+- `SpellAbilityPicker.java:414` constructs `new GameSimulator(controller, game, player, phase,
+  origGameScore)` — the only external construction site; the picker knows its `player`.
+- **Default AI safety:** Default runs `useSimulation=false` (`AiController.java`), so it uses the
+  fast heuristic path, never `SpellAbilityPicker`/`GameSimulator`, in these sim runs. Only Ultron
+  drives `getSimulationPicker()`. So gating the neural evaluator behind Ultron-intent + a config
+  flag cannot alter Default behavior — but this assumption must be preserved and stated, not
+  silently relied on.
+- `Score` carries `value` AND `summonSickValue`; `SpellAbilityPicker.java:226` compares the latter
+  to implement "hold creatures in MAIN1." The neural evaluator must populate both (§4.4's second
+  masked forward pass), which needs an encoder variant that zeroes summon-sick own creatures
+  before battlefield pooling.
+- Model artifact from TICKET-V4-009: `tools/nn/runs/20260724-195756/model.bin`
+  (256->128, schema `330703df11234a17`, semver 2), parity-verified at 3.58e-7.
+
+**Explicitly deferred to the orchestrator (NOT the implementing session): launching the win-rate
+gate.** The implementing session wires + proves-in-a-smoke only. The gate is a multi-hour compute
+commitment and is run only after the wiring's integrity is confirmed.
+
 # BUILD TRAP: `mvn test` does NOT rebuild the jar the simulator runs
 
 **Recorded 2026-07-24 after it silently invalidated a verification run — read this before running
