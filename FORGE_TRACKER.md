@@ -3515,6 +3515,37 @@ Default-safe:
 complete all games with `ULTRON_NN_EVAL=true`, 0 OOM. Flag-OFF and non-Ultron paths byte-identical
 (278/278 stays green). Do NOT run the full gate — orchestrator runs it after confirming no OOM.
 
+### TICKET-V4-013: Shallow+cheap — route combat scoring through the neural eval, cap breadth [IN_PROGRESS 2026-07-24]
+
+**User decision (2026-07-24): after V4-011's deadline fix reduced but did not eliminate the OOM,
+go "shallow + cheap" rather than keep patching deadlines onto an expensive search.** Make every
+decision cheap enough that it never approaches the 40s budget → no abandonment → no leak. This is
+the TD-Gammon design the plan is built on anyway (good value function + shallow search; deep search
+was never the point).
+
+**Root cost sink, confirmed by code read:** V4-010 wired the neural evaluator ONLY into
+`SpellAbilityPicker` (main phase). Combat scoring — `UltronPlayerController.scoreAttackCandidate`
+(line ~839) and `scoreBlockCandidate` (line ~1350) — still calls `new GameStateEvaluator().
+getScoreForGameState(...)`, the HEURISTIC, which internally runs `simulateUpcomingCombatThisTurn`
+(a SECOND GameCopier + combat advance). So each combat candidate pays a double game-copy of the
+expensive heuristic. On a large late-game board that is what blew the 40s budget and OOM'd
+V4-011's smoke (the crash was in `declareAttackers`).
+
+**Fix (shallow + cheap):**
+1. Route `scoreAttackCandidate`/`scoreBlockCandidate` through the resolved `StateEvaluator` (neural
+   when Ultron+`ULTRON_NN_EVAL`+model, else heuristic), same selection as main phase. To keep
+   correct post-combat semantics, advance the candidate's OWN copy through combat damage, then
+   neural-eval that state (a cheap forward pass, NO extra copy) — eliminating the heuristic's
+   internal second copy. Combat candidate counts are already small (2-4, per V3-204/205), so this
+   makes combat decisions cheap.
+2. Hard-cap main-phase top-level candidates small (`ULTRON_SIM_MAX_TOP_LEVEL_CANDIDATES`, set ~4
+   for the gate) so no main-phase decision is expensive either.
+3. Cheap insurance: extend the V4-011 deadline/best-so-far safety to the combat search too, so a
+   pathological huge-board copy still can't blow 40s and leak.
+Default-safe as always (neural path gated to Ultron+flag; flag-off byte-identical, 300/300 stays
+green). Verify with the SAME 3-game smoke that OOM'd: all 3 complete, 0 OOM, and record per-game
+time (must be sane for a 300-game gate). Only after that does the orchestrator run the gate.
+
 # BUILD TRAP: `mvn test` does NOT rebuild the jar the simulator runs
 
 **Recorded 2026-07-24 after it silently invalidated a verification run — read this before running
