@@ -3335,6 +3335,137 @@ is unchanged.
 
 ---
 
+### TICKET-V4-009: Train V0 on the real bootstrap corpus, verify, stop (P2.2 continued) [2026-07-24]
+
+**Scope discipline:** trained and verified V0 only. Nothing wired into any AI decision path —
+no `StateEvaluator`/`NeuralStateEvaluator`, no `UltronPlayerController` change. `master`-bound
+and non-`ULTRON_NN_EVAL` behavior is unchanged. Per the honesty rule this section enforces on
+itself: **a trained model with a decent validation number is not a working AI.** Whether the net
+helps is unknown until the Phase-2 gate (`gate.py`, N=600 vs Default, plan §5.4) runs, which is a
+later ticket.
+
+**Step 1 — feature occupancy, re-measured on the real corpus** (all 8,000 games,
+`simstats/out/v4_007_bootstrap_corpus/shard_{0,1}/nn_states.bin.gz`, 142,229 records /
+284,458 seat-block vectors / 7,996 games — the 4 timeout games are never written to disk at all,
+per `UltronStateLogger.GameCollector#finish()`, so no explicit filtering was needed):
+**673 of 1,908 features (35.3%) are ever nonzero; 1,235 (64.7%) are always zero.** Close to
+TICKET-V4-008's smoke-set figure of 605/1,908 (31.7%), and for the reason that number predicted:
+this is a real-data confirmation, not a smoke-set artifact fix. Checked both hypothesized causes
+directly against the real corpus:
+- **1v1 padding**: `phase_ordinal` distribution across all 142,229 records is `{3: 142229}` —
+  every single record is 1v1 (`num_players` distribution `{2: 142229}`), exactly like the smoke
+  set. The two structurally-padded opponent blocks (846 of 1,908 floats, `OPP_BLOCK_SIZE=423`
+  each) are almost entirely dead: opp2 block has exactly 1 ever-nonzero float, opp3 has exactly 1
+  (both are the `OPP_ELIMINATED` flag, which is always 1 for a padded seat — everything else in
+  those two blocks is permanently zero by construction).
+- **Single-phase sampling**: still true on the real corpus too — `GLOBAL_PHASE` is a 13-wide
+  one-hot and only 1 of the 13 slots is ever set across all 284,458 seat-blocks. `UltronStateLogger`
+  samples only at `MAIN1` entry; the real 8,000-game corpus does not change that, because it's the
+  same 1v1-Default-vs-Default bootstrap logging config as the smoke run, just more games of it.
+- Restricting to the "live" 1,062 floats (self block + the one real opponent block + global block,
+  excluding the two structurally-dead padding blocks): **671/1,062 (63.2%) ever-nonzero** — up
+  from the smoke set's 57% (603/1,062), consistent with more games surfacing more of the live
+  card-feature/keyword slots, but the same shape.
+- **Conclusion — this is not a smoke-set artifact, it is a property of the bootstrap corpus
+  itself** (1v1-only, MAIN1-only sampling). Re-measuring on "more of the same corpus" does not
+  fix it; only a corpus with 4p games (opponent-block occupancy) and/or wider phase sampling would.
+  **Did not trim the input vector** — with ~65% of the vector permanently dead for structural
+  reasons that are about to change (a future 4p/wider-sampling corpus will exercise those exact
+  dead blocks), trimming now would just have to be undone. Recommendation for whoever generates
+  the next corpus: widen `UltronStateLogger` sampling beyond MAIN1-only if there's any interest in
+  the network ever conditioning on phase, and get 4p games into the mix before the padding-block
+  deadness is treated as permanent.
+
+**Step 2 — trained V0.** `tools/nn/train.py --data shard_0/nn_states.bin.gz shard_1/nn_states.bin.gz
+--epochs 30 --hidden1 256 --hidden2 128 --alpha 0.5 --val-frac 0.15 --seed 1234` (all other flags
+left at plan-recommended defaults). Ran `--self-test` first (split-by-game-id regression test):
+**PASS**.
+- **Architecture: 256→128, 524,432 params (matches TICKET-V4-008's export-param count of
+  522,884 plus the small delta from PyTorch's exact `nn.LayerNorm`/`nn.Linear` param accounting —
+  524,432 is the trainer's own live count, export-time strips the aux heads down to the same
+  layout TICKET-V4-008 sized).** Kept the TICKET-V4-008 recommendation as-is rather than narrowing
+  the first layer: the occupancy re-measurement in Step 1 says the dead 65% is a real-corpus-shape
+  fact this specific corpus will outgrow (4p, wider sampling), not a permanent property of the
+  encoder — narrowing now would bake in a limitation the next corpus is expected to remove, and
+  256→128 (1.74 effective-params/sample against the ~284K real sample count) was already the
+  conservative end of TICKET-V4-008's params-vs-corpus-size argument.
+- **α = 0.5** (plan §5.1 default, as instructed — no annealing, single fixed value, no prior
+  Ultron-in-the-loop games exist yet to anneal toward).
+- **Split by game ID**, enforced by the trainer's own assertion path: 241,680 train samples
+  (6,797 games) / 42,778 val samples (1,199 games). No game straddles the split (self-test
+  above + this is the only split path in the trainer — there is no state-level split code left
+  to accidentally hit).
+- **Training**: early-stopped at epoch 12 (patience 5), best checkpoint at epoch 7 (lowest
+  `val_value_logloss`). Held-out `val_value_logloss` (composite-target cross-entropy, the
+  quantity early-stopping actually watches): **0.5094**.
+- **Winner-prediction accuracy — reported both ways, deliberately, because they disagree and the
+  gap is itself the finding:**
+  - The trainer's own `val_winner_accuracy` (argmax of model output vs. argmax of the
+    α-blended composite *target*, i.e. how well the net reproduces `0.5·placement + 0.5·U(s)`,
+    not how well it predicts who actually won): **91.7%**. This number is what `metrics.json`
+    reports and is easy to over-read — it is partly an easier target than raw outcome because
+    `U(s)` (the heuristic board-share anchor) is itself a same-turn function of a state that
+    correlates strongly with the state the net is looking at.
+  - **The metric the ticket actually asked for — argmax(model) vs. the REAL eventual game winner
+    (placement rank 1), computed separately by reloading the exported `model.bin` and checking
+    against raw placement, independent of the α-blend**: **69.5%** overall on the 42,778 held-out
+    (by-game) samples. Against the correct 1v1 null hypothesis of **50%** (not 25% — this is 1v1
+    bootstrap data), that is real signal, clearly above chance, but well short of "solved."
+- **Calibration by game stage** (turn / game_length; both the trainer's composite-target loss AND
+  the true-winner accuracy, since they tell different parts of the story):
+  | stage | n (val samples) | composite val_value_logloss | true-winner accuracy | mean P(actual winner) |
+  |---|---|---|---|---|
+  | early (<33% through game) | 12,688 | 0.596 | **53.6%** | 0.525 |
+  | mid (33–66%) | 14,310 | 0.523 | 67.5% | 0.622 |
+  | late (>66%) | 15,780 | 0.428 | 84.0% | 0.759 |
+  **Early-game accuracy (53.6%) is barely above the 50% null hypothesis — say so plainly, per the
+  honesty rule.** The net is doing most of its "winning" by reading late-game board states that
+  are close to self-evidently decided, not by extracting early-game signal a heuristic couldn't
+  already see. That's a real and useful finding: V0 has *not* demonstrated it can predict outcomes
+  from early/ambiguous states, which is exactly the regime an eval function needs to be good in to
+  help search. Whether it's still useful *relative to the hand-tuned heuristic* specifically
+  (rather than in absolute terms) is unknown and is not something these offline numbers can answer
+  — only the gate can.
+- Deterministic seed (1234) throughout (`torch.manual_seed` + `random.seed`).
+- Model path: **`tools/nn/runs/20260724-195756/`** (`config.json`, `metrics.json`, `model.bin`,
+  `parity_vectors.bin`, `parity_python_probs.bin`). Gitignored, left in the working tree, nothing
+  committed.
+
+**Step 3 — parity test, re-run against THIS model.**
+```
+mvn test -pl forge-gui-desktop -am -Dcheckstyle.skip=true -Dsurefire.failIfNoSpecifiedTests=false \
+  -Dtest=forge.ai.nn.UltronValueNetParityTest -Dultron.parity.dir=/home/william/github/forge/tools/nn/runs/20260724-195756
+```
+**PASS — max absolute deviation 3.576e-7 at record 90, slot 0 (tolerance 1e-5).** One trap hit and
+recorded for the next session: `-Dultron.parity.dir` must be an **absolute path**. Surefire forks
+the test JVM with its working directory at the `forge-gui-desktop` module dir, not the repo root,
+so a relative `tools/nn/runs/<ts>` (as the ticket's own example command shows it) resolves to
+`forge-gui-desktop/tools/nn/runs/<ts>` and the test fails on a missing-file assertion before it
+ever gets to comparing outputs — not a parity bug, a path bug. 3/3 tests passed once corrected.
+
+**What the next session needs:**
+1. Wire `StateEvaluator`/`NeuralStateEvaluator` per plan §4.4, off by default, gated behind
+   `ULTRON_NN_EVAL` through `UltronPlayerController`'s three guarded entry points (unchanged from
+   how TICKET-V4-008 left the plan). Remember the **`summonSickValue` second masked forward
+   pass** — `SpellAbilityPicker.java:226` compares `summonSickValue`, not `value`; the neural
+   evaluator needs to run the forward pass twice, second time with the acting player's summon-sick
+   creatures masked out of the battlefield pooling, exactly as §4.4 specifies. Map
+   `p_win[self] ∈ [0,1]` to the integer `Score` scale via `round(p * 100_000)`; keep the existing
+   terminal-state `MAX_VALUE`/`MIN_VALUE` short-circuit untouched.
+2. **Then** gate per plan §5.4: N≥300 minimum, headline Phase-2 gate at N=600, ≥30% win rate vs.
+   all-Default, one-sided p<0.05, seat-rotated same-seed paired run via `run_parallel.sh` +
+   `gate.py`. **The null hypothesis is 50% for 1v1, not 25%** — this ticket's data is 1v1, but
+   check what game mode the gate itself runs before reusing that number verbatim.
+2b. Before trusting any gate result: re-read this ticket's early-game accuracy finding (53.6%,
+   barely above chance) as a live risk — if the net is only reliably better than noise once a
+   game is already mostly decided, it may not help search-time decisions made early in a game,
+   even if it clears the gate on aggregate win rate.
+3. If a future session widens `UltronStateLogger` sampling (more phases) or gets 4p games into
+   the corpus, **re-run Step 1's occupancy measurement** — this ticket's 35.3%/64.7% split is
+   expected to change substantially and should not be assumed stable across corpus generations.
+
+---
+
 # BUILD TRAP: `mvn test` does NOT rebuild the jar the simulator runs
 
 **Recorded 2026-07-24 after it silently invalidated a verification run — read this before running
