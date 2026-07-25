@@ -3581,6 +3581,42 @@ Candidate directions (for the human to weigh; not yet chosen):
 3. **Accept it and stop:** the value network is a real, verified artifact; declare Phase 2 partially
    done and revisit search later.
 
+**Independent corroboration (2026-07-25, second session, same HEAD, uncommitted per the same
+"leave in working tree" instruction):** implemented the identical fix from scratch before
+discovering this section already existed at HEAD — `resolveCombatEvaluator`/
+`advanceCopyThroughCombatDamage` in `UltronPlayerController.java`, wired into both
+`scoreAttackCandidate`/`scoreBlockCandidate`, plus the same Part 3 combat-search deadline
+insurance. Confirmed correct in isolation: full regression **271/271** (18 explicit classes,
+`forge.ai.simulation.*`+`forge.ai.ultron.*`+`forge.ai.nn.*` — the "300/300" figure in this
+ticket's own opening stub does not match any run found this session; 271 is what the current test
+tree actually contains) and `forge.ai.llm.runtime.Ultron*` **34/42** (same 8 pre-existing
+"Ahead-state" failures), both green. Re-ran the same `v4_010_smoke_nn_1v1_monarch.ini` smoke
+independently (same seed 910123) and got the **same qualitative failure**, with two new pieces of
+evidence worth recording:
+- **Combat itself is confirmed fixed:** zero `declareAttackers candidate search hit its deadline`/
+  `declareBlockers candidate search hit its deadline` log lines the whole run (Part 3's insurance
+  never even needed to fire), and the eventual `OutOfMemoryError` stack trace bottoms out in
+  `Match.startGame → prepareBattleboxSharedLibrary → Card.fromPaperCard` (game 3's *setup*, before
+  any Ultron decision runs) — not anywhere in `declareAttackers`/`GameStateEvaluator`, unlike the
+  V4-011 baseline crash this ticket set out to fix. The combat-scoring cost sink is genuinely gone.
+- **The leak has moved to (or was always partly in) main phase.** Game 1 (94.1s) was clean. Game 2
+  hit its whole-game 900s budget (`905630 ms timeout`) after 3 cooperative "deadline exceeded ...
+  returning best-so-far" catches (V4-011's mechanism working as designed) but also 2 *hard*
+  "exceeded its 40s per-decision timeout; abandoning this decision" events — meaning at least twice
+  a SINGLE top-level `chooseSpellAbilityToPlay` candidate itself ran long enough to blow the whole
+  40s budget before the between-candidate deadline checkpoint ever got a chance to catch it
+  (`deadline exceeded after evaluating 0/1 top-level candidates` — zero candidates completed).
+  Those 2 abandoned worker threads have no way to be stopped (V4-003's mechanism) and keep
+  allocating in the background indefinitely; game 3's unrelated card-loading allocation is what
+  finally tipped the shared 8g heap over, not anything in game 3's own Ultron decisions. This is
+  consistent with — and adds a concrete mechanism to — the "cumulative per-game allocation" theory
+  in the verdict above, and points specifically at candidate _construction_ cost (most likely
+  `GameCopier.makeCopy()` itself on this board size, independent of which evaluator scores the
+  result) inside a single main-phase candidate, not at scoring.
+- Net: **agrees with the verdict above.** Do not dispatch a further patch without the human's
+  decision among the three directions listed; this session did not attempt options 1-3 and made no
+  commits (per instructions). Combat-side code left uncommitted in the working tree, same as before.
+
 # BUILD TRAP: `mvn test` does NOT rebuild the jar the simulator runs
 
 **Recorded 2026-07-24 after it silently invalidated a verification run — read this before running

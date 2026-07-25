@@ -7,9 +7,12 @@ import forge.ai.PlayerControllerAi;
 import forge.ai.llm.UltronConfig;
 import forge.ai.llm.runtime.UltronTableThreatSummary;
 import forge.ai.llm.runtime.UltronThreatModel;
+import forge.ai.nn.NeuralStateEvaluator;
 import forge.ai.simulation.GameCopier;
+import forge.ai.simulation.GameSimulator;
 import forge.ai.simulation.GameStateEvaluator;
 import forge.ai.simulation.SpellAbilityPicker;
+import forge.ai.simulation.StateEvaluator;
 import forge.card.ColorSet;
 import forge.card.ICardFace;
 import forge.card.mana.ManaCost;
@@ -26,6 +29,7 @@ import forge.game.keyword.KeywordInterface;
 import forge.game.mana.Mana;
 import forge.game.mana.ManaConversionMatrix;
 import forge.game.mana.ManaCostBeingPaid;
+import forge.game.phase.PhaseType;
 import forge.game.player.*;
 import forge.game.replacement.ReplacementEffect;
 import forge.game.spellability.*;
@@ -699,6 +703,66 @@ public class UltronPlayerController extends PlayerControllerAi {
     }
 
     /**
+     * TICKET-V4-013: resolves the {@link StateEvaluator} combat candidate scoring uses -- identical
+     * selection to {@code SpellAbilityPicker.selectEvaluator}: the learned {@link
+     * NeuralStateEvaluator} when {@code ULTRON_NN_EVAL=true} AND {@code player} is Ultron-profiled
+     * AND a model loaded successfully, else the hand-tuned {@link GameStateEvaluator}. Resolved once
+     * per top-level combat decision (by {@link #chooseAttackPlanViaSimulation}/{@link
+     * #chooseBlockPlanViaSimulation}), not once per candidate -- constructing either evaluator is
+     * cheap (no model reload; {@link NeuralStateEvaluator} caches its loaded net statically) but
+     * there is no reason to re-resolve it on every one of the ~2-4 candidates in a single decision.
+     */
+    private static StateEvaluator resolveCombatEvaluator(Player player) {
+        if (UltronConfig.nnEvalEnabled() && UltronConfig.isUltronPlayer(player) && NeuralStateEvaluator.isAvailable()) {
+            return new NeuralStateEvaluator();
+        }
+        return new GameStateEvaluator();
+    }
+
+    /**
+     * TICKET-V4-013: advances {@code gameCopy} through combat damage and on to {@link
+     * PhaseType#COMBAT_END} in place, so the caller can hand the resulting state directly to either
+     * evaluator and get correct post-combat-damage scoring semantics from both:
+     * <ul>
+     *   <li>{@link NeuralStateEvaluator} never advances combat itself (by design -- see its class
+     *       javadoc) -- it just encodes whatever state it is handed. Without this advance it would
+     *       score the PRE-damage state, which is wrong for these two candidate-scoring call sites.</li>
+     *   <li>{@link GameStateEvaluator#getScoreForGameState} DOES advance combat itself, via
+     *       {@code simulateUpcomingCombatThisTurn} -- but only when the state it is handed is at or
+     *       before {@code COMBAT_DAMAGE}; that method's own guard
+     *       ({@code phase.isAfter(PhaseType.COMBAT_DAMAGE)}) short-circuits to a no-op (no second
+     *       {@code GameCopier}, no second combat advance) once the state is already past
+     *       {@code COMBAT_DAMAGE}. Landing this advance on {@code COMBAT_END} rather than stopping
+     *       exactly at {@code COMBAT_DAMAGE} matters: stopping at {@code COMBAT_DAMAGE} would leave
+     *       the two phases merely <em>equal</em>, which does not satisfy {@code isAfter} (strict),
+     *       so the heuristic would still pay for one wasted extra {@code GameCopier.makeCopy} (its
+     *       own while-loop would immediately find nothing left {@code isBefore} its target and do no
+     *       further advancing -- harmless to correctness, but not free). Landing one phase further,
+     *       on {@code COMBAT_END}, makes {@code isAfter} strictly true and eliminates that copy
+     *       entirely -- this is the actual TICKET-V4-013 fix: each combat candidate now pays for
+     *       exactly ONE {@code GameCopier} copy total, no matter which evaluator scores it.</li>
+     * </ul>
+     * {@code COMBAT_END}'s own turn-based action (per-card {@code onEndOfCombat} triggers) is a
+     * normal, harmless part of a real turn's flow that happens in actual play regardless of who is
+     * scoring the state, so advancing one phase past {@code COMBAT_DAMAGE} does not change what is
+     * being measured -- it only stabilizes on a state both evaluators treat as "final" for the
+     * turn's combat.
+     */
+    private static void advanceCopyThroughCombatDamage(Game gameCopy, Player aiPlayerCopy) {
+        if (gameCopy.isGameOver()) {
+            return;
+        }
+        PhaseType phase = gameCopy.getPhaseHandler().getPhase();
+        if (phase.isAfter(PhaseType.COMBAT_DAMAGE)) {
+            // Already past combat damage -- nothing to advance (defensive; not expected at either
+            // call site today, both of which start at COMBAT_DECLARE_ATTACKERS/_BLOCKERS).
+            return;
+        }
+        gameCopy.getPhaseHandler().devAdvanceToPhase(PhaseType.COMBAT_END,
+                () -> GameSimulator.resolveStack(gameCopy, aiPlayerCopy.getWeakestOpponent()));
+    }
+
+    /**
      * Builds the pruned candidate set described in {@link #declareAttackers}'s javadoc, simulates
      * each one through combat damage, and returns the highest-scoring plan. Never returns null --
      * "attack with nothing" is always at least one of the evaluated candidates, so a legitimate
@@ -735,16 +799,36 @@ public class UltronPlayerController extends PlayerControllerAi {
             }
         }
 
+        // TICKET-V4-013 part 1: resolve the scoring evaluator ONCE for this decision (neural when
+        // Ultron+ULTRON_NN_EVAL+model, else the heuristic -- see resolveCombatEvaluator's javadoc),
+        // not once per candidate.
+        StateEvaluator evaluator = resolveCombatEvaluator(attacker);
+
+        // TICKET-V4-013 part 3: cheap insurance mirroring chooseSpellAbilityToPlay's V4-011 deadline
+        // -- combat candidate counts are already small (~2-4, see class javadoc), so this should
+        // essentially never fire once part 1 makes each candidate cheap, but it bounds even a
+        // pathological huge-board candidate from blowing the decision budget. The first candidate
+        // ("attack with nothing") is always scored regardless, so bestAssignments/bestScore are
+        // always populated from at least one real evaluation.
+        long deadlineMillis = System.currentTimeMillis() + (long) (UltronConfig.maxSimDecisionTimeoutSeconds() * 1000L * 0.8);
+
         List<Pair<Card, GameEntity>> bestAssignments = Collections.emptyList();
         int bestScore = Integer.MIN_VALUE;
+        int evaluatedCount = 0;
         for (List<Pair<Card, GameEntity>> candidate : candidates) {
-            int score = scoreAttackCandidate(game, attacker, combat, candidate);
+            if (evaluatedCount > 0 && System.currentTimeMillis() > deadlineMillis) {
+                Logger.warn("[Ultron] declareAttackers candidate search hit its deadline after "
+                        + evaluatedCount + "/" + candidates.size() + " candidates; returning best-so-far");
+                break;
+            }
+            int score = scoreAttackCandidate(game, attacker, combat, candidate, evaluator);
+            evaluatedCount++;
             if (score > bestScore) {
                 bestScore = score;
                 bestAssignments = candidate;
             }
         }
-        return new AttackPlan(bestAssignments, candidates.size(), bestScore);
+        return new AttackPlan(bestAssignments, evaluatedCount, bestScore);
     }
 
     private static void addCandidateIfNew(List<List<Pair<Card, GameEntity>>> candidates, Set<String> seenSignatures,
@@ -814,13 +898,16 @@ public class UltronPlayerController extends PlayerControllerAi {
 
     /**
      * Copies the game, applies one candidate attacker/defender assignment set directly to the
-     * copy's {@code Combat} object (bypassing any controller re-entry), and scores the resulting
-     * post-combat-damage state via {@link GameStateEvaluator}. Returns {@code Integer.MIN_VALUE}
-     * on any simulation failure for this specific candidate so one bad candidate doesn't abort the
-     * whole search -- {@link #chooseAttackPlanViaSimulation} still has the "attack with nothing"
-     * candidate as a safety net if every other candidate fails.
+     * copy's {@code Combat} object (bypassing any controller re-entry), advances that same copy
+     * through combat damage (see {@link #advanceCopyThroughCombatDamage}), and scores the resulting
+     * post-combat-damage state with {@code evaluator} (TICKET-V4-013: neural or heuristic, resolved
+     * once per decision by the caller -- see {@link #resolveCombatEvaluator}). Returns
+     * {@code Integer.MIN_VALUE} on any simulation failure for this specific candidate so one bad
+     * candidate doesn't abort the whole search -- {@link #chooseAttackPlanViaSimulation} still has
+     * the "attack with nothing" candidate as a safety net if every other candidate fails.
      */
-    private int scoreAttackCandidate(Game game, Player attacker, Combat combat, List<Pair<Card, GameEntity>> candidate) {
+    private int scoreAttackCandidate(Game game, Player attacker, Combat combat, List<Pair<Card, GameEntity>> candidate,
+            StateEvaluator evaluator) {
         try {
             GameCopier copier = new GameCopier(game);
             Game gameCopy = copier.makeCopy(null, attacker);
@@ -836,7 +923,8 @@ public class UltronPlayerController extends PlayerControllerAi {
                 GameEntity defenderCopy = (GameEntity) copier.find(assignment.getRight());
                 combatCopy.addAttacker(cardCopy, defenderCopy);
             }
-            GameStateEvaluator.Score score = new GameStateEvaluator().getScoreForGameState(gameCopy, attackerCopy);
+            advanceCopyThroughCombatDamage(gameCopy, attackerCopy);
+            GameStateEvaluator.Score score = evaluator.getScoreForGameState(gameCopy, attackerCopy);
             return score.value;
         } catch (RuntimeException ex) {
             Logger.warn("[Ultron] declareAttackers candidate simulation threw " + ex + "; skipping this candidate");
@@ -1141,16 +1229,31 @@ public class UltronPlayerController extends PlayerControllerAi {
                     buildAllFavorableBlocks(attackersOfDefender, potentialBlockers));
         }
 
+        // TICKET-V4-013 part 1: resolve the scoring evaluator ONCE for this decision -- see
+        // resolveCombatEvaluator's javadoc.
+        StateEvaluator evaluator = resolveCombatEvaluator(defender);
+
+        // TICKET-V4-013 part 3: cheap insurance mirroring chooseSpellAbilityToPlay's V4-011
+        // deadline -- see chooseAttackPlanViaSimulation's matching comment for the full rationale.
+        long deadlineMillis = System.currentTimeMillis() + (long) (UltronConfig.maxSimDecisionTimeoutSeconds() * 1000L * 0.8);
+
         List<Pair<Card, Card>> bestAssignments = Collections.emptyList();
         int bestScore = Integer.MIN_VALUE;
+        int evaluatedCount = 0;
         for (List<Pair<Card, Card>> candidate : candidates) {
-            int score = scoreBlockCandidate(game, defender, candidate);
+            if (evaluatedCount > 0 && System.currentTimeMillis() > deadlineMillis) {
+                Logger.warn("[Ultron] declareBlockers candidate search hit its deadline after "
+                        + evaluatedCount + "/" + candidates.size() + " candidates; returning best-so-far");
+                break;
+            }
+            int score = scoreBlockCandidate(game, defender, candidate, evaluator);
+            evaluatedCount++;
             if (score > bestScore) {
                 bestScore = score;
                 bestAssignments = candidate;
             }
         }
-        return new BlockPlan(bestAssignments, candidates.size(), bestScore);
+        return new BlockPlan(bestAssignments, evaluatedCount, bestScore);
     }
 
     private static void addBlockCandidateIfNew(List<List<Pair<Card, Card>>> candidates, Set<String> seenSignatures,
@@ -1315,12 +1418,15 @@ public class UltronPlayerController extends PlayerControllerAi {
 
     /**
      * Copies the game, applies one candidate blocker/attacker assignment set directly to the
-     * copy's {@code Combat} object (bypassing any controller re-entry), and scores the resulting
-     * post-combat-damage state via {@link GameStateEvaluator}. Returns {@code Integer.MIN_VALUE} on
-     * any simulation failure for this specific candidate so one bad candidate doesn't abort the
-     * whole search -- {@link #chooseBlockPlanViaSimulation} still has "no blocks" as a safety net.
+     * copy's {@code Combat} object (bypassing any controller re-entry), advances that same copy
+     * through combat damage (see {@link #advanceCopyThroughCombatDamage}), and scores the resulting
+     * post-combat-damage state with {@code evaluator} (TICKET-V4-013: neural or heuristic, resolved
+     * once per decision by the caller -- see {@link #resolveCombatEvaluator}). Returns
+     * {@code Integer.MIN_VALUE} on any simulation failure for this specific candidate so one bad
+     * candidate doesn't abort the whole search -- {@link #chooseBlockPlanViaSimulation} still has
+     * "no blocks" as a safety net.
      */
-    private int scoreBlockCandidate(Game game, Player defender, List<Pair<Card, Card>> candidate) {
+    private int scoreBlockCandidate(Game game, Player defender, List<Pair<Card, Card>> candidate, StateEvaluator evaluator) {
         try {
             GameCopier copier = new GameCopier(game);
             Game gameCopy = copier.makeCopy(null, defender);
@@ -1347,7 +1453,8 @@ public class UltronPlayerController extends PlayerControllerAi {
             for (Card attackerCard : combatCopy.getAttackers()) {
                 combatCopy.setBlocked(attackerCard, !combatCopy.getBlockers(attackerCard).isEmpty());
             }
-            GameStateEvaluator.Score score = new GameStateEvaluator().getScoreForGameState(gameCopy, defenderCopy);
+            advanceCopyThroughCombatDamage(gameCopy, defenderCopy);
+            GameStateEvaluator.Score score = evaluator.getScoreForGameState(gameCopy, defenderCopy);
             return score.value;
         } catch (RuntimeException ex) {
             Logger.warn("[Ultron] declareBlockers candidate simulation threw " + ex + "; skipping this candidate");
