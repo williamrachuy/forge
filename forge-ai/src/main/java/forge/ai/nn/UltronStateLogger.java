@@ -33,13 +33,17 @@ import java.util.zip.GZIPOutputStream;
  * internal short-circuit for "constructed but disabled" because the intent is that a disabled run
  * allocates nothing and subscribes to no events at all.
  *
- * <p><b>Sampling.</b> One record is captured at each player's MAIN1 phase each turn (a natural,
- * cheap-to-detect proxy for "decision point" that does not require hooking any AI decision
- * method -- P1.3 is explicitly logging-only, no AI decision logic may be touched). At most {@link
- * #MAX_RECORDS_PER_GAME} records are kept per game: turn 1 is always kept, the final {@link
- * #ALWAYS_KEEP_FINAL_TURNS} turns are always kept, and the remainder of the budget is filled by
- * uniform random sampling (reservoir-style, decided once at game end since records are buffered
- * in memory for the (typically short) duration of one game) over everything in between.
+ * <p><b>Sampling.</b> One record is captured at each of {@link #CAPTURED_PHASES} per turn (originally
+ * MAIN1 only per TICKET-V4-006; broadened to MAIN1/MAIN2/both combat-declare phases by TICKET-V4-018a
+ * so the corpus covers the phases where afterstates are actually scored -- see {@link
+ * #CAPTURED_PHASES}'s javadoc). These remain cheap-to-detect proxies for "decision point" that do
+ * not require hooking any AI decision method -- P1.3 is explicitly logging-only, no AI decision
+ * logic may be touched. Deduped per (turn, phase) so each phase-entry logs at most once even if the
+ * event bus re-delivers. At most {@link #MAX_RECORDS_PER_GAME} records are kept per game: turn 1 is
+ * always kept, the final {@link #ALWAYS_KEEP_FINAL_TURNS} turns are always kept, and the remainder
+ * of the budget is filled by uniform random sampling (reservoir-style, decided once at game end
+ * since records are buffered in memory for the (typically short) duration of one game) over
+ * everything in between.
  *
  * <p><b>Format.</b> Records are written as a simple self-describing binary stream, gzip-compressed,
  * appended to one file per shard directory (never a single shared path -- see {@code
@@ -67,6 +71,21 @@ public final class UltronStateLogger {
 
     static final int MAX_RECORDS_PER_GAME = 200;
     static final int ALWAYS_KEEP_FINAL_TURNS = 3;
+
+    /**
+     * TICKET-V4-018a: the phases at which a state is captured. Previously MAIN1 only (TICKET-V4-006),
+     * which left the value net trained exclusively on first-main afterstates even though it is used
+     * as a depth-0 policy across ALL phases -- combat and second-main afterstates it never saw
+     * (TICKET-V4-009 found 12/13 phase one-hot slots dead in the resulting corpus). This set covers
+     * the phases where afterstates are actually scored during play: both main phases and both combat
+     * declare steps. Stack-response priority windows are deliberately NOT included here -- detecting
+     * "non-empty stack with a player holding priority" cleanly from a {@link GameEventTurnPhase}-only
+     * subscription would require also hooking priority/stack events, which complicates the event-bus
+     * logic for a distinct trigger type; MAIN/combat coverage is the priority per TICKET-V4-018.
+     */
+    static final java.util.Set<PhaseType> CAPTURED_PHASES = java.util.EnumSet.of(
+            PhaseType.MAIN1, PhaseType.MAIN2,
+            PhaseType.COMBAT_DECLARE_ATTACKERS, PhaseType.COMBAT_DECLARE_BLOCKERS);
 
     /** True if NN state logging should run for this process/run. Config flag OR's with the env var. */
     public static boolean isEnabled(boolean configFlag) {
@@ -127,11 +146,13 @@ public final class UltronStateLogger {
 
         private void maybeCapture() {
             PhaseType phase = game.getPhaseHandler().getPhase();
-            if (phase != PhaseType.MAIN1) {
+            if (!CAPTURED_PHASES.contains(phase)) {
                 return;
             }
             int turn = game.getPhaseHandler().getTurn();
-            // Guard against firing twice for the same (turn, phase) if the event bus re-delivers.
+            // Guard against firing twice for the same (turn, phase) if the event bus re-delivers
+            // -- keyed on BOTH turn and phase now that multiple phases per turn are captured, not
+            // just turn alone (a turn-only key would silently drop every phase after the first).
             if (turn == lastLoggedTurn && phase == lastLoggedPhase) {
                 return;
             }
