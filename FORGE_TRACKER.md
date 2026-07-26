@@ -4020,7 +4020,17 @@ has two identified, fixable causes, both about training DATA quality, not the ar
   `run_gate_v4_016.sh` pattern, per-round >450s-stall watchdog, distinct seeds), mixed population:
   Ultron(V0/NN) vs Default AND all-Default, 1v1 Monarch, nnLogging on, ~1500-2000 games. The residual
   hang is a contained tax here. Distinct seeds from every prior lane.
-- **V4-018c (retrain V1, Sonnet):** trainer gains the deferred future-table-share aux head (§5.1
+- **V4-018b DONE (2026-07-25):** corpus generated clean — 1500 all-Default 1v1 Monarch games, 0 OOM,
+  **297,734 records / 595,468 perspective-samples (~2x V0), 12 distinct phases** including the
+  instant-speed windows (upkeep 30K, end-of-turn 31K, all combat sub-phases). Multi-phase +
+  priority-capture logger (V4-018a/a-ext) worked end-to-end. schema `330703df11234a17` (V0-compatible).
+  Merged: `simstats/out/v4_018b_v1_corpus_default/nn_states_merged.bin.gz`.
+- **V4-018c (retrain V1 — IN PROGRESS):** deliberately V0's EXACT settings (256->128, α=0.5, seed
+  1234) on the new corpus, to isolate the DATA effect (multi-phase + instant-speed) as a clean
+  single-variable experiment. If this V1a beats V0 at the gate, the observability-blind-spot theory
+  is confirmed; the deferred TD-target/future-table-share-aux refinements become a SEPARATE later
+  iteration (V1b) rather than confounding this measurement. Parity-test V1a, then gate.
+- ~~**V4-018c (retrain V1, Sonnet):**~~ (superseded by the single-variable plan above) trainer gains the deferred future-table-share aux head (§5.1
   label 3) + TD(λ≈0.9) targets (now bootstrappable from V0) + the multi-phase data; train V1, parity-
   test it (`UltronValueNetParityTest` with the new `.bin`), report held-out accuracy + calibration.
 - **V4-018d (gate V1, orchestrator):** round harness, N=300, `gate.py --null 0.5`, vs Default AND vs
