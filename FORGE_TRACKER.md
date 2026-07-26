@@ -4083,6 +4083,35 @@ has two identified, fixable causes, both about training DATA quality, not the ar
 > plus V1 now scores all 11-12 phases competently (V0 was MAIN1-only). Offline metrics are
 > diagnostics; the win-rate gate (V4-018d) is the verdict. Do not repeat the 91.9%-vs-64.9% framing.
 
+### TICKET-V4-018d RESULT (2026-07-26): V1 gated 8.2% — WORSE than V0's 25.5% — BUT the comparison is CONFOUNDED (orchestrator error). Disambiguation gate launched (V4-018e).
+
+**Headline:** V1 (multi-phase + instant-speed corpus) won **6/73 = 8.2%** [Wilson 3.8%, 16.8%] vs
+Default, 1v1, null 0.50. V0 was 25.5% [15.3%, 39.5%]. CIs barely overlap → a real drop, not noise,
+even at N=73 (24/97 timeouts excluded — the residual hang tax; gate.py flags SAMPLE-TOO-SMALL for
+the vs-50% test, but the vs-V0 drop is the meaningful signal). V1 is NOT durdling — median 7 spells
+cast, attacks in 52/73 games — it plays actively and still loses ~92%.
+
+**CONFOUND (my error, stated plainly): two variables changed between V0's gate and V1's gate, not
+one.** V0's 25.5% gate (V4-016) ran on the pre-pruning runtime. V1's 8.2% gate ran with the V4-019
+hidden-info pruning ON (it landed *after* V0's gate). Pruning replaces the opponent's hidden hand +
+shared library with placeholders inside every simulation copy — which plausibly wrecks combat/
+interaction judgment (Ultron simulates an opponent that has no tricks → overvalues attacks →
+"attacks a lot, loses anyway," exactly the observed activity profile). **So the 8.2% CANNOT be
+attributed to the multi-phase data.** Every prior validation of the approach (V0's 25%, the durdle-
+fix 5/10 smoke) was also pre-pruning — V4-018d is the FIRST win-rate gate ever run with pruning on.
+Strong possibility: **the OOM fix (pruning) traded crashes for bad play.**
+
+**Disambiguation — V4-018e (LAUNCHED):** re-gate V0's model on the CURRENT (pruning) runtime, same
+harness/seeds-distinct. Holds the runtime constant, isolates the model:
+- V0-with-pruning ≈ 8% too → **pruning is the villain**; the placeholder approach corrupts
+  simulation; abandon it for the real-card-caching monster fix (V4-017 option (a), previously
+  deprioritized), and re-gate both models cleanly.
+- V0-with-pruning ≈ 25% → the multi-phase **model** is genuinely worse; the blind-spot theory is
+  wrong and adding instant-speed/off-distribution decision points hurt (the value fn acts badly at
+  the new decision points it can't judge well).
+Either outcome is decisive and reorders the roadmap. Do not draw conclusions from V4-018d until
+V4-018e lands.
+
 # BUILD TRAP: `mvn test` does NOT rebuild the jar the simulator runs
 
 **Recorded 2026-07-24 after it silently invalidated a verification run — read this before running
