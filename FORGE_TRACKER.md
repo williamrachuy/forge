@@ -4112,6 +4112,48 @@ harness/seeds-distinct. Holds the runtime constant, isolates the model:
 Either outcome is decisive and reorders the roadmap. Do not draw conclusions from V4-018d until
 V4-018e lands.
 
+### TICKET-V4-018e RESULT (2026-07-26): confound CLEARED. Pruning is fine; the multi-phase MODEL is genuinely much worse. V0-with-pruning 37.3% is the BEST result ever.
+
+**Clean same-runtime comparison (both models on the current pruning runtime):**
+| model | training data | win rate vs Default (1v1, null 50%) | n |
+|---|---|---|---|
+| **V0** | MAIN1-only | **37.3% [26.1, 50.0]** | 59 |
+| **V1** | multi-phase + instant-speed | **8.2% [3.8, 16.8]** | 73 |
+CIs do not overlap → **decisive: the multi-phase training data made the model dramatically worse.**
+(V0 pre-pruning was 25.5% [15.3,39.5]; V0 with pruning 37.3% — overlapping CIs, so pruning is
+neutral-to-positive, NOT the villain. My V4-018d confound worry was correct to raise and is now
+ruled out by data.)
+
+**Two findings, one positive, one a valuable negative:**
+1. **POSITIVE: V0-with-pruning = 37.3% is the strongest Ultron gate in project history** (all N are
+   small, but this is the best point estimate and it completes runs without OOM). V0 (MAIN1-trained
+   value net + pruning + depth-0 + copy-budget) is the current best deployable model.
+2. **NEGATIVE (clean, decisive): naively training a plain value net on all-phase + instant-speed
+   states, then acting on it, hurts badly.** Leading explanation, and it CONFIRMS the prediction of
+   `ULTRON_THEORY_OF_MIND_STUDY.md`: V0 (MAIN1-only) is confident about main-phase development and,
+   being off-distribution at instant speed, tends to PASS at instant-speed windows — which is
+   *usually correct*. V1, trained to have confident opinions at instant-speed/off-phase windows but
+   WITHOUT the belief/opponent-model machinery those decisions require, acts confidently-wrong there
+   (bad instant-speed plays; overvalued attacks — its activity profile was 7 spells/game, attacks
+   52/73, losing 92%). **V0's accidental instant-speed passivity was a feature, not a bug.** The ToM
+   study argued a plain value net cannot judge instant-speed/bluffing decisions; this gate is the
+   empirical confirmation — expanding the *decision surface* without expanding *judgment* is
+   net-negative.
+
+**Roadmap correction (supersedes the V4-018 "multi-phase fixes the blind spot" thesis):**
+- **Keep V0 as the deployed/best model.** Do NOT ship V1. The multi-phase VALUE-NET-as-policy
+  experiment is a clean negative — retire it.
+- The multi-phase/instant-speed LOGGER is NOT wasted — it is the substrate for future belief/ToM
+  work (study §3.3). But multi-phase data is not a value-net training improvement on its own.
+- **The real levers (per gate evidence + ToM study), in order:** (1) value-function QUALITY via
+  self-play / expert iteration against stronger/mixed opponents (not more phase coverage); (2) a
+  stochastic policy + league play for the first emergent deception (study Tier 1); (3) belief/ToM
+  machinery BEFORE the AI should act confidently at instant-speed windows — until then, restricting
+  Ultron to sorcery-speed-ish decisions (V0's effective behavior) is better than acting everywhere.
+- **Open sub-question (one cheap future experiment):** is V1 worse because the value FUNCTION
+  degraded (even at main phase) or only because it now ACTS badly at instant speed? Test: run V1 but
+  gate its decisions to MAIN1/MAIN2 only; if that recovers ~37%, it's the acting, not the function.
+
 # BUILD TRAP: `mvn test` does NOT rebuild the jar the simulator runs
 
 **Recorded 2026-07-24 after it silently invalidated a verification run — read this before running
