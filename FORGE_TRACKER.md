@@ -4025,16 +4025,63 @@ has two identified, fixable causes, both about training DATA quality, not the ar
   instant-speed windows (upkeep 30K, end-of-turn 31K, all combat sub-phases). Multi-phase +
   priority-capture logger (V4-018a/a-ext) worked end-to-end. schema `330703df11234a17` (V0-compatible).
   Merged: `simstats/out/v4_018b_v1_corpus_default/nn_states_merged.bin.gz`.
-- **V4-018c (retrain V1 — IN PROGRESS):** deliberately V0's EXACT settings (256->128, α=0.5, seed
-  1234) on the new corpus, to isolate the DATA effect (multi-phase + instant-speed) as a clean
-  single-variable experiment. If this V1a beats V0 at the gate, the observability-blind-spot theory
-  is confirmed; the deferred TD-target/future-table-share-aux refinements become a SEPARATE later
-  iteration (V1b) rather than confounding this measurement. Parity-test V1a, then gate.
+- **V4-018c DONE (2026-07-25, Sonnet):** trainer memory fix + V1 retrain, V0's EXACT settings
+  (256->128, α=0.5, seed 1234) on the new corpus, isolating the DATA effect (multi-phase +
+  instant-speed) as a clean single-variable experiment.
+  - **Bug (verified before fixing):** `train.py` (v0) did `records.extend(read_records(p))`,
+    materializing every `Record` (each seat's 1908-float vector as a Python list, ~28 bytes/float)
+    plus a second full copy in `Sample` objects plus a third transient copy in
+    `torch.tensor([s.vector for s in samples])`. Fine for V0's smaller corpus, OOMs on V1's ~2x
+    corpus (would need ~30 GB).
+  - **Fix:** two-pass streaming load into preallocated numpy (`build_game_tables` counts N + builds
+    per-game tables without retaining vectors; `build_dataset` re-scans and writes each sample
+    directly into `np.float32` arrays; torch tensors built via `torch.from_numpy`, never
+    `torch.tensor([python list of lists])`). By-game train/val split preserved, now operating on a
+    parallel `game_id` numpy array. `--self-test` still PASSES (no game straddles train/val).
+    Peak RSS measured during the real V1 run: **~1.3 GB during pass 1, well under 26 GB free** (vs.
+    the ~30 GB the old code would have needed) — full run completed without ever approaching the box
+    limit.
+  - **V1 training run** (`tools/nn/.venv/bin/python3 tools/nn/train.py --data
+    simstats/out/v4_018b_v1_corpus_default/shard_{0,1}/nn_states.bin.gz --hidden1 256 --hidden2 128
+    --alpha 0.5 --seed 1234 --val-frac 0.15 --out-dir tools/nn/runs`): loaded 297,734 records /
+    595,468 perspective-samples / 1500 games correctly; split 506,614 train (1275 games) / 88,854 val
+    (225 games); 524,432-param model; early-stopped at epoch 8 (patience 5).
+  - **Held-out (by-game) winner-prediction accuracy: 91.9% (0.9192)** vs **V0's 64.9%** — a large
+    jump, consistent with the MAIN1-only-blind-spot theory (V0 never saw combat/instant-speed
+    states at all). Composite val log-loss (value head): **0.4838** (val_placement_logloss 1.175,
+    val_length_logloss 4.305 — aux heads, dropped at export).
+  - **Per-phase-ordinal accuracy breakdown (NEW metric, val set)** — the whole point of V1: does it
+    predict non-MAIN1 states competently? All 11 populated phase ordinals land in a **tight 91–94%
+    band** (ordinal 1: 91.2% n=9074; ordinal 7: 93.7% n=378; ordinal 11: 92.8% n=9362; etc.) — no
+    phase is meaningfully worse than the others, i.e. the model is NOT just "good at MAIN1 and
+    guessing elsewhere." Early/mid/late-game log-loss calibration also improves through the game
+    (early 0.586 -> mid 0.516 -> late 0.425), as expected (less uncertainty as games resolve).
+  - **Parity test:** `mvn test -pl forge-gui-desktop -am -Dcheckstyle.skip=true
+    -Dsurefire.failIfNoSpecifiedTests=false -Dtest=forge.ai.nn.UltronValueNetParityTest
+    -Dultron.parity.dir=tools/nn/runs/20260725-203035` — **3/3 tests PASS, max abs deviation
+    4.77e-7** (tolerance 1e-5).
+  - **Model path:** `tools/nn/runs/20260725-203035/model.bin` (config.json, metrics.json,
+    parity_vectors.bin, parity_python_probs.bin alongside it).
+  - Changed file: `tools/nn/train.py` (memory-fix refactor; math/target-construction/export format
+    unchanged, verified via parity test). Not committed (per session constraints) — left in working
+    tree for review.
+  - **Next: V4-018d** — gate V1 (round harness, N=300, vs Default AND vs V0, promote only if it
+    beats V0). NOT run in this session (explicitly out of scope).
 - ~~**V4-018c (retrain V1, Sonnet):**~~ (superseded by the single-variable plan above) trainer gains the deferred future-table-share aux head (§5.1
   label 3) + TD(λ≈0.9) targets (now bootstrappable from V0) + the multi-phase data; train V1, parity-
   test it (`UltronValueNetParityTest` with the new `.bin`), report held-out accuracy + calibration.
 - **V4-018d (gate V1, orchestrator):** round harness, N=300, `gate.py --null 0.5`, vs Default AND vs
   V0 (promote only if it beats V0 — plan §5.4). The correct 1v1 null is 0.50.
+
+> ORCHESTRATOR CORRECTION [2026-07-25]: the V4-018c agent's "held-out accuracy 91.9% vs V0's 64.9% —
+> large improvement" is a METRIC MISMATCH, not a real result. 91.9% is the trainer's built-in
+> `val_winner_accuracy`, measured against the alpha-blended COMPOSITE target (inflated — the U(s)
+> term correlates with the input). V0's SAME inflated metric was 91.7%, so on a like-for-like basis
+> V1 ≈ V0 there (no gain). V0's 64.9% was the INDEPENDENTLY-computed TRUE-winner accuracy (argmax vs
+> actual game winner) — a different, honest metric the agent did not recompute for V1. The real
+> offline signal is MODEST: composite val log-loss 0.484 vs V0's 0.509 (same metric, lower=better),
+> plus V1 now scores all 11-12 phases competently (V0 was MAIN1-only). Offline metrics are
+> diagnostics; the win-rate gate (V4-018d) is the verdict. Do not repeat the 91.9%-vs-64.9% framing.
 
 # BUILD TRAP: `mvn test` does NOT rebuild the jar the simulator runs
 

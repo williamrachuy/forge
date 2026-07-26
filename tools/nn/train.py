@@ -14,9 +14,23 @@ USAGE
 
 DESIGN NOTES (read before changing the target-construction logic)
 -------------------------------------------------------------------
+0. Memory: data loading is a two-pass STREAM into preallocated numpy arrays (TICKET-V4-018c fix).
+   `read_records()` is a lazy generator; the original v0 trainer did `records.extend(read_records(p))`,
+   materializing every `Record` (each seat's 1908-float vector as a Python LIST -- ~28 bytes/float
+   vs 4 in numpy) plus a second full copy in `Sample` objects plus a THIRD transient copy in
+   `torch.tensor([s.vector for s in samples])`. That is fine for V0's smaller corpus but OOMs on
+   V1's ~2x corpus (595K perspective-samples). The fix: pass 1 (`build_game_tables`) scans every
+   record once to build the per-game placement/seat-count tables AND count the total perspective-
+   sample count N, WITHOUT retaining any vector; pass 2 (`build_dataset`) re-scans and writes each
+   sample directly into preallocated `np.float32` arrays sized (N, input_dim) etc. Only one Record's
+   worth of vectors is ever alive at a time. Torch tensors are then built with `torch.from_numpy`
+   (no Python list-of-lists roundtrip). Peak memory is now ~the numpy arrays themselves (~4.5 GB for
+   the 595K x 1908 input matrix), not 30+ GB of boxed Python floats.
+
 1. Split discipline: train/validation split is by GAME ID (see `split_game_ids`), never by
    state. This is deliberately the very first thing tested (`--self-test`) because a state-level
    split silently produces a flatteringly-wrong validation loss (plan sect. 5.1 explicit warning).
+   The split now operates on the parallel `game_id` numpy array built during the streaming load.
 
 2. Perspective-relative value target. Each logged seat-vector is already self-relative (encoder
    puts "self" first, then real opponents in turn order, then padded eliminated slots) -- see
@@ -75,7 +89,9 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, Iterator, List, Tuple
+
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from read_nn_states import Record, read_records  # noqa: E402
@@ -90,19 +106,29 @@ MODEL_FORMAT_VERSION = 1
 
 
 # ---------------------------------------------------------------------------
-# Data loading + target construction
+# Data loading + target construction (TICKET-V4-018c: streamed into preallocated numpy, see
+# module docstring point 0 -- never materializes the full corpus as boxed Python floats)
 # ---------------------------------------------------------------------------
 
+class SchemaMismatchError(ValueError):
+    pass
+
+
 @dataclass
-class Sample:
-    game_id: int
-    vector: List[float]          # length VECTOR_LENGTH, this seat's perspective
-    mask: List[float]            # length 4, 1.0 = slot exists and is unmasked
-    target: List[float]          # length 4, composite value target, sums to 1 over unmasked slots
-    self_rank_idx: int           # 0-based rank index of self (for aux placement head)
-    length_bucket: int           # 0-based game-length bucket (for aux head)
-    turn: int
-    game_length: int
+class Dataset:
+    """Parallel numpy arrays, one row per perspective-sample. Replaces the v0 `List[Sample]` of
+    boxed Python objects -- same information, ~10x less memory (float32 numpy vs Python float
+    lists), and never round-trips through `torch.tensor([python list of lists])`."""
+    inputs: np.ndarray          # (N, input_dim) float32 -- this seat's perspective vector
+    credit: np.ndarray          # (N, NUM_SLOTS) float32 -- placement_credit component (pre-alpha)
+    usoft: np.ndarray           # (N, NUM_SLOTS) float32 -- U(s) softmax component (pre-alpha)
+    mask: np.ndarray            # (N, NUM_SLOTS) float32 -- 1.0 = slot exists and is unmasked
+    self_rank_idx: np.ndarray   # (N,) int64 -- 0-based rank index of self (aux placement head)
+    length_bucket: np.ndarray   # (N,) int64 -- 0-based game-length bucket (aux head)
+    game_id: np.ndarray         # (N,) int64
+    turn: np.ndarray            # (N,) int32
+    game_length: np.ndarray     # (N,) int32
+    phase_ordinal: np.ndarray   # (N,) int32 -- for the V1 per-phase accuracy breakdown
 
 
 def _game_length_bucket(game_length: int) -> int:
@@ -123,36 +149,79 @@ def _softmax(xs: List[float]) -> List[float]:
     return [e / s for e in exps]
 
 
-def load_all_records(paths: List[str]) -> List[Record]:
-    records: List[Record] = []
+def _iter_all_records(paths: List[str]) -> Iterator[Record]:
+    """Chains `read_records` across every input path. Called ONCE per pass (twice total) -- never
+    accumulated into a list. Each `Record` (and its boxed-float vectors) is garbage the moment its
+    loop body finishes, so at most one record's worth of vectors is ever live."""
     for p in paths:
-        records.extend(read_records(p))
-    return records
+        yield from read_records(p)
 
 
-def build_game_tables(records: List[Record]) -> Tuple[Dict[int, Dict[int, int]], Dict[int, int]]:
-    """Returns (game_id -> {seat -> placement}), (game_id -> total seat count).
+def build_game_tables(paths: List[str]):
+    """Pass 1: scans every record ONCE to build (a) the per-game seat->placement table, (b) the
+    per-game living-seat-count table, (c) the total perspective-sample count N (so pass 2 can
+    preallocate exact-size numpy arrays), and (d) input_dim/schema_hash/semantic_version, all
+    WITHOUT retaining any vector or Record. Total seat count is the number of DISTINCT seats ever
+    observed for that game_id -- every record of turn 1 keeps every living player (UltronStateLogger's
+    sampling policy always retains turn 1 and the final ALWAYS_KEEP_FINAL_TURNS turns), so scanning
+    every record's seat list and taking the union recovers the true player count even if some
+    individual record (e.g. a very late one) has fewer seats due to eliminations by then.
 
-    Total seat count is the number of DISTINCT seats ever observed for that game_id -- every
-    record of turn 1 keeps every living player (UltronStateLogger's sampling policy always
-    retains turn 1 and the final ALWAYS_KEEP_FINAL_TURNS turns), so scanning every record's seat
-    list and taking the union recovers the true player count even if some individual record
-    (e.g. a very late one) has fewer seats due to eliminations by then.
+    N is exactly `sum(len(rec.seats) for rec in games with n_players >= 2)` -- build_dataset's inner
+    loop always appends exactly one sample per seat-block of a kept record (the "degenerate, no
+    unmasked slots" case can only happen if self isn't alive in its own record, which cannot occur
+    -- see the assertion in build_dataset), so this count is exact, not an upper bound.
+
+    Returns (placements, n_players, N, input_dim, schema_hash, semantic_version, total_records).
     """
     placements: Dict[int, Dict[int, int]] = defaultdict(dict)
     seat_union: Dict[int, set] = defaultdict(set)
-    for rec in records:
+    per_game_seatblocks: Dict[int, int] = defaultdict(int)
+    input_dim = None
+    schema_hash = None
+    semantic_version = None
+    total_records = 0
+
+    for rec in _iter_all_records(paths):
+        total_records += 1
+        if input_dim is None:
+            schema_hash = rec.schema_hash
+            semantic_version = rec.semantic_version
+            if rec.seats:
+                input_dim = len(rec.seats[0].vector)
+        elif rec.schema_hash != schema_hash or rec.semantic_version != semantic_version:
+            raise SchemaMismatchError(
+                "mixed schema_hash/semantic_version across input files -- refusing to train on a "
+                "corpus that spans an encoder change.")
         for sb in rec.seats:
             placements[rec.game_id][sb.seat] = sb.placement
             seat_union[rec.game_id].add(sb.seat)
+        per_game_seatblocks[rec.game_id] += len(rec.seats)
+
     n_players = {gid: len(seats) for gid, seats in seat_union.items()}
-    return placements, n_players
+    total_n = sum(cnt for gid, cnt in per_game_seatblocks.items() if n_players.get(gid, 0) >= 2)
+    return placements, n_players, total_n, input_dim, schema_hash, semantic_version, total_records
 
 
-def build_samples(records: List[Record]) -> List[Sample]:
-    placements, n_players = build_game_tables(records)
-    samples: List[Sample] = []
-    for rec in records:
+def build_dataset(paths: List[str], placements: Dict[int, Dict[int, int]],
+                   n_players: Dict[int, int], total_n: int, input_dim: int) -> Dataset:
+    """Pass 2: re-scans every record and writes each perspective-sample directly into preallocated
+    numpy arrays (row-by-row), instead of appending `Sample` objects to a Python list. Target
+    construction (placement_credit / U(s) softmax / masking) is IDENTICAL math to v0's
+    `build_samples` -- only the storage changed."""
+    inputs = np.zeros((total_n, input_dim), dtype=np.float32)
+    credit = np.zeros((total_n, NUM_SLOTS), dtype=np.float32)
+    usoft = np.zeros((total_n, NUM_SLOTS), dtype=np.float32)
+    mask = np.zeros((total_n, NUM_SLOTS), dtype=np.float32)
+    self_rank_idx = np.zeros(total_n, dtype=np.int64)
+    length_bucket = np.zeros(total_n, dtype=np.int64)
+    game_id_arr = np.zeros(total_n, dtype=np.int64)
+    turn_arr = np.zeros(total_n, dtype=np.int32)
+    game_length_arr = np.zeros(total_n, dtype=np.int32)
+    phase_ordinal_arr = np.zeros(total_n, dtype=np.int32)
+
+    row = 0
+    for rec in _iter_all_records(paths):
         n = n_players.get(rec.game_id)
         if not n or n < 2:
             continue
@@ -162,7 +231,7 @@ def build_samples(records: List[Record]) -> List[Sample]:
 
         for sb in rec.seats:
             s = sb.seat
-            mask = [0.0] * NUM_SLOTS
+            row_mask = [0.0] * NUM_SLOTS
             slot_abs_seat = [None] * NUM_SLOTS
             for i in range(NUM_SLOTS):
                 if i >= n:
@@ -170,12 +239,14 @@ def build_samples(records: List[Record]) -> List[Sample]:
                 abs_seat = (s + i) % n
                 slot_abs_seat[i] = abs_seat
                 if abs_seat in alive_seats:
-                    mask[i] = 1.0
+                    row_mask[i] = 1.0
                 # else: already eliminated as of this record -- masked, matches zero+eliminated input
 
-            unmasked = [i for i in range(NUM_SLOTS) if mask[i] > 0]
-            if not unmasked:
-                continue  # degenerate (shouldn't happen -- self is always alive in its own record)
+            unmasked = [i for i in range(NUM_SLOTS) if row_mask[i] > 0]
+            assert unmasked, (
+                "degenerate sample: self must always be alive in its own record -- if this fires, "
+                "build_game_tables' N count (which assumes this can't happen, per its docstring) "
+                "is now wrong and preallocation would silently corrupt rows")
 
             # placement_credit, renormalized over unmasked slots
             raw_credit = []
@@ -183,41 +254,38 @@ def build_samples(records: List[Record]) -> List[Sample]:
                 rank = game_placements.get(slot_abs_seat[i])
                 raw_credit.append(RANK_CREDIT[min(rank, len(RANK_CREDIT)) - 1] if rank else 0.0)
             credit_sum = sum(raw_credit) or 1.0
-            placement_credit = {i: c / credit_sum for i, c in zip(unmasked, raw_credit)}
+            for i, c in zip(unmasked, raw_credit):
+                credit[row, i] = c / credit_sum
 
             # U(s): softmax of raw heuristic scores over unmasked slots
             raw_h = [heuristic_by_seat.get(slot_abs_seat[i], 0.0) for i in unmasked]
-            u_soft = dict(zip(unmasked, _softmax(raw_h)))
+            for i, u in zip(unmasked, _softmax(raw_h)):
+                usoft[row, i] = u
 
-            target = [0.0] * NUM_SLOTS
-            for i in unmasked:
-                target[i] = placement_credit[i], u_soft[i]  # placeholder, combined by caller with alpha
-
+            inputs[row, :] = sb.vector
+            mask[row, :] = row_mask
             self_rank = game_placements.get(s, NUM_SLOTS)
-            samples.append(Sample(
-                game_id=rec.game_id,
-                vector=sb.vector,
-                mask=mask,
-                target=target,  # NOTE: still (placement_credit, u) pairs here; finalized in `finalize_targets`
-                self_rank_idx=min(self_rank, NUM_SLOTS) - 1,
-                length_bucket=_game_length_bucket(rec.game_length),
-                turn=rec.turn,
-                game_length=rec.game_length,
-            ))
-    return samples
+            self_rank_idx[row] = min(self_rank, NUM_SLOTS) - 1
+            length_bucket[row] = _game_length_bucket(rec.game_length)
+            game_id_arr[row] = rec.game_id
+            turn_arr[row] = rec.turn
+            game_length_arr[row] = rec.game_length
+            phase_ordinal_arr[row] = rec.phase_ordinal
+            row += 1
+
+    assert row == total_n, f"row count mismatch: filled {row}, expected {total_n} from pass 1"
+    return Dataset(inputs=inputs, credit=credit, usoft=usoft, mask=mask,
+                    self_rank_idx=self_rank_idx, length_bucket=length_bucket,
+                    game_id=game_id_arr, turn=turn_arr, game_length=game_length_arr,
+                    phase_ordinal=phase_ordinal_arr)
 
 
-def finalize_targets(samples: List[Sample], alpha: float) -> None:
-    """Collapses each sample's (placement_credit, u) pairs into the final alpha-blended target,
-    in place. Split out from build_samples() so alpha can be swept without re-parsing records."""
-    for smp in samples:
-        new_target = [0.0] * NUM_SLOTS
-        for i in range(NUM_SLOTS):
-            cell = smp.target[i]
-            if isinstance(cell, tuple):
-                pc, u = cell
-                new_target[i] = alpha * pc + (1 - alpha) * u
-        smp.target = new_target
+def finalize_targets(credit: np.ndarray, usoft: np.ndarray, alpha: float) -> np.ndarray:
+    """Alpha-blends the (placement_credit, u) components into the final composite target.
+    Vectorized equivalent of v0's per-sample finalize_targets -- split out so alpha can be swept
+    without re-parsing records (credit/usoft are cheap to keep around; the input matrix is the
+    expensive one)."""
+    return (alpha * credit + (1.0 - alpha) * usoft).astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -307,14 +375,12 @@ def masked_soft_ce(logits, target, mask):
 # Training loop
 # ---------------------------------------------------------------------------
 
-def to_tensors(samples: List[Sample]):
+def to_tensor(arr: np.ndarray):
+    """Zero-copy (where numpy layout allows) numpy -> torch conversion. Replaces v0's
+    `torch.tensor([python list of lists])`, which would transiently double the already-materialized
+    Python-object memory just to build one tensor."""
     import torch
-    x = torch.tensor([s.vector for s in samples], dtype=torch.float32)
-    target = torch.tensor([s.target for s in samples], dtype=torch.float32)
-    mask = torch.tensor([s.mask for s in samples], dtype=torch.float32)
-    rank = torch.tensor([s.self_rank_idx for s in samples], dtype=torch.long)
-    length_bucket = torch.tensor([s.length_bucket for s in samples], dtype=torch.long)
-    return x, target, mask, rank, length_bucket
+    return torch.from_numpy(np.ascontiguousarray(arr))
 
 
 def evaluate(model, x, target, mask, rank, length_bucket):
@@ -340,7 +406,7 @@ def evaluate(model, x, target, mask, rank, length_bucket):
     }
 
 
-def calibration_by_stage(model, samples: List[Sample], x, target, mask):
+def calibration_by_stage(model, turn_arr: np.ndarray, game_length_arr: np.ndarray, x, target, mask):
     """Held-out log-loss broken out by early/mid/late game stage (turn / game_length)."""
     import torch
     model.eval()
@@ -351,11 +417,34 @@ def calibration_by_stage(model, samples: List[Sample], x, target, mask):
         log_probs = torch.log_softmax(masked_logits, dim=-1)
         per_sample_loss = -(target * log_probs * mask).sum(dim=-1)
     model.train()
-    for smp, loss in zip(samples, per_sample_loss.tolist()):
-        ratio = smp.turn / max(1, smp.game_length)
+    for turn, game_length, loss in zip(turn_arr.tolist(), game_length_arr.tolist(), per_sample_loss.tolist()):
+        ratio = turn / max(1, game_length)
         key = "early" if ratio < 0.33 else ("mid" if ratio < 0.66 else "late")
         stages[key].append(loss)
     return {k: (sum(v) / len(v) if v else None) for k, v in stages.items()}
+
+
+def accuracy_by_phase(model, phase_ordinal_arr: np.ndarray, x, target, mask):
+    """TICKET-V4-018c: V1's corpus (unlike V0's MAIN1-only corpus) spans 12 distinct phase
+    ordinals, including combat and instant-speed priority windows -- report winner-prediction
+    accuracy PER phase ordinal so we can see whether the model is actually competent on the new
+    non-MAIN1 states, not just aggregate-competent (which could hide it being MAIN1-only-good)."""
+    import torch
+    model.eval()
+    with torch.no_grad():
+        value_logits, _, _ = model(x)
+        value_probs = torch.softmax(value_logits.masked_fill(mask <= 0, torch.finfo(value_logits.dtype).min), dim=-1)
+        pred_winner = value_probs.argmax(dim=-1)
+        true_winner = target.argmax(dim=-1)
+        correct = (pred_winner == true_winner).cpu().numpy()
+    model.train()
+    by_phase: Dict[int, List[bool]] = defaultdict(list)
+    for phase, c in zip(phase_ordinal_arr.tolist(), correct.tolist()):
+        by_phase[phase].append(c)
+    return {
+        str(phase): {"accuracy": sum(cs) / len(cs), "n": len(cs)}
+        for phase, cs in sorted(by_phase.items())
+    }
 
 
 def train(args):
@@ -366,38 +455,57 @@ def train(args):
     random.seed(args.seed)
 
     paths = args.data
-    records = load_all_records(paths)
-    if not records:
+
+    # Pass 1: game tables + exact sample count, WITHOUT retaining any vector (see module docstring
+    # point 0 and build_game_tables' docstring).
+    try:
+        placements, n_players, total_n, input_dim, schema_hash, semantic_version, total_records = \
+            build_game_tables(paths)
+    except SchemaMismatchError as exc:
+        print(f"FATAL: {exc}", file=sys.stderr)
+        return 1
+    if total_records == 0:
         print("No records loaded -- check --data paths.", file=sys.stderr)
         return 1
-    input_dim = len(records[0].seats[0].vector)
-    schema_hash = records[0].schema_hash
-    semantic_version = records[0].semantic_version
-    for rec in records:
-        if rec.schema_hash != schema_hash or rec.semantic_version != semantic_version:
-            print("FATAL: mixed schema_hash/semantic_version across input files -- refusing to "
-                  "train on a corpus that spans an encoder change.", file=sys.stderr)
-            return 1
-
-    samples = build_samples(records)
-    finalize_targets(samples, args.alpha)
-    if not samples:
+    if total_n == 0:
         print("No samples built from records.", file=sys.stderr)
         return 1
 
-    game_ids = [s.game_id for s in samples]
-    train_ids, val_ids = split_game_ids(game_ids, args.val_frac, args.seed)
-    train_samples = [s for s in samples if s.game_id in train_ids]
-    val_samples = [s for s in samples if s.game_id in val_ids]
+    # Pass 2: fill preallocated numpy arrays directly (no Sample objects, no Python lists-of-lists).
+    ds = build_dataset(paths, placements, n_players, total_n, input_dim)
+    target = finalize_targets(ds.credit, ds.usoft, args.alpha)
 
-    print(f"Loaded {len(records)} records, {len(samples)} perspective-samples, "
-          f"{len(set(game_ids))} games. input_dim={input_dim} schema_hash=0x{schema_hash & 0xffffffffffffffff:016x} "
+    train_ids, val_ids = split_game_ids(ds.game_id.tolist(), args.val_frac, args.seed)
+    train_ids_arr = np.fromiter(train_ids, dtype=np.int64, count=len(train_ids))
+    train_mask_rows = np.isin(ds.game_id, train_ids_arr)
+    val_mask_rows = ~train_mask_rows
+
+    n_games = len(train_ids) + len(val_ids)
+    print(f"Loaded {total_records} records, {total_n} perspective-samples, "
+          f"{n_games} games. input_dim={input_dim} schema_hash=0x{schema_hash & 0xffffffffffffffff:016x} "
           f"semantic_version={semantic_version}")
-    print(f"Split: {len(train_samples)} train samples ({len(train_ids)} games), "
-          f"{len(val_samples)} val samples ({len(val_ids)} games)")
+    print(f"Split: {int(train_mask_rows.sum())} train samples ({len(train_ids)} games), "
+          f"{int(val_mask_rows.sum())} val samples ({len(val_ids)} games)")
 
-    x_train, t_train, m_train, r_train, l_train = to_tensors(train_samples)
-    x_val, t_val, m_val, r_val, l_val = to_tensors(val_samples) if val_samples else (None,) * 5
+    x_train = to_tensor(ds.inputs[train_mask_rows])
+    t_train = to_tensor(target[train_mask_rows])
+    m_train = to_tensor(ds.mask[train_mask_rows])
+    r_train = to_tensor(ds.self_rank_idx[train_mask_rows])
+    l_train = to_tensor(ds.length_bucket[train_mask_rows])
+
+    has_val = int(val_mask_rows.sum()) > 0
+    if has_val:
+        x_val = to_tensor(ds.inputs[val_mask_rows])
+        t_val = to_tensor(target[val_mask_rows])
+        m_val = to_tensor(ds.mask[val_mask_rows])
+        r_val = to_tensor(ds.self_rank_idx[val_mask_rows])
+        l_val = to_tensor(ds.length_bucket[val_mask_rows])
+        turn_val = ds.turn[val_mask_rows]
+        game_length_val = ds.game_length[val_mask_rows]
+        phase_val = ds.phase_ordinal[val_mask_rows]
+    else:
+        x_val = t_val = m_val = r_val = l_val = None
+        turn_val = game_length_val = phase_val = None
 
     model = build_model(input_dim, args.hidden1, args.hidden2)
     n_params = sum(p.numel() for p in model.parameters())
@@ -431,7 +539,7 @@ def train(args):
         sched.step()
         epoch_loss /= n
 
-        if x_val is not None and len(val_samples) > 0:
+        if has_val:
             metrics = evaluate(model, x_val, t_val, m_val, r_val, l_val)
         else:
             metrics = {"val_value_logloss": epoch_loss, "val_placement_logloss": None,
@@ -453,8 +561,9 @@ def train(args):
     if best_state is not None:
         model.load_state_dict(best_state)
 
-    final_metrics = evaluate(model, x_val, t_val, m_val, r_val, l_val) if val_samples else {}
-    calib = calibration_by_stage(model, val_samples, x_val, t_val, m_val) if val_samples else {}
+    final_metrics = evaluate(model, x_val, t_val, m_val, r_val, l_val) if has_val else {}
+    calib = calibration_by_stage(model, turn_val, game_length_val, x_val, t_val, m_val) if has_val else {}
+    phase_acc = accuracy_by_phase(model, phase_val, x_val, t_val, m_val) if has_val else {}
 
     run_dir = Path(args.out_dir) / time.strftime("%Y%m%d-%H%M%S")
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -464,8 +573,8 @@ def train(args):
     config["schema_hash"] = schema_hash
     config["semantic_version"] = semantic_version
     config["n_params"] = n_params
-    config["n_train_samples"] = len(train_samples)
-    config["n_val_samples"] = len(val_samples)
+    config["n_train_samples"] = int(train_mask_rows.sum())
+    config["n_val_samples"] = int(val_mask_rows.sum())
     config["n_train_games"] = len(train_ids)
     config["n_val_games"] = len(val_ids)
     (run_dir / "config.json").write_text(json.dumps(config, indent=2, default=str))
@@ -473,6 +582,7 @@ def train(args):
     metrics_out = {
         "final_val_metrics": final_metrics,
         "calibration_by_stage": calib,
+        "accuracy_by_phase_ordinal": phase_acc,
         "history": history,
         "smoke_test_dataset": args.smoke_label,
     }
@@ -482,7 +592,7 @@ def train(args):
     export_model(model, model_path, input_dim, args.hidden1, args.hidden2, schema_hash, semantic_version)
     print(f"Wrote {run_dir}/config.json, metrics.json, model.bin")
 
-    parity_n = export_parity_fixture(model, samples, run_dir, n=args.parity_n)
+    parity_n = export_parity_fixture(model, ds.inputs, run_dir, n=args.parity_n)
     print(f"Wrote parity fixture ({parity_n} real vectors) to {run_dir}/parity_vectors.bin, "
           f"parity_python_probs.bin -- run tools/nn/run_parity_test.sh to check Java agreement.")
     return 0
@@ -496,23 +606,22 @@ def train(args):
 PARITY_MAGIC = 0x55504152  # "UPAR"
 
 
-def export_parity_fixture(model, samples: List[Sample], run_dir: Path, n: int = 100) -> int:
+def export_parity_fixture(model, inputs: np.ndarray, run_dir: Path, n: int = 100) -> int:
     import struct
     import torch
 
-    chosen = samples[:n] if len(samples) >= n else samples
-    if not chosen:
+    chosen = inputs[:n] if len(inputs) >= n else inputs
+    if len(chosen) == 0:
         return 0
     model.eval()
     with torch.no_grad():
-        x = torch.tensor([s.vector for s in chosen], dtype=torch.float32)
+        x = to_tensor(chosen)
         value_logits, _, _ = model(x)
         probs = torch.softmax(value_logits, dim=-1).cpu().numpy()
     model.train()
 
-    import numpy as np
-    dim = len(chosen[0].vector)
-    vecs = np.array([s.vector for s in chosen], dtype=">f4")
+    dim = chosen.shape[1]
+    vecs = chosen.astype(">f4")
     with open(run_dir / "parity_vectors.bin", "wb") as f:
         f.write(struct.pack(">iii", PARITY_MAGIC, len(chosen), dim))
         f.write(vecs.tobytes())
