@@ -4004,6 +4004,18 @@ has two identified, fixable causes, both about training DATA quality, not the ar
   actually scored — MAIN1, MAIN2, COMBAT_DECLARE_ATTACKERS, COMBAT_DECLARE_BLOCKERS (and stack-
   response priority if cheap) — not MAIN1 only. Dedup per (turn, phase). Verify a short logged run
   shows diverse `phaseOrdinal`s. This is the prerequisite for a richer corpus.
+- **V4-018a-ext (logger, priority-based capture — William's call 2026-07-25):** the fixed 4-phase
+  set (MAIN1/MAIN2/both combat) still MISSES instant-speed decisions — a counterspell held for a
+  spell on the stack, a flash creature on the opponent's end step, removal in response. The NN is a
+  priority-time decision-maker and must train on every priority window WHERE IT HAS PLAYABLE
+  CANDIDATES, not just sorcery-speed phases. Fix: subscribe to `GameEventPlayerPriority` (turn,
+  phase, priority — fires at every priority window), log the state when the priority player has ≥1
+  playable candidate (a real decision, not a forced pass), deduped per (turn, phase, stack
+  signature) so a distinct decision context logs once and volume stays bounded (~plan §5.1's
+  ~200/game, NOT thousands). This SUBSUMES the 4-phase capture (main/combat are priority windows
+  too) and adds instant-speed coverage. Corpus generation (V4-018b) waits on this — no point
+  generating a corpus blind to instant timing. (The v4_018b run was launched then stopped at 0
+  games when this gap was raised — zero compute wasted.)
 - **V4-018b (corpus, orchestrator, tmux — no tokens):** ROUND HARNESS (per V4-019's note —
   `run_gate_v4_016.sh` pattern, per-round >450s-stall watchdog, distinct seeds), mixed population:
   Ultron(V0/NN) vs Default AND all-Default, 1v1 Monarch, nnLogging on, ~1500-2000 games. The residual
