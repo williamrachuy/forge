@@ -2,12 +2,17 @@ package forge.ai.nn;
 
 import com.google.common.eventbus.Subscribe;
 import forge.ai.ComputerUtil;
+import forge.ai.ComputerUtilAbility;
 import forge.ai.llm.UltronConfig;
 import forge.game.Game;
+import forge.game.card.CardCollectionView;
 import forge.game.event.GameEvent;
+import forge.game.event.GameEventPlayerPriority;
 import forge.game.event.GameEventTurnPhase;
 import forge.game.phase.PhaseType;
 import forge.game.player.Player;
+import forge.game.spellability.SpellAbility;
+import forge.game.spellability.SpellAbilityStackInstance;
 import org.tinylog.Logger;
 
 import java.io.BufferedOutputStream;
@@ -18,8 +23,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Random;
+import java.util.Set;
 import java.util.zip.GZIPOutputStream;
 
 /**
@@ -33,13 +40,54 @@ import java.util.zip.GZIPOutputStream;
  * internal short-circuit for "constructed but disabled" because the intent is that a disabled run
  * allocates nothing and subscribes to no events at all.
  *
- * <p><b>Sampling.</b> One record is captured at each of {@link #CAPTURED_PHASES} per turn (originally
- * MAIN1 only per TICKET-V4-006; broadened to MAIN1/MAIN2/both combat-declare phases by TICKET-V4-018a
- * so the corpus covers the phases where afterstates are actually scored -- see {@link
- * #CAPTURED_PHASES}'s javadoc). These remain cheap-to-detect proxies for "decision point" that do
- * not require hooking any AI decision method -- P1.3 is explicitly logging-only, no AI decision
- * logic may be touched. Deduped per (turn, phase) so each phase-entry logs at most once even if the
- * event bus re-delivers. At most {@link #MAX_RECORDS_PER_GAME} records are kept per game: turn 1 is
+ * <p><b>Sampling.</b> TICKET-V4-018a-ext: the primary trigger is now {@link GameEventPlayerPriority},
+ * which {@code PhaseHandler.mainLoopStep} fires at EVERY priority window -- sorcery-speed main
+ * phases, combat steps, opponent's turn, upkeep/end-of-turn, and in response to anything already on
+ * the stack. A state is captured for that window only when the player about to receive priority has
+ * at least one playable candidate (see {@link #hasPlayableCandidate}) -- i.e. a real decision, not a
+ * forced pass -- so the corpus now includes instant-speed decision points (a held counterspell, a
+ * flash creature on the opponent's end step, removal in response to a spell) that the original
+ * phase-transition-only trigger could never see. The original {@link #CAPTURED_PHASES}
+ * phase-transition trigger (TICKET-V4-018a: MAIN1/MAIN2/both combat-declare phases, broadened from
+ * MAIN1-only per TICKET-V4-006) is KEPT as a safety-net second trigger rather than retired -- it
+ * fires unconditionally (no playability filter) at phase entry, which guarantees at least one record
+ * per sorcery-speed phase even on the rare turn where nobody has anything playable at that instant
+ * (e.g. an empty hand with no activatable permanents). Both triggers share ONE dedup key so they
+ * never double-log the common case where a phase-transition and the immediately-following priority
+ * event describe the identical instant (phase entry, empty stack, active player about to act).
+ *
+ * <p><b>Dedup key: (turn, phase, decision-maker seat, stack signature).</b> Priority fires many times
+ * per turn (every pass, both players, every stack push/pop) -- without dedup this would explode into
+ * thousands of near-duplicate records per game. The key captures what actually changes the decision:
+ * a new spell/ability hitting the stack changes the signature (new loggable context); repeated
+ * priority passes over an unchanged stack by the same player do not re-log. The stack signature is
+ * the ordered list of {@link SpellAbilityStackInstance} ids currently on {@link
+ * Game#getStack()} (or the literal string {@code "empty"}) -- cheap (no re-encoding), and changes
+ * exactly when the stack's actual content changes. The seat is included (not just turn+phase+stack
+ * per the original ticket phrasing) because both players can hold priority over the identical
+ * (turn, phase, stack) triple in sequence -- e.g. active player passes with nothing to do, then the
+ * non-active player gets priority over the SAME stack state but faces a DIFFERENT decision (their own
+ * hand/board); collapsing them under one key would silently drop the second player's decision.
+ *
+ * <p><b>Playability check ({@link #hasPlayableCandidate}).</b> Reuses the same production candidate
+ * enumeration {@code AiController.getSpellAbilities}-style code already runs every priority pass --
+ * {@link ComputerUtilAbility#getAvailableCards} (hand/graveyard/battlefield/exile/command/top-of-
+ * library) followed by {@link ComputerUtilAbility#getSpellAbilities} to expand each card into its
+ * candidate {@link SpellAbility} objects -- then filters to {@code sa.canPlay()}. {@code canPlay()}
+ * checks zone + timing legality (sorcery-speed-only cards are excluded unless it actually is a legal
+ * sorcery-speed window; instants/flash/activated abilities pass at any priority window) WITHOUT
+ * checking full mana affordability. Mana-affordability helpers ({@code ComputerUtilMana},
+ * {@code ComputerUtilCost.canPayCost}) were deliberately NOT used even though they exist and are
+ * "more correct" -- they can consult {@code MyRandom.getRandom()} for AI heuristics (mana-reservation
+ * chance rolls), and this class's own contract (see the {@code rng} field below) is that logging must
+ * never perturb the game's own random stream. {@code sa.canPlay()} touches no RNG. The accepted
+ * consequence is a cheap proxy, not perfect legality: a timing-legal-but-unaffordable spell still
+ * counts as "playable" (slight over-capture, never under-capture of real decisions) -- acceptable
+ * per this ticket's spec, which explicitly allows a cheap proxy over a divergent legality engine.
+ *
+ * <p>These remain cheap-to-detect proxies for "decision point" that do not require hooking any AI
+ * decision method -- P1.3 is explicitly logging-only, no AI decision logic may be touched. At most
+ * {@link #MAX_RECORDS_PER_GAME} records are kept per game: turn 1 is
  * always kept, the final {@link #ALWAYS_KEEP_FINAL_TURNS} turns are always kept, and the remainder
  * of the budget is filled by uniform random sampling (reservoir-style, decided once at game end
  * since records are buffered in memory for the (typically short) duration of one game) over
@@ -109,8 +157,11 @@ public final class UltronStateLogger {
         private final List<Record> pending = new ArrayList<>();
         private final int[] eliminationTurn; // -1 = not eliminated (won or game ended first)
         private final boolean[] eliminated;
-        private int lastLoggedTurn = -1;
-        private PhaseType lastLoggedPhase;
+        // TICKET-V4-018a-ext: unified dedup across both triggers (phase-transition + priority). Key
+        // is "turn:phaseOrdinal:seat:stackSignature" -- see class javadoc for why the seat is
+        // included. A HashSet is fine memory-wise: it is bounded by the number of distinct decision
+        // contexts in one (short) game, not by raw event-bus firing count.
+        private final Set<String> loggedKeys = new HashSet<>();
 
         public GameCollector(Game game, long gameId, Path shardOutputDir) {
             this.game = game;
@@ -130,7 +181,9 @@ public final class UltronStateLogger {
         public void receive(GameEvent event) {
             detectEliminations();
             if (event instanceof GameEventTurnPhase) {
-                maybeCapture();
+                maybeCapturePhaseTransition();
+            } else if (event instanceof GameEventPlayerPriority priorityEvent) {
+                maybeCapturePriority(priorityEvent);
             }
         }
 
@@ -144,23 +197,42 @@ public final class UltronStateLogger {
             }
         }
 
-        private void maybeCapture() {
+        /** Safety-net trigger: unconditionally logs at entry to one of {@link #CAPTURED_PHASES}. */
+        private void maybeCapturePhaseTransition() {
             PhaseType phase = game.getPhaseHandler().getPhase();
             if (!CAPTURED_PHASES.contains(phase)) {
                 return;
             }
             int turn = game.getPhaseHandler().getTurn();
-            // Guard against firing twice for the same (turn, phase) if the event bus re-delivers
-            // -- keyed on BOTH turn and phase now that multiple phases per turn are captured, not
-            // just turn alone (a turn-only key would silently drop every phase after the first).
-            if (turn == lastLoggedTurn && phase == lastLoggedPhase) {
-                return;
-            }
-            lastLoggedTurn = turn;
-            lastLoggedPhase = phase;
-
             Player active = game.getPhaseHandler().getPlayerTurn();
             int actingSeat = players.indexOf(active);
+            capture(turn, phase, actingSeat);
+        }
+
+        /**
+         * Primary trigger: fires at EVERY priority window (TICKET-V4-018a-ext). Logs only when the
+         * player about to act has a real decision -- see {@link #hasPlayableCandidate} -- so passing
+         * with nothing to do never produces a record.
+         */
+        private void maybeCapturePriority(GameEventPlayerPriority event) {
+            Player priorityPlayer = game.getPlayer(event.priority());
+            if (priorityPlayer == null || priorityPlayer.hasLost()) {
+                return;
+            }
+            if (!hasPlayableCandidate(priorityPlayer)) {
+                return;
+            }
+            int turn = game.getPhaseHandler().getTurn();
+            int actingSeat = players.indexOf(priorityPlayer);
+            capture(turn, event.phase(), actingSeat);
+        }
+
+        /** Shared capture path for both triggers -- see class javadoc for the dedup key. */
+        private void capture(int turn, PhaseType phase, int actingSeat) {
+            String key = turn + ":" + phase.ordinal() + ":" + actingSeat + ":" + stackSignature();
+            if (!loggedKeys.add(key)) {
+                return; // already logged this exact decision context
+            }
 
             List<Integer> liveSeats = new ArrayList<>();
             List<float[]> vectors = new ArrayList<>();
@@ -179,6 +251,33 @@ public final class UltronStateLogger {
             }
 
             pending.add(new Record(turn, phase.ordinal(), actingSeat, liveSeats, vectors, scores));
+        }
+
+        /** Ordered stack-instance-id signature, or {@code "empty"} -- see class javadoc. */
+        private String stackSignature() {
+            if (game.getStack().isEmpty()) {
+                return "empty";
+            }
+            StringBuilder sb = new StringBuilder();
+            for (SpellAbilityStackInstance si : game.getStack()) {
+                sb.append(si.getId()).append(',');
+            }
+            return sb.toString();
+        }
+
+        /**
+         * Cheap "does this player have a real decision right now" check -- see class javadoc for why
+         * {@code sa.canPlay()} (zone + timing legality, no mana-affordability, no RNG) was chosen
+         * over the heavier mana-affordability helpers.
+         */
+        private boolean hasPlayableCandidate(Player player) {
+            CardCollectionView available = ComputerUtilAbility.getAvailableCards(game, player);
+            for (SpellAbility sa : ComputerUtilAbility.getSpellAbilities(available, player)) {
+                if (sa.canPlay()) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         /**
