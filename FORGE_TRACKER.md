@@ -4288,6 +4288,76 @@ expert iteration" and that is right, but the constraint is not the 25% timeout r
 simulation path retains memory without bound. Fix the retention and the timeout rate, the 40s
 decisions, and the games/hour should all move together.
 
+---
+
+## TICKET-V4-022 — ROOT CAUSE FOUND (2026-07-27): a self-defeating `WeakHashMap` in `UltronRuntimeController`
+
+**`forge-ai/src/main/java/forge/ai/llm/runtime/UltronRuntimeController.java:32-33`**
+
+```java
+// Weak map so instances are GC'd when games end
+private static final Map<Game, Map<Player, UltronRuntimeController>> INSTANCES = new WeakHashMap<>();
+```
+and line 36:
+```java
+private final Game game;   // the VALUE holds a strong reference to the KEY
+```
+
+**`WeakHashMap` holds its keys weakly but its VALUES strongly.** Each value here
+(`UltronRuntimeController`, created in `getOrCreate` at line 60-66) stores `this.game = game` — a
+**strong reference back to its own key**. Chain:
+
+> `INSTANCES` (static field = permanent GC root) → *strongly* holds the
+> `Map<Player, UltronRuntimeController>` value → *strongly* holds each `UltronRuntimeController` →
+> *strongly* holds its `game` field → **the weak key is permanently strongly-reachable and the entry
+> can never be evicted.**
+
+It is a strong map wearing a weak map's clothes. The comment on line 32 states an intent that the
+code on line 36 defeats. **Every `GameCopier` simulation copy is pinned forever**, and with it the
+whole graph hanging off that `Game`: players, cards, `CardView`/`CardStateView`/`SpellAbilityView`
+(each ~2 KB of `EnumMap` over 252 `TrackableProperty` constants), `Tracker`, spell abilities.
+
+**Live measurement, single 1v1 NN-eval JVM (`jcmd GC.class_histogram`, live objects only):**
+
+| time | live `forge.game.Game` | ZHeap |
+|---|---|---|
+| 01:24:44 | 351 | 4952M / 6144M |
+| 01:25:57 | **590** | 5752M / 6144M |
+| 01:27:13 | (histogram did not complete — JVM saturated) | **6144M / 6144M** |
+
+**~200 leaked game copies per minute, monotonic, to heap exhaustion in under three minutes.**
+Corroborating counts at the 590-Game sample, all exactly 1:1 or 2:1 with leaked games: `Match` 596,
+`Tracker` 596, `PhaseHandler` 596, `GameAction` 596, **`UltronRuntimeController` 596**,
+`UltronPlayerController` 596, `AiController` 1192, `SpellAbilityPicker` 1192 (2 players × 596).
+
+**This explains every symptom in the V3-207 → V4-017 → V4-019 → V4-021 chain**, and it is a
+**positive feedback loop**: more copies → fuller heap → slower decisions → more 40s timeouts → more
+abandoned decisions → still more copies. It is Ultron-only (the Default AI never calls
+`getOrCreate`), which is why this never showed up on the Default control runs, and why "the monster"
+looked like an inherent cost of simulation rather than a bug.
+
+**Hypotheses ruled out along the way (recorded so nobody re-runs them):**
+- ~~mana-payment enumeration / `canPlayAndPayForSim`~~ — wrong (V4-021's correction above).
+- ~~Shockland or Zuran Orb correlation~~ — base rate, not signal.
+- ~~`UltronStateLogger` buffering~~ — cleared by inspection; `Record` holds only encoded floats.
+- ~~Copies sharing the real game's `Tracker`~~ — `GameCopier` never touches Tracker; `Game.java:149`
+  gives every copy its own.
+- ~~Abandoned "still draining" sim worker threads acting as GC roots~~ — measured: **1** live
+  `Ultron-Sim` thread out of 34 total while 596 games were retained. Not the holder.
+- ~~Lazy `CardView` construction as the fix~~ — **not viable as stated**: `Card.java:410-411` builds
+  `currentState = new CardState(view.getCurrentState(), this)`, so `CardState` (real game state) is
+  constructed *from* the view. Views are entangled with state, not a detachable GUI shadow. The
+  view/`EnumMap` bloat is a real secondary cost but it is a *consequence* of retaining 596 games,
+  not the cause. **Fix the retention first and re-measure before touching the view layer.**
+
+**Method note worth keeping:** the answer came from `jdk.OldObjectSample` JFR events (allocation
+stacks of objects that survived) plus `jcmd GC.class_histogram` growth sampling — roughly 20 minutes
+of measurement. A hand-rolled reverse-reference scan over a 6.4 GB hprof ran for over an hour and
+could not have worked: in this object graph the top referrers of `Card` are the card's *own*
+satellites (`AbilitySub.hostCard`, `Trigger*.hostCard`, `Keyword.hostCard`), a self-referential
+cycle. **Reverse edges cannot answer "what keeps this alive" — only paths to a GC root can.**
+Reach for JFR old-object sampling and histogram deltas before writing a heap parser.
+
 ### TICKET-V4-020: V2 = expert-iteration round 1 (on-policy corpus + fine-tune) [PAUSED — blocked on V4-022]
 
 **Goal (unchanged, resumes once V4-022 lands):** regenerate the training corpus ON-POLICY — Ultron
