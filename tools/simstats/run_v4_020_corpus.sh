@@ -21,10 +21,29 @@ set -uo pipefail
 BASE=/home/william/github/forge
 CONFIG=$BASE/configs/simstats/v4_020_v2_onpolicy_corpus.ini
 OUT=$BASE/simstats/out/v4_020_v2_onpolicy_corpus
-GAMES_PER_ROUND="${GAMES_PER_ROUND:-30}"
-WALL_CLOCK_BUDGET_SECONDS="${WALL_CLOCK_BUDGET_SECONDS:-18000}"  # 5h
+GAMES_PER_ROUND="${GAMES_PER_ROUND:-50}"
+# TICKET-V4-020 (resumed after the V4-022 fix): the PRIMARY stop condition is a RECORD COUNT, not a
+# wall clock. The first attempt at this ticket used a 5h budget, which — at the leak-throttled
+# ~28 games/hour — would have produced ~5K records against V0's 284,458 and silently turned a
+# single-variable experiment (state distribution) into a two-variable one (distribution AND corpus
+# size). With V4-022 landed (~156 games/hour) a real corpus is affordable; size it explicitly.
+# Wall clock is now only a backstop so an unattended overnight run cannot spin forever.
+TARGET_RECORDS="${TARGET_RECORDS:-20000}"
+WALL_CLOCK_BUDGET_SECONDS="${WALL_CLOCK_BUDGET_SECONDS:-43200}"  # 12h backstop
 STALL_KILL_SECONDS=450
-BASE_SEED=40260726
+BASE_SEED=40260727
+
+# Count records produced so far across every completed round/shard.
+count_records() {
+  local total=0 n
+  for f in "$OUT"/round_*/shard_*/nn_states.bin.gz; do
+    [ -f "$f" ] || continue
+    n=$(python3 "$BASE/tools/nn/read_nn_states.py" "$f" 2>/dev/null \
+        | head -1 | grep -oE '[0-9]+ record' | grep -oE '[0-9]+' || true)
+    total=$(( total + ${n:-0} ))
+  done
+  echo "$total"
+}
 
 export ULTRON_NN_EVAL=true
 export ULTRON_NN_MODEL_PATH=$BASE/tools/nn/runs/20260724-195756/model.bin
@@ -33,12 +52,20 @@ export FORGE_SKIP_GROOM=1
 
 mkdir -p "$OUT"
 start_ts=$(date +%s)
-echo "=== V4-020 CORPUS started $(date) — budget=${WALL_CLOCK_BUDGET_SECONDS}s, ${GAMES_PER_ROUND} games/round ===" | tee "$OUT/corpus.log"
+echo "=== V4-020 CORPUS started $(date) — target=${TARGET_RECORDS} records, ${GAMES_PER_ROUND} games/round, ${WALL_CLOCK_BUDGET_SECONDS}s wall-clock backstop ===" | tee "$OUT/corpus.log"
 
 round=0
 while true; do
   round=$((round + 1))
   now=$(date +%s)
+
+  # PRIMARY stop condition: enough records banked.
+  recs=$(count_records)
+  if (( recs >= TARGET_RECORDS )); then
+    echo "=== TARGET MET: ${recs} records >= ${TARGET_RECORDS} after $((round - 1)) rounds ($(( ($(date +%s) - start_ts) / 60 )) min) — stopping ===" | tee -a "$OUT/corpus.log"
+    break
+  fi
+  echo "--- records so far: ${recs}/${TARGET_RECORDS}" | tee -a "$OUT/corpus.log"
   elapsed=$((now - start_ts))
   remaining=$((WALL_CLOCK_BUDGET_SECONDS - elapsed))
   if (( remaining <= 0 )); then
