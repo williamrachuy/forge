@@ -4502,3 +4502,65 @@ If you're a fresh agent session reading this:
    `Nadu, Winged Wisdom`, `Scute Swarm`, `Mystic Forge`. Configured in
    `configs/simstats/battlebox_monarch_4p_ultron_adaptive.ini` under `sim.bannedCards`.
    See BUG-007 for rationale.
+
+### TICKET-V4-022 RESULT (2026-07-27): FIXED. The monster is dead — 30/30 games, timeout rate 25% → 3.3%, throughput ~5x.
+
+**The fix (commit `07541530c2`):** one guard in `UltronRuntimeController.getOrCreate()` — simulation
+copies are never registered in the static `INSTANCES` map. See the ROOT CAUSE section above for why
+the `WeakHashMap` could never evict (values hold their own keys strongly).
+
+**Verification on the ORIGINAL monster diagnostic** (`configs/simstats/v4_017_monster_diag_1v1.ini`,
+30 games, 1v1 Battlebox Monarch, NN eval on, 2 workers × 6g ZGC) — the same config that has been
+this project's standing torture test since V4-017:
+
+| run | games | OOM | outcome | median game |
+|---|---|---|---|---|
+| V4-017 original | 4 | 6 | wedged | — |
+| + Keyword cache (V4-017) | 4 | 1 | wedged | — |
+| + hidden-info pruning (V4-019) | 5 | 0 | **wedged at game 5** | 42s |
+| **+ V4-022 (this fix)** | **30/30** | **0** | **ran to completion** | **22.1s** |
+
+**Full V4-022 numbers:** 30 games logged, **29 completed normally, 1 timeout (3.3%)**, 0 errors,
+**0 OutOfMemory**, **0 `exceeded its 40s per-decision timeout` events**, **0 `still draining`
+events**. Elapsed per game: min 5.0s, median 22.1s, max 360s (the single timeout). Wall clock
+**11m33s for 30 games on 2 workers ≈ 156 games/hour**.
+
+**Against the pre-fix baselines:**
+- **Game-timeout rate: ~25% → 3.3%** (V4-021 measured 20/79 and 24/97 on the two gates).
+- **Throughput: ~28–36 games/hour → ~156 games/hour (~5x).**
+- **Median game: 42s → 22.1s.**
+- **The 40s decision timeout and the "prior timed-out worker is still draining" drain-hang — the
+  V4-003 root that survived V4-017 and V4-019 — did not occur once in 30 games.** They were
+  symptoms of heap starvation, not of an uncancellable worker. No cooperative-cancellation work is
+  needed; that ticket can be closed as overtaken by events.
+
+**What this retires.** The "monster" (V3-207 → V4-017 → V4-019 → V4-021) is closed. It was never a
+compute cost, a combinatorial explosion, or an uncancellable thread — it was one static map entry
+per simulation copy. Every fix layered on top of it (Keyword cache, hidden-info pruning, depth-0,
+copy budget) remains valuable and stays; but the thing that made Ultron unrunnable was three lines.
+
+**What is now unblocked.** Throughput was the binding constraint on the entire post-V0 roadmap
+(V4-021). At ~156 games/hour a 500-game on-policy corpus is ~3.2 hours instead of ~18, which makes
+**TICKET-V4-020 (V2 expert iteration) affordable for the first time** — and with it depth-1 search
+and, later, the Tier-1 stochastic-policy/league work from `ULTRON_THEORY_OF_MIND_STUDY.md`. V4-020
+should be resumed with a corpus target set by record count, not by a wall-clock budget.
+
+**Caveat kept in view:** the residual real-game retention (TICKET-V4-023) is unfixed and bounded
+(~15 games per shard JVM). It did not affect this run and does not block V4-020.
+
+### TICKET-V4-023: Real-game entries in `UltronRuntimeController.INSTANCES` are still never evicted [OPEN, LOW PRIORITY]
+
+V4-022 stopped simulation copies from entering the static registry, which removed the unbounded
+leak. **Real games still register and are still never evicted**, for the same reason: the value
+holds a strong reference to its own key, so `WeakHashMap`'s weak keys never clear.
+
+**Bounded, not urgent:** ~15 real games per sim shard JVM (~150–200MB), bounded by process lifetime.
+A long-lived interactive GUI session is the case where it could matter.
+
+**Why it was not fixed in V4-022:** a correct fix requires the value to stop reaching the key at
+all. Dropping `UltronRuntimeController.game` is not sufficient — the `player` field resurrects the
+same path, since `Player` holds `Game` strongly. Both would have to become weak references (or the
+registry replaced with per-controller ownership plus an explicit end-of-game eviction hook). That is
+real surgery on a class shared with the interactive GUI path, and it was not worth the risk on the
+back of the V4-022 win. Note that `getSimStats(game, player)` (SimulateStats.java:268) reads this
+map and must keep working.
