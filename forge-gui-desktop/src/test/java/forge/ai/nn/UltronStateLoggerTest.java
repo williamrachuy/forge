@@ -69,6 +69,69 @@ public class UltronStateLoggerTest extends AITest {
         Assert.assertTrue(UltronStateLogger.isEnabled(true));
     }
 
+    // -----------------------------------------------------------------------
+    // TICKET-V4-020: stats.nnLoggingPhases selector (main1 / priority).
+    // -----------------------------------------------------------------------
+
+    @Test
+    public void testResolvePhaseModeDefaultsToPriority() {
+        Assert.assertEquals(UltronStateLogger.resolvePhaseMode(null), UltronStateLogger.PhaseMode.PRIORITY,
+                "Unset config value must preserve today's (pre-knob) behavior: PRIORITY");
+        Assert.assertEquals(UltronStateLogger.resolvePhaseMode(""), UltronStateLogger.PhaseMode.PRIORITY);
+        Assert.assertEquals(UltronStateLogger.resolvePhaseMode("   "), UltronStateLogger.PhaseMode.PRIORITY);
+        Assert.assertEquals(UltronStateLogger.resolvePhaseMode("bogus"), UltronStateLogger.PhaseMode.PRIORITY,
+                "Unrecognized value must fall back to PRIORITY, not throw");
+    }
+
+    @Test
+    public void testResolvePhaseModeRecognizesMain1() {
+        Assert.assertEquals(UltronStateLogger.resolvePhaseMode("main1"), UltronStateLogger.PhaseMode.MAIN1);
+        Assert.assertEquals(UltronStateLogger.resolvePhaseMode("MAIN1"), UltronStateLogger.PhaseMode.MAIN1,
+                "Selector must be case-insensitive");
+        Assert.assertEquals(UltronStateLogger.resolvePhaseMode(" Main1 "), UltronStateLogger.PhaseMode.MAIN1,
+                "Selector must tolerate surrounding whitespace");
+    }
+
+    @Test
+    public void testResolvePhaseModeRecognizesPriority() {
+        Assert.assertEquals(UltronStateLogger.resolvePhaseMode("priority"), UltronStateLogger.PhaseMode.PRIORITY);
+        Assert.assertEquals(UltronStateLogger.resolvePhaseMode("PRIORITY"), UltronStateLogger.PhaseMode.PRIORITY);
+    }
+
+    @Test
+    public void testMain1ModeSkipsMain2PhaseTransition() throws IOException {
+        initAndCreateGame();
+        Game game = createBattleboxGame(2);
+        List<Player> p = game.getPlayers();
+        addCard("Forest", p.get(0));
+        addCard("Island", p.get(1));
+
+        Path dir = Files.createTempDirectory("ultron-nn-main1-mode-test");
+        long gameId = 555L;
+        UltronStateLogger.GameCollector collector =
+                new UltronStateLogger.GameCollector(game, gameId, dir, UltronStateLogger.PhaseMode.MAIN1);
+        game.subscribeToEvents(collector);
+
+        // MAIN1 mode: only MAIN1 phase-transitions log, and the priority-window trigger never
+        // fires at all -- this reproduces V0's original TICKET-V4-006 corpus exactly.
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN1, p.get(0), false, 1);
+        game.getAction().checkStateEffects(true);
+        game.getPhaseHandler().devModeSet(PhaseType.MAIN2, p.get(0), false, 1);
+        game.getAction().checkStateEffects(true);
+        game.getPhaseHandler().devModeSet(PhaseType.COMBAT_DECLARE_ATTACKERS, p.get(0), false, 1);
+        game.getAction().checkStateEffects(true);
+
+        collector.finish(true, false);
+
+        Path out = dir.resolve("nn_states.bin.gz");
+        Assert.assertTrue(Files.exists(out), "MAIN1-mode game with one MAIN1 entry must still write a file");
+        List<ParsedRecord> records = readAll(out);
+        Assert.assertEquals(records.size(), 1,
+                "MAIN1 mode must log only the MAIN1 transition, not MAIN2 or COMBAT_DECLARE_ATTACKERS "
+                        + "(which the default PRIORITY mode's CAPTURED_PHASES would also capture)");
+        Assert.assertEquals(records.get(0).phaseOrdinal, PhaseType.MAIN1.ordinal());
+    }
+
     @Test
     public void testTimeoutGameDiscardedEntirely() throws IOException {
         initAndCreateGame();

@@ -135,7 +135,8 @@ public final class SimulateStats {
                 // (baseSeed, globalIndex)), so it doubles as the logged game ID without needing a
                 // separate counter.
                 final UltronStateLogger.GameCollector nnLogger = UltronStateLogger.isEnabled(config.isNnLoggingEnabled())
-                        ? new UltronStateLogger.GameCollector(game, gameSeed, outputDir)
+                        ? new UltronStateLogger.GameCollector(game, gameSeed, outputDir,
+                                UltronStateLogger.resolvePhaseMode(config.getNnLoggingPhases()))
                         : null;
                 if (nnLogger != null) {
                     game.subscribeToEvents(nnLogger);

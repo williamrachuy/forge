@@ -167,6 +167,18 @@ final class SimStatsConfig {
     }
 
     /**
+     * TICKET-V4-020: selects {@link forge.ai.nn.UltronStateLogger.PhaseMode} for {@code
+     * UltronStateLogger}'s capture strategy -- {@code "main1"} reproduces V0's original MAIN1-only
+     * capture (TICKET-V4-006), {@code "priority"} is the current multi-phase + instant-speed
+     * capture (TICKET-V4-018a/a-ext). Raw string is threaded through and parsed by {@link
+     * forge.ai.nn.UltronStateLogger#resolvePhaseMode}, which defaults unset/unrecognized values to
+     * {@code "priority"} -- i.e. today's behavior is unchanged unless this key is set explicitly.
+     */
+    String getNnLoggingPhases() {
+        return get("stats.nnLoggingPhases", "priority");
+    }
+
+    /**
      * Per-AI-decision timeout in seconds for the FutureTask in AiController.
      * Default 60s — generous enough that complex boards complete without timing out,
      * unlike the hardcoded game default of 5s which causes timeout storms in sim.

@@ -99,7 +99,7 @@ from read_nn_states import Record, read_records  # noqa: E402
 RANK_CREDIT = [0.70, 0.15, 0.10, 0.05]  # plan sect. 5.1 example numbers, index 0 = rank 1
 NUM_SLOTS = 4  # self + 3 opponents, matches UltronStateEncoder.NUM_OPPONENTS + 1
 GAME_LENGTH_EDGES = [10, 14, 17, 20, 24, 30, 40]  # 8 buckets; heuristic, see module docstring
-AUX_WEIGHT = 0.25
+AUX_WEIGHT = 0.25  # default; overridable via --aux-weight (TICKET-V4-020, see the flag's help text)
 
 MAGIC = 0x554E5332  # "UNS2" -- model-artifact magic, distinct from the UNS1 data-record magic
 MODEL_FORMAT_VERSION = 1
@@ -512,6 +512,26 @@ def train(args):
     print(f"Model: input={input_dim} -> {args.hidden1} -> {args.hidden2} -> heads "
           f"({n_params:,} parameters)")
 
+    if args.init_from:
+        load_into_model(model, Path(args.init_from), input_dim, args.hidden1, args.hidden2,
+                         schema_hash, semantic_version)
+
+    if args.eval_only:
+        if not args.init_from:
+            print("--eval-only requires --init-from (nothing to evaluate).", file=sys.stderr)
+            return 1
+        if not has_val:
+            print("--eval-only requires a non-empty validation split (--val-frac > 0).", file=sys.stderr)
+            return 1
+        metrics = evaluate(model, x_val, t_val, m_val, r_val, l_val)
+        calib = calibration_by_stage(model, turn_val, game_length_val, x_val, t_val, m_val)
+        phase_acc = accuracy_by_phase(model, phase_val, x_val, t_val, m_val)
+        print(f"[--eval-only] {args.init_from} on this val split "
+              f"({int(val_mask_rows.sum())} samples / {len(val_ids)} games):")
+        print(json.dumps({"final_val_metrics": metrics, "calibration_by_stage": calib,
+                           "accuracy_by_phase_ordinal": phase_acc}, indent=2))
+        return 0
+
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, args.epochs))
 
@@ -531,8 +551,8 @@ def train(args):
             opt.zero_grad()
             value_logits, placement_logits, length_logits = model(xb)
             loss = masked_soft_ce(value_logits, tb, mb)
-            loss = loss + AUX_WEIGHT * F.cross_entropy(placement_logits, rb)
-            loss = loss + AUX_WEIGHT * F.cross_entropy(length_logits, lb)
+            loss = loss + args.aux_weight * F.cross_entropy(placement_logits, rb)
+            loss = loss + args.aux_weight * F.cross_entropy(length_logits, lb)
             loss.backward()
             opt.step()
             epoch_loss += loss.item() * xb.shape[0]
@@ -686,6 +706,97 @@ def export_model(model, path: Path, input_dim: int, hidden1: int, hidden2: int,
             f.write(arr.astype(">f4").tobytes())
 
 
+class ModelShapeMismatchError(Exception):
+    """Raised by --init-from / --eval-only when a loaded .bin's shape/schema does not match the
+    model currently being built. TICKET-V4-020: fine-tuning a corpus onto V0's exact weights is
+    only meaningful if the architecture and encoder schema line up exactly -- a silent shape
+    mismatch (e.g. a stale model.bin from a different hidden-layer config) would either crash
+    obscurely mid-load or, worse, load garbage that still "works" (wrong reshape landing on
+    coincidentally-compatible tensor sizes). Fail loudly instead."""
+
+
+def load_model_bin(path: Path):
+    """Inverse of export_model: reads the .bin artifact back into a dict of float32 numpy arrays
+    keyed by the same state_dict names export_model wrote (value_head only -- placement_head/
+    length_head are aux, train-time-only, and were never written to the file in the first place,
+    so a --init-from run always starts those two heads from a fresh random init regardless of the
+    source model). Returns (state_dict, input_dim, hidden1, hidden2, schema_hash, semantic_version).
+    """
+    import struct
+
+    data = path.read_bytes()
+    off = 0
+    magic, fmt_version, schema_hash, semantic_version, input_dim, hidden1, hidden2, num_slots = \
+        struct.unpack_from(">iiqiiiii", data, off)
+    off += struct.calcsize(">iiqiiiii")
+    if magic != MAGIC:
+        raise ModelShapeMismatchError(f"{path}: bad magic 0x{magic:08x}, expected 0x{MAGIC:08x}")
+    if fmt_version != MODEL_FORMAT_VERSION:
+        raise ModelShapeMismatchError(
+            f"{path}: format_version {fmt_version}, expected {MODEL_FORMAT_VERSION}")
+    if num_slots != NUM_SLOTS:
+        raise ModelShapeMismatchError(f"{path}: num_slots {num_slots}, expected {NUM_SLOTS}")
+
+    shapes = {
+        "fc1.weight": (hidden1, input_dim), "fc1.bias": (hidden1,),
+        "ln1.weight": (hidden1,), "ln1.bias": (hidden1,),
+        "fc2.weight": (hidden2, hidden1), "fc2.bias": (hidden2,),
+        "ln2.weight": (hidden2,), "ln2.bias": (hidden2,),
+        "value_head.weight": (NUM_SLOTS, hidden2), "value_head.bias": (NUM_SLOTS,),
+    }
+    state = {}
+    for name in ["fc1.weight", "fc1.bias", "ln1.weight", "ln1.bias",
+                 "fc2.weight", "fc2.bias", "ln2.weight", "ln2.bias",
+                 "value_head.weight", "value_head.bias"]:
+        shape = shapes[name]
+        count = 1
+        for d in shape:
+            count *= d
+        nbytes = count * 4
+        arr = np.frombuffer(data, dtype=">f4", count=count, offset=off).astype(np.float32).reshape(shape)
+        state[name] = arr
+        off += nbytes
+
+    return state, input_dim, hidden1, hidden2, schema_hash, semantic_version
+
+
+def load_into_model(model, model_bin_path: Path, expected_input_dim: int, expected_hidden1: int,
+                     expected_hidden2: int, expected_schema_hash: int, expected_semantic_version: int):
+    """TICKET-V4-020: initializes `model`'s trunk + value_head from a previously-exported .bin
+    (e.g. V0's model.bin), asserting exact architecture/schema match first -- see
+    ModelShapeMismatchError. placement_head/length_head (aux, train-time only, never exported)
+    are left at their fresh random init regardless of the source model; this is expected and
+    fine, they do not affect the deployed value head."""
+    import torch
+
+    state, input_dim, hidden1, hidden2, schema_hash, semantic_version = load_model_bin(model_bin_path)
+    mismatches = []
+    if input_dim != expected_input_dim:
+        mismatches.append(f"input_dim {input_dim} != {expected_input_dim}")
+    if hidden1 != expected_hidden1:
+        mismatches.append(f"hidden1 {hidden1} != {expected_hidden1}")
+    if hidden2 != expected_hidden2:
+        mismatches.append(f"hidden2 {hidden2} != {expected_hidden2}")
+    if schema_hash != expected_schema_hash:
+        mismatches.append(f"schema_hash 0x{schema_hash & 0xffffffffffffffff:016x} != "
+                           f"0x{expected_schema_hash & 0xffffffffffffffff:016x}")
+    if semantic_version != expected_semantic_version:
+        mismatches.append(f"semantic_version {semantic_version} != {expected_semantic_version}")
+    if mismatches:
+        raise ModelShapeMismatchError(
+            f"--init-from {model_bin_path}: architecture/schema does not match the model being "
+            f"built, refusing to load (fine-tuning onto mismatched weights is not meaningful): "
+            + "; ".join(mismatches))
+
+    with torch.no_grad():
+        sd = model.state_dict()
+        for name, arr in state.items():
+            sd[name].copy_(torch.from_numpy(arr))
+    print(f"Initialized model trunk + value_head from {model_bin_path} "
+          f"(schema_hash=0x{schema_hash & 0xffffffffffffffff:016x} matches; "
+          f"placement_head/length_head start fresh)")
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -710,6 +821,34 @@ def build_argparser():
     ap.add_argument("--self-test", action="store_true", help="run internal self-tests and exit")
     ap.add_argument("--parity-n", type=int, default=100,
                      help="number of real logged vectors to export for the Java parity test")
+    ap.add_argument("--init-from", default=None,
+                     help="TICKET-V4-020: path to a previously-exported model.bin (e.g. V0's) to "
+                          "initialize the trunk + value_head from, instead of a fresh random init. "
+                          "Architecture (hidden1/hidden2/input_dim) and encoder schema_hash/"
+                          "semantic_version must match exactly or the run aborts (ModelShapeMismatchError) "
+                          "-- see load_into_model. Omitting this flag preserves today's from-scratch "
+                          "behavior exactly (backward compatible).")
+    ap.add_argument("--eval-only", action="store_true",
+                     help="TICKET-V4-020: skip training entirely -- just build the val split from "
+                          "--data, load --init-from (required), and report its metrics on that val "
+                          "split as-is. Used to measure V0's honest baseline on a NEW corpus's "
+                          "validation set (comparing across different val sets is not valid, per "
+                          "the orchestrator's correction -- this flag produces the same-val-set "
+                          "before number). Writes no model.bin.")
+    ap.add_argument("--aux-weight", type=float, default=AUX_WEIGHT,
+                     help="Weight on the placement/length aux-head losses added to the value loss "
+                          "(default matches the historical hardcoded AUX_WEIGHT=0.25, so omitting "
+                          "this flag preserves from-scratch behavior exactly). TICKET-V4-020 hazard: "
+                          "on an --init-from run, placement_head/length_head are ALWAYS freshly "
+                          "random (never exported, see load_into_model) while the trunk is "
+                          "pretrained. A random head's cross-entropy gradient is large and flows "
+                          "back through the shared trunk -- at the default weight this can dominate "
+                          "a low-lr fine-tune and degrade the pretrained representation for reasons "
+                          "having nothing to do with the new data distribution. Pass --aux-weight 0.0 "
+                          "on --init-from runs to fine-tune the value head/trunk alone against the "
+                          "value target; the aux heads are dropped at export regardless (sect. 4.2), "
+                          "so zeroing this weight does not change the deployed model.bin's behavior "
+                          "in any way, only what the optimizer sees during fine-tuning.")
     return ap
 
 

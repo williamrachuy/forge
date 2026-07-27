@@ -4212,6 +4212,165 @@ project will ever do, plus it removes the selection-bias asterisk from every gat
 TICKET-V4-022 (diagnose-then-fix), gated on the V4-020 corpus run finishing so the two do not
 contend for the box or race on the shaded jar.
 
+> **CORRECTION [2026-07-27, same session]: the hypothesis in the two paragraphs above is WRONG.**
+> `canPlayAndPayForSim` / mana-payment enumeration is NOT the cause, and the shockland
+> co-occurrence list is base rate, not signal (shocklands are in nearly every Battlebox board, so
+> of course they dominate any co-occurrence count — I read noise as evidence). The *observations*
+> in V4-021 stand — the timeouts really are early-game, life really is 20-20, four really are on
+> turn 1 — but the explanation was wrong. See TICKET-V4-022 below for what the machine actually
+> said when measured. The early-game/low-turn pattern is explained far better by a process-level
+> property (heap saturation) than by any board-level one, which is exactly what the turn-1 case
+> should have suggested.
+
+### TICKET-V4-022: The "monster" is OBJECT RETENTION, not compute. It was sedated in V4-019, never cured. [DIAGNOSED 2026-07-27]
+
+**Method:** read-only instrumentation of the two *live* V4-020 corpus JVMs — `jstack`, `jcmd
+GC.heap_info`, `jcmd GC.class_histogram`, `jcmd GC.heap_dump`, and per-thread CPU accounting from
+`/proc/<pid>/task/*/stat`. No build, no new run, no repro needed: the running corpus job was itself
+the repro. (Method note for future sessions: when a hang is suspected, measure the JVM before
+theorising about the algorithm. This diagnosis took ~15 minutes against a live process and
+overturned two prior tickets' worth of assumption.)
+
+**Measurements, both JVMs, consistent:**
+
+| probe | result |
+|---|---|
+| `GC.heap_info` | **6144M used / 6144M capacity — 100% of max heap** |
+| per-thread CPU, 60s window | **GC share 100%.** `XWorker#0`/`XWorker#1` each 100% of a core; **every application thread 0.0s CPU** |
+| `GC.class_histogram` | **150,553 `forge.game.card.Card`**; 153,618 `CardState`; 4.14M Guava `TreeBasedTable`; 2.16M `HashBasedTable`; 1.92 GB in `[Ljava.lang.Object;` |
+| `GC.heap_dump -all=false` (live only, post-full-GC) | **6.4 GB still reachable** |
+
+**What this means.** A 1v1 Battlebox game has a live set well under a thousand `Card` objects.
+**150K retained `Card`s is ~200 game-copies' worth of state held strongly reachable.** A live-only
+heap dump — which runs a full GC first — still weighs 6.4 GB, so this is genuine **retention**, not
+garbage awaiting collection. The JVM is not slow because the search is expensive; it is slow because
+it is in a GC death spiral, with four cores across two JVMs burning **100%** on collection and the
+application making no progress at all.
+
+**This reframes the entire V3-207 → V4-017 → V4-019 line.** What has been called a "slow-decision
+hang," a "compute TAX," and "the monster" is a memory-retention bug in the Ultron simulation path.
+V4-019's hidden-info pruning cut allocation enough to stop the *hard OOM* (6 → 0, real and worth
+keeping) but the heap still fills; ZGC then keeps the process barely alive instead of killing it, so
+the failure mode changed from "crash" to "crawl." **The monster was sedated, not cured** — and the
+symptom rename made it look like progress. Every downstream number is affected: the ~25% timeout
+rate, the 40s decisions, the low throughput, and the turn-1 hangs (a process pegged in GC will stall
+a trivial turn-1 decision exactly as readily as a complex turn-18 one — which is *why* turn number
+doesn't correlate).
+
+**Prime suspects for who holds the references (for the fix session to confirm against the dump):**
+1. ~~**The NN state logger** (`UltronStateLogger`)~~ — **CLEARED by inspection, 2026-07-27.** It does
+   buffer records until game end (`GameCollector.pending`), but `Record` holds only `int` fields,
+   `List<Integer>`, `List<float[]>` and `List<Float>` — encoded vectors, **no `Card`/`CardState`/
+   `Game` references** (UltronStateLogger.java:459-468). At ~8KB/record even an uncapped `pending`
+   is tens of MB, not 6.4 GB. `GameCollector` holds one `Game` + one `players` list, which is
+   correct and bounded. The logger is not the holder; do not spend time here.
+2. **Abandoned "still draining" simulation workers** holding their `GameCopier` object graphs — the
+   V4-003/V4-019 drain-hang, re-read as a retention problem rather than a CPU problem.
+3. Any static/global registry keyed by card or game (id→Card maps, trigger/replacement registries)
+   that a `GameCopier` copy registers into but never unregisters.
+
+**Artifact:** `diag/v4022_heap.hprof` (6.4 GB, live objects only, from PID 822246 mid-corpus-run).
+**This is the whole point of capturing it: the fix session does NOT need to reproduce anything.**
+Open it in Eclipse MAT / VisualVM and run a dominator-tree + "path to GC root" on
+`forge.game.card.Card`. That single query should name the holder outright.
+`diag/` must be gitignored — do not commit a 6.4 GB binary.
+
+**Consequence for V4-020 (V2 expert iteration): STOPPED MID-FLIGHT and re-sequenced behind this
+ticket.** Throughput had degraded to ~28 games/hour, so its 5h budget would have produced ~140 games
+≈ 5K records with a ~750-record val split — too thin to compare logloss against V0 meaningfully. And
+because the retention bug throttles *every* future data-generation round, fixing it first is
+strictly better than spending five hours on an inconclusive corpus. The partial corpus is at
+`simstats/out/v4_020_v2_onpolicy_corpus/` (round_1 only, 9 games). All V4-020 code work is committed
+and reusable.
+
+**Standing correction to project sequencing:** V4-021 called throughput "the binding constraint on
+expert iteration" and that is right, but the constraint is not the 25% timeout rate — it is that the
+simulation path retains memory without bound. Fix the retention and the timeout rate, the 40s
+decisions, and the games/hour should all move together.
+
+### TICKET-V4-020: V2 = expert-iteration round 1 (on-policy corpus + fine-tune) [PAUSED — blocked on V4-022]
+
+**Goal (unchanged, resumes once V4-022 lands):** regenerate the training corpus ON-POLICY — Ultron
+running the V0 model vs Default, 1v1 Monarch — and adapt V0 to it, isolating the state DISTRIBUTION
+as the single variable versus V0's off-policy all-Default corpus (`v4_007_bootstrap_corpus`,
+142,229 records / 7,996 games).
+
+**What was built this session, all committed and reusable as-is:**
+1. **Logger phase-mode knob** (`forge-ai/src/main/java/forge/ai/nn/UltronStateLogger.java` +
+   `forge-gui-desktop/src/main/java/forge/view/SimStatsConfig.java` +
+   `.../forge/view/SimulateStats.java` + `UltronStateLoggerTest.java`): new `stats.nnLoggingPhases`
+   ini key (`main1` | `priority`, default `priority` = today's V4-018a/a-ext behavior unchanged).
+   `main1` reproduces V0's original TICKET-V4-006 capture exactly (phase-transition trigger only,
+   restricted to `MAIN1`, the priority-window trigger disabled entirely) so a corpus-generation
+   experiment can hold capture strategy constant. `UltronStateLogger.PhaseMode` enum +
+   `resolvePhaseMode(String)` selector, unit-tested (5 new tests: default-is-priority, case/whitespace
+   tolerance on `main1`, unrecognized-value fallback, and a behavioral test proving MAIN1 mode skips
+   MAIN2/combat phase-transitions that PRIORITY mode would capture). Verified in a real 3-game jar
+   smoke run: 17 records/game, single phase ordinal (MAIN1), schema hash `0x330703df11234a17` exact
+   match — all three of V4-020's smoke-gate criteria passed before any full run was attempted.
+2. **Trainer fine-tuning support** (`tools/nn/train.py`): `--init-from <model.bin>` (initializes
+   trunk + value_head from a previously-exported model, asserting exact hidden1/hidden2/input_dim/
+   schema_hash/semantic_version match via a new `ModelShapeMismatchError` — fails loudly rather than
+   silently loading onto a mismatched architecture), `--eval-only` (loads `--init-from` and reports
+   its metrics on the current `--data`'s val split without training — the honest same-val-set
+   baseline tool), and `--aux-weight` (default 0.25, unchanged from-scratch behavior). All three
+   verified end-to-end against the smoke corpus, including a deliberate hidden1/hidden2 mismatch
+   correctly raising `ModelShapeMismatchError` before touching any weight.
+3. **Config + harness**: `configs/simstats/v4_020_v2_onpolicy_corpus.ini` (Ultron/V0-model vs
+   Default, 1v1 Monarch, seat-rotated, `nnLogging=true` + `nnLoggingPhases=main1`, pruning/depth-0/
+   copy-budget unchanged — the exact runtime V0's 37.3% was measured on) and
+   `tools/simstats/run_v4_020_corpus.sh` (round harness modeled on `run_gate_v4_016.sh` with two
+   fixes: a wall-clock budget that stops launching new rounds once exhausted rather than trusting a
+   pre-computed game-count target, and a watchdog that kills only `comm==java` descendants of the
+   round's own process tree — never a `pgrep -f <string>` pattern, which has self-matched its own
+   shell twice on this project per the standing rule).
+
+**Three confounds caught in sequence, each before it could contaminate a result (orchestrator
+review, live during the run) — recording the pattern since it is now 3-for-3 on this ticket alone:**
+1. **Corpus-volume confound.** Measured throughput (see below) meant a from-scratch V2 on the 5h
+   corpus would train on ~2-5% of V0's record count and lose to V0 on data volume alone, telling us
+   nothing about the state-distribution variable. Fix: V2 = **V0 fine-tuned** (`--init-from`), not
+   retrained from scratch — lr=1e-4 (vs V0's 1e-3), alpha/batch/weight-decay/val-frac/seed unchanged,
+   epochs capped at 15/patience 3 (adapting, not converging from nothing).
+2. **Random-aux-head confound.** `placement_head`/`length_head` are never exported to `.bin` (aux,
+   train-time-only, dropped at export per plan sect. 4.2), so on any `--init-from` run they are
+   ALWAYS freshly random while the trunk is pretrained. At the default `AUX_WEIGHT=0.25`, a random
+   head's large early cross-entropy gradient flows back through the shared trunk and can degrade the
+   pretrained representation for reasons having nothing to do with the on-policy data — indistinguishable
+   from the real effect in a gate. Fix: `--aux-weight` flag; plan was primary run at `--aux-weight 0.0`
+   (value head/trunk only — does not change the deployed model.bin, which never included the aux
+   heads anyway) with `--aux-weight 0.25` kept as a control to confirm the hazard was real. **Not
+   run** — corpus generation was stopped (confound 3) before any fine-tune was attempted.
+3. **Object-retention confound (fatal to this run, not to the code above).** See TICKET-V4-022: the
+   corpus JVMs were retaining ~6.4 GB of live objects (150K `Card`/`CardState` instances in a 1v1
+   game whose live set should be under 1,000) and effectively doing no useful work under sustained
+   GC pressure. Throughput measured across the run: **~36 games/hour early (round 1, first 13.5 min:
+   7 games), degrading to ~28 games/hour** as retention accumulated — well below the ~98/hr this
+   ticket's original corpus-math checkpoint assumed. At 28-36 games/hour the 5-hour budget would have
+   bought ~140-180 games (≈5-6.5K records, ~750-1000-record val split) — too thin to compare logloss
+   against V0 with any confidence, and the retention bug throttles every future expert-iteration
+   round, so fixing it first (V4-022) is strictly better than banking an inconclusive corpus now.
+
+**Partial corpus preserved, not discarded:** `simstats/out/v4_020_v2_onpolicy_corpus/round_1/`
+(shard_0: 5 games, shard_1: 4 games — 9 games total, MAIN1-only records, schema-valid) plus
+`corpus.log`. Small enough to be worth keeping as a first slice of the eventual real corpus
+(`train.py --data` already accepts multiple paths, so this concatenates for free) rather than
+reason to distrust the harness — the harness and config are correct; the runtime underneath them
+was not ready.
+
+**Regression check before this pause:** `forge.ai.simulation.*` + `forge.ai.ultron.*` +
+`forge.ai.nn.*` (18 explicit classes, package-glob `-Dtest=forge.ai.simulation.*` silently matches 0
+per the standing build note) = **275/275 pass, 1 skipped** (pre-existing). `python3 tools/nn/train.py
+--self-test` = PASS. Default AI path byte-identical (nothing in this session touches a non-Ultron,
+non-nn code path).
+
+**Resume plan (do not start until V4-022's fix lands and is verified):** re-launch
+`run_v4_020_corpus.sh` fresh (do not extend the partial round_1 output in place — new seeds, same
+merge-by-concatenation convention as every other corpus in this project) at whatever throughput the
+retention fix restores; re-run the corpus-math checkpoint with the NEW throughput number before
+committing to a wall-clock budget; then `--eval-only` (V0 baseline on the new val split) followed by
+the two `--aux-weight` fine-tune variants (0.0 primary, 0.25 control) exactly as scoped above.
+
 # BUILD TRAP: `mvn test` does NOT rebuild the jar the simulator runs
 
 **Recorded 2026-07-24 after it silently invalidated a verification run — read this before running

@@ -121,6 +121,35 @@ public final class UltronStateLogger {
     static final int ALWAYS_KEEP_FINAL_TURNS = 3;
 
     /**
+     * TICKET-V4-020: which capture strategy a {@link GameCollector} uses. {@link #PRIORITY} is the
+     * V4-018a/a-ext multi-phase + instant-speed behavior (current default -- ~200 records/game
+     * across ~12 phases) and is the keeper substrate for future belief/ToM work
+     * ({@code ULTRON_THEORY_OF_MIND_STUDY.md} sect. 3.3). {@link #MAIN1} reproduces V0's original
+     * TICKET-V4-006 behavior exactly (phase-transition trigger only, restricted to {@code MAIN1},
+     * priority-window trigger disabled entirely) -- needed so a corpus-generation experiment can
+     * hold the capture strategy constant while varying only the state DISTRIBUTION (on-policy vs
+     * off-policy), per V4-020's single-variable design. Do not add new modes without updating
+     * {@link #resolvePhaseMode}.
+     */
+    public enum PhaseMode { MAIN1, PRIORITY }
+
+    /** V0's original (TICKET-V4-006) capture phase: MAIN1 only. */
+    static final java.util.Set<PhaseType> MAIN1_ONLY_PHASES = java.util.EnumSet.of(PhaseType.MAIN1);
+
+    /**
+     * Parses the {@code stats.nnLoggingPhases} ini value ({@code "main1"} or {@code "priority"},
+     * case-insensitive). Defaults to {@link PhaseMode#PRIORITY} for any null/blank/unrecognized
+     * value -- this preserves the behavior every existing corpus (V4-018b onward) was generated
+     * with before this knob existed, per V4-020's "do not revert code, add a knob" instruction.
+     */
+    public static PhaseMode resolvePhaseMode(String configValue) {
+        if (configValue != null && configValue.trim().equalsIgnoreCase("main1")) {
+            return PhaseMode.MAIN1;
+        }
+        return PhaseMode.PRIORITY;
+    }
+
+    /**
      * TICKET-V4-018a: the phases at which a state is captured. Previously MAIN1 only (TICKET-V4-006),
      * which left the value net trained exclusively on first-main afterstates even though it is used
      * as a depth-0 policy across ALL phases -- combat and second-main afterstates it never saw
@@ -153,6 +182,7 @@ public final class UltronStateLogger {
         private final long gameId;
         private final Path outputFile;
         private final Random rng;
+        private final PhaseMode phaseMode;
 
         private final List<Record> pending = new ArrayList<>();
         private final int[] eliminationTurn; // -1 = not eliminated (won or game ended first)
@@ -164,10 +194,20 @@ public final class UltronStateLogger {
         private final Set<String> loggedKeys = new HashSet<>();
 
         public GameCollector(Game game, long gameId, Path shardOutputDir) {
+            this(game, gameId, shardOutputDir, PhaseMode.PRIORITY);
+        }
+
+        /**
+         * TICKET-V4-020: {@code phaseMode} selects the capture strategy -- see {@link PhaseMode}.
+         * The single-arg-omitted constructor above defaults to {@link PhaseMode#PRIORITY} to
+         * preserve every existing call site's behavior unchanged.
+         */
+        public GameCollector(Game game, long gameId, Path shardOutputDir, PhaseMode phaseMode) {
             this.game = game;
             this.players = new ArrayList<>(game.getPlayers());
             this.gameId = gameId;
             this.outputFile = shardOutputDir.resolve("nn_states.bin.gz");
+            this.phaseMode = phaseMode;
             // Deterministic per-game RNG so downsampling is reproducible given a game ID, without
             // perturbing the game's own MyRandom stream (that stream drives gameplay and must not
             // be touched by an optional logging feature).
@@ -182,7 +222,10 @@ public final class UltronStateLogger {
             detectEliminations();
             if (event instanceof GameEventTurnPhase) {
                 maybeCapturePhaseTransition();
-            } else if (event instanceof GameEventPlayerPriority priorityEvent) {
+            } else if (phaseMode == PhaseMode.PRIORITY && event instanceof GameEventPlayerPriority priorityEvent) {
+                // TICKET-V4-020: MAIN1 mode reproduces V0's original TICKET-V4-006 capture exactly
+                // -- the priority-window trigger (TICKET-V4-018a-ext) is disabled entirely, not
+                // just filtered, so MAIN1 mode never even evaluates hasPlayableCandidate().
                 maybeCapturePriority(priorityEvent);
             }
         }
@@ -200,7 +243,8 @@ public final class UltronStateLogger {
         /** Safety-net trigger: unconditionally logs at entry to one of {@link #CAPTURED_PHASES}. */
         private void maybeCapturePhaseTransition() {
             PhaseType phase = game.getPhaseHandler().getPhase();
-            if (!CAPTURED_PHASES.contains(phase)) {
+            java.util.Set<PhaseType> captured = phaseMode == PhaseMode.MAIN1 ? MAIN1_ONLY_PHASES : CAPTURED_PHASES;
+            if (!captured.contains(phase)) {
                 return;
             }
             int turn = game.getPhaseHandler().getTurn();
