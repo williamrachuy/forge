@@ -51,6 +51,7 @@ export ULTRON_SIM_MAX_TOP_LEVEL_CANDIDATES=4
 export FORGE_SKIP_GROOM=1
 
 mkdir -p "$OUT"
+bash "$BASE/tools/simstats/install_watcher.sh" "$OUT" >/dev/null 2>&1 || true
 start_ts=$(date +%s)
 echo "=== V4-020 CORPUS started $(date) — target=${TARGET_RECORDS} records, ${GAMES_PER_ROUND} games/round, ${WALL_CLOCK_BUDGET_SECONDS}s wall-clock backstop ===" | tee "$OUT/corpus.log"
 
