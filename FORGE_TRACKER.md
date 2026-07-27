@@ -4154,6 +4154,64 @@ ruled out by data.)
   degraded (even at main phase) or only because it now ACTS badly at instant speed? Test: run V1 but
   gate its decisions to MAIN1/MAIN2 only; if that recovers ~37%, it's the acting, not the function.
 
+### TICKET-V4-021: Timeout-bias audit — the residual hang is an EARLY-GAME bug, not a late-game cost cliff [DONE 2026-07-26]
+
+**Why this was run:** ~25% of all games in every gate are discarded as timeouts. That exclusion had
+never been checked for bias, and every win-rate this project reports is computed on the surviving
+75%. Audit script: `timeout_audit.py` (scratchpad), reading the final board state that
+`games.jsonl` records *even for timed-out games* (`timeout:true` rows carry full `players[]` data).
+
+**Result 1 — the 37.3% headline is not badly biased.** In the 20 discarded V0 games, Ultron's
+position at the cutoff is essentially even: life 20 vs 20 (median), permanents 6 vs 5.5, hand 4 vs 4.
+Ultron was ahead on life in 3/20, behind in 6/20, tied in 11/20. These are neutral early positions,
+not disguised losses. Absolute bounds on the headline: 27.8% (if every discard were a loss) to 53.2%
+(if every one were a win); the evidence says the truth sits near the reported 37.3%. **Conclusion:
+keep using the completed-games win rate, but always report the discard rate alongside it.**
+
+**Result 2 (the important one) — THE HANG IS NOT WHAT V4-019 ASSUMED IT WAS.**
+
+| | completed games | timed-out games |
+|---|---|---|
+| median player turns | 17 | **10** (V0) / **6** (V1) |
+| median elapsed | 47.5s | 362s (the ceiling) |
+| median life at end | — | **20 vs 20** |
+
+Timed-out games die **early**, with life totals untouched and near-empty boards. V4-019 (and
+V3-207 before it) framed the residual hang as a cost that *scales with permanent count* — a
+late-game monster. **That is wrong.** Across 28 captured `exceeded its 40s per-decision timeout`
+board censuses, the turn distribution is
+`[1,1,1,1,2,3,3,5,5,6,7,8,8,11,11,12,12,12,12,12,12,12,13,13,15,18,18,19]` — **four of them on
+turn 1**, including this one:
+
+> `turn=1 perms=1 Ai(1)-BattleBox=[Zuran Orb] Ai(2)-BattleBox=[]`
+
+**A 40-second decision on turn 1 with one permanent in play cannot be a state-size problem.** There
+is nothing there to simulate. This is a pathological blowup triggered by *something specific*, and
+it is therefore a bug with a bounded, cheap repro — not an inherent cost of the approach.
+
+**Where it is NOT:** `ComputerUtilAbility.getAvailableCards` (ComputerUtilAbility.java:68) is
+bounded — hand + graveyard + **top card only** of each library + command/exile/battlefield. On turn 1
+that is ~8 cards. So the candidate *count* is tiny and cannot explain 40s.
+
+**Leading hypothesis (needs a jstack to confirm):** the cost is inside the per-candidate
+`canPlayAndPayForSim(sa)` loop at `SpellAbilityPicker.java:234-249`, i.e. mana-payment feasibility
+search. Two circumstantial supports: (a) the cards most present at a pathological decision are the
+ten **shocklands** (Steam Vents 22, Stomping Ground 18, Temple Garden 17, Breeding Pool 17,
+Overgrown Tomb 16, Blood Crypt 15, Watery Grave 13, Sacred Foundry 13, Godless Shrine 12, Hallowed
+Fountain 10) — dual lands multiply the mana-payment search space combinatorially; (b) **Zuran Orb
+appears in 9 of 28**, far above its base rate as a single copy in a shared pool, and it grants a
+*free, repeatable* sacrifice ability — a classic enumerator trap.
+
+**Note the architectural detail that makes this fixable:** V4-011's top-level breadth cap
+(`maxTopLevelCandidates`, SpellAbilityPicker.java:295) is applied **after** the
+`getCandidateSpellsAndAbilities()` loop has already paid `canPlayAndPayForSim` on every candidate.
+The existing cap therefore does not bound this cost at all.
+
+**Why fixing it is worth more than it looks:** it is ~25% of all sim compute on every run this
+project will ever do, plus it removes the selection-bias asterisk from every gate. Filed as
+TICKET-V4-022 (diagnose-then-fix), gated on the V4-020 corpus run finishing so the two do not
+contend for the box or race on the shaded jar.
+
 # BUILD TRAP: `mvn test` does NOT rebuild the jar the simulator runs
 
 **Recorded 2026-07-24 after it silently invalidated a verification run — read this before running
