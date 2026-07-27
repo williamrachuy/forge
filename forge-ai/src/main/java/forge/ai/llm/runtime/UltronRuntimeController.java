@@ -29,7 +29,21 @@ import java.util.WeakHashMap;
  */
 public final class UltronRuntimeController {
 
-    // Weak map so instances are GC'd when games end
+    // TICKET-V4-022: this is NOT an effectively-weak map, despite the type. WeakHashMap holds keys
+    // weakly but VALUES strongly, and every value stored here transitively holds a strong reference
+    // back to its own Game key (controller.game, and controller.player -> player.getGame()). The key
+    // is therefore always strongly reachable and an entry can never be evicted. Do not "restore" the
+    // original intent by relying on weak-key semantics; they have never worked here.
+    //
+    // Simulation copies -- the pathological case, thousands per game -- are now kept out of this map
+    // entirely by getOrCreate(); see its javadoc for the measurements.
+    //
+    // KNOWN RESIDUAL (bounded, deliberately not fixed here): real Games registered below are still
+    // retained for the life of the JVM. That is ~15 games per sim shard JVM (~150-200MB), and is
+    // bounded by process lifetime rather than unbounded like the simulation-copy case was. Fixing it
+    // properly means the value must not reach the key at all -- both the `game` AND `player` fields
+    // would have to become weak, since Player holds Game strongly -- which is real surgery on a class
+    // shared with the interactive GUI path. Filed rather than rushed. See TICKET-V4-023.
     private static final Map<Game, Map<Player, UltronRuntimeController>> INSTANCES =
             new WeakHashMap<>();
 
@@ -55,13 +69,47 @@ public final class UltronRuntimeController {
         this.memory = memory;
     }
 
-    /** Get or create the controller for this game/player pair. Thread-safe. */
+    /**
+     * Get or create the controller for this game/player pair. Thread-safe.
+     *
+     * <p><b>TICKET-V4-022 — simulation copies are deliberately NOT registered in {@link #INSTANCES}.</b>
+     * {@code INSTANCES} is a {@code static} field (hence a permanent GC root) declared as a
+     * {@link java.util.WeakHashMap} so that "instances are GC'd when games end". That intent does not
+     * hold: {@code WeakHashMap} holds its keys weakly but its <b>values strongly</b>, and every value
+     * here stores {@link #game} — a strong reference back to its own key. The resulting chain
+     * ({@code INSTANCES} → value map → controller → {@code game}) keeps the weak key permanently
+     * strongly-reachable, so an entry can never be evicted. Every {@code GameCopier} copy registered
+     * here was pinned for the life of the JVM together with its entire object graph (players, cards,
+     * {@code CardView}/{@code CardStateView}/{@code SpellAbilityView}, {@code Tracker}, spell
+     * abilities). Measured before this fix on a 1v1 NN-eval run: <b>351 → 590 live {@code Game}
+     * instances in 73 seconds, ~200 leaked copies per minute, heap exhausted in under three
+     * minutes</b>, which in turn drove the 40s decision timeouts and the ~25% game-timeout rate that
+     * this project mistook for an inherent cost of simulation since TICKET-V3-207.
+     *
+     * <p>A simulation copy is scored once and discarded, so per-copy controller caching buys nothing;
+     * returning an unregistered instance preserves every caller's contract (a non-null controller)
+     * while leaving no reference behind. Real games still register exactly as before, so GUI and
+     * Default-AI behavior is unchanged. Gating on {@link Game#isSimulationCopy()} follows the
+     * precedent set by TICKET-V4-001 in {@code PlayerZone}/{@code SharedPlayerZone}.
+     */
     public static synchronized UltronRuntimeController getOrCreate(Game game, Player player,
                                                                     AiCardMemory memory) {
+        if (game != null && game.isSimulationCopy()) {
+            return new UltronRuntimeController(game, player, memory);
+        }
         Map<Player, UltronRuntimeController> byPlayer =
                 INSTANCES.computeIfAbsent(game, k -> new java.util.HashMap<>());
         return byPlayer.computeIfAbsent(player,
                 p -> new UltronRuntimeController(game, p, memory));
+    }
+
+    /**
+     * Test-only: number of {@link Game} keys currently registered in {@link #INSTANCES}.
+     * Exists so TICKET-V4-022's regression test can assert that simulation copies never grow the
+     * static registry. Not part of the runtime contract.
+     */
+    static synchronized int registeredGameCountForTesting() {
+        return INSTANCES.size();
     }
 
     /** Returns the sim stats for this controller, or null if no instance exists. */
