@@ -99,6 +99,51 @@ auditable after the fact. Local-node output stays at `simstats/out/<run>/`.
 
 ## 4. How to use it
 
+**Use `forge.sh`. It is the orchestration layer; `forge_nodes.sh` is the plumbing underneath it.**
+The point of `forge.sh` is that you should never have to remember a sequence of steps, and never
+have to read raw logs to know whether things are healthy. Each command prints a compact PASS/FAIL
+block and returns a meaningful exit code (0 ok, 1 failure, 2 usage, 3 needs a commit first).
+
+```bash
+# Is everything healthy? (commit, jar, model, RAM, disk, idle) — one screen, all nodes
+bash tools/simstats/forge.sh doctor [<model.bin>]
+
+# Bring every node to a launchable state. Idempotent and SELF-REMEDIATING: syncs commits,
+# waits for the rebuild, copies the model. Refuses (exit 3) if the config is uncommitted.
+bash tools/simstats/forge.sh preflight <config.ini> <model.bin>
+
+# The one command you actually want: preflight + split launch + VERIFY the net really loaded
+bash tools/simstats/forge.sh generate <config.ini> <total_games> <run_name> <model.bin>
+
+# Aggregate status across every node: games, timeouts, win rate + CI, median game, state
+bash tools/simstats/forge.sh status <run_name>
+
+# Block until every node is idle, then print the summary
+bash tools/simstats/forge.sh wait <run_name>
+
+# Gather results AND verify the seed-disjointness rule actually held (§3.1)
+bash tools/simstats/forge.sh collect <run_name>
+
+bash tools/simstats/forge.sh stopall
+```
+
+**Why `generate` verifies rather than trusts.** The NN model is gitignored, so a `sync` cannot carry
+it; and if `ULTRON_NN_MODEL_PATH` is unset the JVM logs "neural eval unavailable" and **silently
+falls back to the heuristic AI** — producing a corpus with no network in it, with no crash and no
+warning. `generate` therefore greps every node's log for `NeuralStateEvaluator: loaded model` and
+fails loudly if any node is missing it. Same reasoning as the BUILD TRAP: on this project the
+dangerous failures are silent-and-wrong, not loud-and-broken.
+
+**Why `collect` verifies rather than trusts.** It counts distinct `gameSeed`s across all collected
+files. Duplicates mean two nodes shared a seed range, which inflates corpus size and narrows
+confidence intervals on *duplicated* samples. §3.1 is a rule; this is the check that it held.
+
+---
+
+### Lower-level plumbing (`forge_nodes.sh`)
+
+Prefer `forge.sh`. Reach for these only when doing something the orchestrator does not cover.
+
 ```bash
 # What's out there, are nodes on my commit, is anything already running?
 bash tools/simstats/forge_nodes.sh status

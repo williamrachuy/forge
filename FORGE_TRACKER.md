@@ -4478,9 +4478,19 @@ while a sim run holds the jar open. That guidance stands — but note it does no
 # MULTI-NODE COMPUTE (added 2026-07-27)
 
 Sim workloads can run across more than one machine. **Full policy and rationale:
-`MULTI_NODE.md`.** One entry point for everything cross-machine:
+`MULTI_NODE.md`.**
 
-    bash tools/simstats/forge_nodes.sh status | sync <node> | run <node> ... | offload ... | collect ... | stop <node>
+**Use `tools/simstats/forge.sh` — the orchestration layer.** It preflights and self-remediates
+(syncs commits, waits for rebuilds, copies the gitignored model), then verifies rather than trusts:
+`generate` confirms every node actually loaded the network, `collect` confirms no two nodes shared
+a seed range. Compact PASS/FAIL output, meaningful exit codes, so orchestration state does not have
+to live in an operator's head.
+
+    bash tools/simstats/forge.sh doctor | preflight <cfg> <model> | generate <cfg> <games> <run> <model>
+                                        | status <run> | wait <run> | collect <run> | stopall
+
+`tools/simstats/forge_nodes.sh` is the plumbing underneath (status/sync/push-model/run/offload/
+collect/stop); reach for it only for something the orchestrator does not cover.
 
 Roster: `tools/simstats/nodes.conf` — currently **dell-xps15** (primary, 8 cores / 31GB, 2x6g) and
 **asus-vivopc** (generation, 4 cores / 15GB, 1x6g, ~3x slower; RAM-limited to one worker).
