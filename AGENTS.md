@@ -284,3 +284,9 @@ Current banned list is in `configs/simstats/battlebox_monarch_4p_ultron_adaptive
 - **Headless sim runs require no display** (`$DISPLAY` unset is fine). `GuiDesktop.initializeScreenScale()` was fixed with a `GraphicsEnvironment.isHeadless()` guard (returns `1.0f`) — if you see `ExceptionInInitializerError` from `GuiDesktop.<clinit>`, the fix is in that method. Sim runs do still instantiate `GuiDesktop` (required for `ForgeConstants.ASSETS_DIR` via `GuiBase.getInterface().getAssetsDir()`), so the guard must remain.
 - **CI runs tests under Xvfb.** For GUI/headless behavior, use a virtual framebuffer when needed.
 - The root worktree may be dirty with user changes. Do not run cleanup commands, `git reset`, or checkout files unless explicitly requested.
+
+## Multi-node compute
+
+This project runs sim workloads across more than one machine. **Read `MULTI_NODE.md` before launching anything that crosses machines.** One entry point: `tools/simstats/forge_nodes.sh` (`status` / `sync` / `run` / `offload` / `collect` / `stop`); roster in `tools/simstats/nodes.conf`.
+
+The two rules that will silently ruin an experiment if ignored: **generation may be offloaded, win-rate gates may not** (a gate is a measurement and its baseline was taken on specific hardware), and **every node needs a disjoint seed range** or parallel nodes generate duplicate games.

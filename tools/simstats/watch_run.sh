@@ -44,7 +44,9 @@ while true; do
   # ---------------- gather everything (no output yet) ----------------------
   now_s=$(date '+%H:%M:%S')
 
-  jvm_pids=$(pgrep -f "simstats -config" 2>/dev/null || true)
+  # comm==java filter: a bare `pgrep -f` self-matches the shell running it and reports phantom
+  # JVMs (observed as "3 sim JVMs" for a 1-worker run). Standing project rule.
+  jvm_pids=$(ps -eo pid,comm,args 2>/dev/null | awk '$2=="java" && /simstats -config/ {print $1}')
   jvms=$(printf '%s\n' "$jvm_pids" | grep -c . || true)
 
   heap_lines=""
