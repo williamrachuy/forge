@@ -62,12 +62,34 @@ while true; do
       WATCH_START_EPOCH=$(date -d "$started" +%s 2>/dev/null || true)
       export WATCH_START_EPOCH
     fi
+
+    # Infer the game target when the caller didn't supply one, so ETA works on ANY run:
+    # "--- round 4/20" gives total rounds, "Total games: 50 across N shard(s)" gives per-round.
+    if [ -z "${WATCH_TARGET_GAMES:-}" ]; then
+      rt=$(printf '%s' "$lr" | grep -oE "[0-9]+/[0-9]+" | cut -d/ -f2)
+      pr=$(grep -aoE "Total games: [0-9]+" "$LOG" 2>/dev/null | tail -1 | grep -oE "[0-9]+")
+      if [ -n "$rt" ] && [ -n "$pr" ]; then
+        export WATCH_TARGET_GAMES=$(( rt * pr ))
+      fi
+    fi
+    # Corpus runs pace by records, not games — hand the pair to the ETA math.
+    if [ -n "$rc" ]; then
+      export WATCH_RECORDS_NOW="${rc#records so far: }"
+      WATCH_RECORDS_NOW="${WATCH_RECORDS_NOW%%/*}"
+      export WATCH_RECORDS_TARGET="${rc##*/}"
+    fi
   fi
 
   stats=$(python3 - "$RUN_DIR" <<'PY'
 import sys, json, glob, statistics as st, os
 run = sys.argv[1]
-files = sorted(glob.glob(os.path.join(run, "**", "games.jsonl"), recursive=True))
+# Games are written at BOTH round level (run_parallel.sh's aggregate) and shard level, so a
+# recursive **/games.jsonl glob counts every game twice -- observed as "1513/1000 games (151%)"
+# at round 16 of 20. Take exactly one level, most-specific first.
+for pat in ("round_*/shard_*/games.jsonl", "shard_*/games.jsonl", "round_*/games.jsonl", "games.jsonl"):
+    files = sorted(glob.glob(os.path.join(run, pat)))
+    if files:
+        break
 rows = []
 for f in files:
     try:
@@ -112,17 +134,42 @@ if start is None:
     logs = glob.glob(os.path.join(run, "**", "run.log"), recursive=True)
     mt = [os.path.getmtime(p) for p in logs if os.path.exists(p)]
     start = min(mt) if mt else None
+def dur(sec):
+    sec = int(max(0, sec))
+    h, m = sec // 3600, (sec % 3600) // 60
+    return f"{h}h{m:02d}m" if h else f"{m}m"
+
 mtimes = [os.path.getmtime(f) for f in files if os.path.exists(f)]
 if mtimes and start:
-    span = max(mtimes) - start
+    import time
+    span = time.time() - start
     if span > 60:
-        rate = len(rows)/(span/3600)
-        print(f"  throughput  : {rate:.0f} games/hour  (over {span/60:.0f} min)")
+        rate = len(rows)/(span/3600)          # games/hour
+        print(f"  throughput  : {rate:.0f} games/hour   elapsed {dur(span)}")
+
+        # ETA is driven by whichever target this run is actually pacing against:
+        # a corpus run stops on RECORD count, a gate run stops on game count.
+        eta_h = None
+        rt, rn = os.environ.get("WATCH_RECORDS_TARGET"), os.environ.get("WATCH_RECORDS_NOW")
+        if rt and rn and rt.isdigit() and rn.isdigit() and int(rn) > 0:
+            rec_rate = int(rn)/(span/3600)
+            left = int(rt) - int(rn)
+            if left > 0 and rec_rate > 0:
+                eta_h = left/rec_rate
+                pct = 100*int(rn)/int(rt)
+                print(f"  progress    : {rn}/{rt} records ({pct:.0f}%)  {rec_rate:.0f} rec/hour")
         tgt = os.environ.get("WATCH_TARGET_GAMES")
-        if tgt and tgt.isdigit() and rate > 0:
+        if eta_h is None and tgt and tgt.isdigit() and rate > 0:
             left = int(tgt) - len(rows)
+            pct = 100*len(rows)/int(tgt)
+            print(f"  progress    : {len(rows)}/{tgt} games ({pct:.0f}%)")
             if left > 0:
-                print(f"  ETA         : {left} games left -> ~{left/rate:.1f}h")
+                eta_h = left/rate
+        if eta_h is not None:
+            finish = time.strftime("%H:%M", time.localtime(time.time() + eta_h*3600))
+            print(f"  ETA         : {dur(eta_h*3600)} remaining  ->  finish ~{finish}")
+        elif tgt and tgt.isdigit() and len(rows) >= int(tgt):
+            print("  ETA         : target reached")
 PY
 )
 
