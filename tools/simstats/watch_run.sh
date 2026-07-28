@@ -1,265 +1,207 @@
 #!/usr/bin/env bash
-# Live watcher for a simstats run. Read-only: it never touches the run, only reads its output.
+# Live watcher for a simstats run — MULTI-NODE aware. Read-only: never touches the run.
 #
-# Usage:  bash tools/simstats/watch_run.sh <run_dir> [refresh_seconds]
-#   or:   bash simstats/out/<run_name>/watch.sh          (the per-run wrapper)
+# Usage:  bash simstats/out/<run_name>/watch.sh [refresh_seconds]
+#     or: bash tools/simstats/watch_run.sh <run_dir> [refresh_seconds]
 #
-# Every sim run gets one of these dropped at the top level of its output directory so a run can be
-# monitored from a separate terminal without asking anyone what to grep for.
+# Keys:  [a] aggregate   [1..9] one node   [n] next view   [q]/Ctrl-C quit   any other key = refresh
 #
-# RENDERING: the entire frame is composed into a buffer FIRST, then painted in a single write
-# (cursor-home + erase-to-end). Nothing is printed while data is still being gathered. Printing
-# progressively -- especially with a blocking `jcmd` in the middle -- makes the display visibly
-# repaint line by line, which is what this avoids. Do not reintroduce `clear` + sequential echo.
+# A run may be split across machines (see MULTI_NODE.md), so a watcher that only sees the local
+# directory reports a fraction of the truth. This polls every node in nodes.conf for the same run
+# name and shows both the combined picture and a per-node breakdown.
+#
+# RENDERING: the whole frame is composed into a buffer FIRST and painted in a SINGLE write
+# (cursor-home + per-line erase + erase-to-end). Nothing prints while data is still being gathered.
+# Do not reintroduce `clear` + sequential echo -- it visibly repaints line by line.
+#
+# SIGNALS: a bash trap on INT runs the handler and then CONTINUES; the handler must exit explicitly
+# or Ctrl-C merely redraws. Only the EXIT trap restores the terminal.
 set -uo pipefail
 
 RUN_DIR="${1:-}"
 REFRESH="${2:-15}"
-if [ -z "$RUN_DIR" ] || [ ! -d "$RUN_DIR" ]; then
-  echo "usage: $0 <run_dir> [refresh_seconds]" >&2
-  exit 2
-fi
+[ -z "$RUN_DIR" ] || [ ! -d "$RUN_DIR" ] && { echo "usage: $0 <run_dir> [refresh_seconds]" >&2; exit 2; }
 RUN_DIR="$(cd "$RUN_DIR" && pwd)"
 RUN_NAME="$(basename "$RUN_DIR")"
+BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+NODES_CONF="$BASE/tools/simstats/nodes.conf"
+REMOTE_REPO="/home/william/github/forge"
 
-LOG=""
-for cand in "$RUN_DIR/gate.log" "$RUN_DIR/corpus.log" "$RUN_DIR/run.log"; do
-  [ -f "$cand" ] && LOG="$cand" && break
-done
+node_field() { awk -v n="$1" -v f="$2" -F'|' '!/^#/ && $1 ~ n {gsub(/ /,"",$f); print $f; exit}' "$NODES_CONF"; }
+if [ -f "$NODES_CONF" ]; then
+  mapfile -t NODES < <(awk -F'|' '!/^#/ && NF>3 {gsub(/ /,"",$1); print $1}' "$NODES_CONF")
+else
+  NODES=(local)
+fi
 
-# Alternate screen + hidden cursor, restored on any exit.
-#
-# NOTE: a bash trap on INT runs the handler and then CONTINUES execution -- it does not exit on its
-# own. Trapping INT with a cleanup that only restores the terminal made Ctrl-C redraw instead of
-# quit. The signal handler must exit explicitly; only the EXIT trap does cleanup.
 cleanup() { printf '\033[?25h\033[?1049l'; }
 on_signal() { exit 130; }
 trap cleanup EXIT
 trap on_signal INT TERM HUP
 printf '\033[?1049h\033[?25l\033[2J'
 
-B=$'\033[1m'; R=$'\033[0m'; G=$'\033[32m'; Y=$'\033[33m'; D=$'\033[2m'
+B=$'\033[1m'; R=$'\033[0m'; G=$'\033[32m'; Y=$'\033[33m'; D=$'\033[2m'; C=$'\033[36m'
 
-while true; do
-  # ---------------- gather everything (no output yet) ----------------------
-  now_s=$(date '+%H:%M:%S')
-
-  # comm==java filter: a bare `pgrep -f` self-matches the shell running it and reports phantom
-  # JVMs (observed as "3 sim JVMs" for a 1-worker run). Standing project rule.
-  jvm_pids=$(ps -eo pid,comm,args 2>/dev/null | awk '$2=="java" && /simstats -config/ {print $1}')
-  jvms=$(printf '%s\n' "$jvm_pids" | grep -c . || true)
-
-  heap_lines=""
-  for p in $(printf '%s\n' "$jvm_pids" | head -2); do
-    hi=$(timeout 3 jcmd "$p" GC.heap_info 2>/dev/null \
-         | grep -oE 'used [0-9]+M, capacity [0-9]+M' | head -1)
-    [ -n "$hi" ] && heap_lines+="  heap ${p}  : ${hi}"$'\n'
-  done
-
-  round_line=""; recs_line=""; target_met=""
-  if [ -n "$LOG" ]; then
-    lr=$(grep -aoE -- "--- round [0-9]+(/[0-9]+)?" "$LOG" 2>/dev/null | tail -1)
-    [ -n "$lr" ] && round_line="  round       : ${lr#--- }"
-    rc=$(grep -aoE "records so far: [0-9]+/[0-9]+" "$LOG" 2>/dev/null | tail -1)
-    [ -n "$rc" ] && recs_line="  $rc"
-    grep -aq "TARGET MET" "$LOG" 2>/dev/null && target_met="  ${G}TARGET MET${R}"
-
-    started=$(grep -aoE "started [A-Z][a-z]{2} [A-Z][a-z]{2} +[0-9]+ [0-9:]+ [AP]M [A-Z]+ [0-9]{4}" \
-              "$LOG" 2>/dev/null | head -1 | sed 's/^started //')
-    if [ -n "$started" ]; then
-      WATCH_START_EPOCH=$(date -d "$started" +%s 2>/dev/null || true)
-      export WATCH_START_EPOCH
-    fi
-
-    # Infer the game target when the caller didn't supply one, so ETA works on ANY run:
-    # "--- round 4/20" gives total rounds, "Total games: 50 across N shard(s)" gives per-round.
-    if [ -z "${WATCH_TARGET_GAMES:-}" ]; then
-      rt=$(printf '%s' "$lr" | grep -oE "[0-9]+/[0-9]+" | cut -d/ -f2)
-      pr=$(grep -aoE "Total games: [0-9]+" "$LOG" 2>/dev/null | tail -1 | grep -oE "[0-9]+")
-      if [ -n "$rt" ] && [ -n "$pr" ]; then
-        export WATCH_TARGET_GAMES=$(( rt * pr ))
-      fi
-    fi
-    # Corpus runs pace by records, not games — hand the pair to the ETA math.
-    if [ -n "$rc" ]; then
-      export WATCH_RECORDS_NOW="${rc#records so far: }"
-      WATCH_RECORDS_NOW="${WATCH_RECORDS_NOW%%/*}"
-      export WATCH_RECORDS_TARGET="${rc##*/}"
-    fi
-  fi
-
-  export WATCH_JVMS="$jvms"
-  # Is the harness itself still alive? A finished run has no JVMs AND no harness.
-  if pgrep -f "run_gate_.*\.sh|run_v4_.*corpus\.sh|run_parallel\.sh" >/dev/null 2>&1; then
-    export WATCH_HARNESS=1
-  else
-    export WATCH_HARNESS=0
-  fi
-  stats=$(python3 - "$RUN_DIR" <<'PY'
-import sys, json, glob, statistics as st, os
+# One probe, run once per node per refresh (a single round trip). Emits one pipe-delimited line:
+#   games|completed|timeouts|wins|sum_el|med_el|max_el|last_write|jvms|heap|drain|to40|wedge|oom
+PROBE=$(cat <<'EOS'
+RUN="$1"
+cd "$RUN" 2>/dev/null || { echo "MISSING"; exit 0; }
+jvms=$(ps -eo comm | grep -c '^java$')
+heap=""
+for p in $(ps -eo pid,comm | awk '$2=="java"{print $1}' | head -1); do
+  heap=$(timeout 3 jcmd "$p" GC.heap_info 2>/dev/null | grep -oE 'used [0-9]+M, capacity [0-9]+M' | head -1)
+done
+drain=$(grep -ahc "still draining in the background" */run.log */*/run.log 2>/dev/null | paste -sd+ | bc 2>/dev/null); drain=${drain:-0}
+to40=$(grep -ahc "exceeded its 40s per-decision" */run.log */*/run.log 2>/dev/null | paste -sd+ | bc 2>/dev/null); to40=${to40:-0}
+wedge=$(grep -ahc "WEDGE (log stalled" *.log 2>/dev/null | paste -sd+ | bc 2>/dev/null); wedge=${wedge:-0}
+oom=$(grep -ahc "OutOfMemoryError" */run.log */*/run.log 2>/dev/null | paste -sd+ | bc 2>/dev/null); oom=${oom:-0}
+stats=$(python3 - "$RUN" <<'PY'
+import sys, json, glob, os, statistics as st
 run = sys.argv[1]
-# Games are written at BOTH round level (run_parallel.sh's aggregate) and shard level, so a
-# recursive **/games.jsonl glob counts every game twice -- observed as "1513/1000 games (151%)"
-# at round 16 of 20. Take exactly one level, most-specific first.
-for pat in ("round_*/shard_*/games.jsonl", "shard_*/games.jsonl", "round_*/games.jsonl", "games.jsonl"):
+# Games are written at BOTH round and shard level; a recursive glob double-counts. One level only.
+for pat in ("round_*/shard_*/games.jsonl","shard_*/games.jsonl","round_*/games.jsonl","games.jsonl"):
     files = sorted(glob.glob(os.path.join(run, pat)))
-    if files:
-        break
-rows = []
+    if files: break
+else:
+    files = []
+rows=[]
 for f in files:
     try:
-        with open(f) as fh:
-            for line in fh:
-                line = line.strip()
-                if line:
-                    try: rows.append(json.loads(line))
-                    except Exception: pass
-    except OSError:
-        pass
+        for l in open(f):
+            l=l.strip()
+            if l:
+                try: rows.append(json.loads(l))
+                except Exception: pass
+    except OSError: pass
 if not rows:
-    print("  games       : none logged yet"); sys.exit()
-
-to   = [r for r in rows if r.get("timeout")]
-done = [r for r in rows if r.get("completedNormally") and not r.get("timeout")]
-el   = [r["elapsedMillis"]/1000 for r in rows if r.get("elapsedMillis")]
-
-# Seat-aware: these runs are seat-rotated, so assuming seat 0 would report a
-# first-player-advantage artifact rather than a win rate.
-wins = 0
-for r in done:
-    profs = r.get("run", {}).get("aiProfiles", [])
-    if "Ultron" not in profs: continue
-    seat = profs.index("Ultron")
-    for p in r.get("players", []):
-        if p.get("seat") == seat and p.get("won"): wins += 1
-
-print(f"  games       : {len(rows)} logged   {len(done)} completed   {len(to)} timeout ({100*len(to)/len(rows):.1f}%)")
-if done:
-    p = wins/len(done)
-    half = 1.96*((p*(1-p)/len(done))**0.5) if len(done) > 1 else 0
-    print(f"  Ultron wins : {wins}/{len(done)} = {100*p:.1f}%  (+/- {100*half:.1f} at 95%, null 50% in 1v1)")
-if el:
-    print(f"  game secs   : median {st.median(el):.1f}   max {max(el):.0f}")
-
-# ctime is inode CHANGE time on Linux and advances on every append to a live log,
-# which collapses the measured span. Use the parsed header timestamp instead.
-start = os.environ.get("WATCH_START_EPOCH")
-start = float(start) if start and start.strip().isdigit() else None
-if start is None:
-    logs = glob.glob(os.path.join(run, "**", "run.log"), recursive=True)
-    mt = [os.path.getmtime(p) for p in logs if os.path.exists(p)]
-    start = min(mt) if mt else None
-def dur(sec):
-    sec = int(max(0, sec))
-    h, m = sec // 3600, (sec % 3600) // 60
-    return f"{h}h{m:02d}m" if h else f"{m}m"
-
-mtimes = [os.path.getmtime(f) for f in files if os.path.exists(f)]
-if mtimes and start:
-    import time
-    now = time.time()
-    last_write = max(mtimes)
-    idle = now - last_write
-    jvms = os.environ.get("WATCH_JVMS", "0").strip() or "0"
-    harness = os.environ.get("WATCH_HARNESS", "0").strip() == "1"
-
-    # A run is FINISHED when nothing is producing games any more: no sim JVMs, no harness, and no
-    # new output for a while. Without this the watcher chased a target it could never reach --
-    # `20 rounds x 50` implies 1000, but wedged rounds are killed by the watchdog and record fewer,
-    # so a completed gate sat at "987/1000, ETA 5m" forever. Worse, ETA used `now` as the span end,
-    # so with progress stopped the measured rate decayed and the ETA *grew* over time.
-    finished = (jvms == "0") and (not harness) and (idle > 120)
-
-    # Measure throughput over the productive window (start -> last game written), never to `now`;
-    # otherwise an idle or finished run reports an ever-falling rate.
-    span = (last_write - start) if finished else (now - start)
-    if span > 60:
-        rate = len(rows)/(span/3600)          # games/hour
-        if finished:
-            print(f"  throughput  : {rate:.0f} games/hour   ran {dur(span)}")
-        else:
-            print(f"  throughput  : {rate:.0f} games/hour   elapsed {dur(span)}")
-
-        # ETA is driven by whichever target this run is actually pacing against:
-        # a corpus run stops on RECORD count, a gate run stops on game count.
-        eta_h = None
-        rt, rn = os.environ.get("WATCH_RECORDS_TARGET"), os.environ.get("WATCH_RECORDS_NOW")
-        if rt and rn and rt.isdigit() and rn.isdigit() and int(rn) > 0:
-            rec_rate = int(rn)/(span/3600)
-            left = int(rt) - int(rn)
-            if left > 0 and rec_rate > 0:
-                eta_h = left/rec_rate
-                pct = 100*int(rn)/int(rt)
-                print(f"  progress    : {rn}/{rt} records ({pct:.0f}%)  {rec_rate:.0f} rec/hour")
-        tgt = os.environ.get("WATCH_TARGET_GAMES")
-        if eta_h is None and tgt and tgt.isdigit() and rate > 0:
-            left = int(tgt) - len(rows)
-            pct = 100*len(rows)/int(tgt)
-            print(f"  progress    : {len(rows)}/{tgt} games ({pct:.0f}%)")
-            if left > 0 and not finished:
-                eta_h = left/rate
-
-        if finished:
-            # The target is games ATTEMPTED; recorded games can legitimately fall short when the
-            # watchdog kills a wedged round mid-way. Report the shortfall as a fact, not as work
-            # still pending.
-            note = ""
-            if tgt and tgt.isdigit() and len(rows) < int(tgt):
-                short = int(tgt) - len(rows)
-                note = f"  ({short} short of the {tgt} attempted — wedged rounds recorded fewer)"
-            print(f"  ETA         : COMPLETE — finished {dur(idle)} ago{note}")
-        elif eta_h is not None:
-            finish = time.strftime("%H:%M", time.localtime(time.time() + eta_h*3600))
-            print(f"  ETA         : {dur(eta_h*3600)} remaining  ->  finish ~{finish}")
-        elif tgt and tgt.isdigit() and len(rows) >= int(tgt):
-            print("  ETA         : target reached")
-        elif idle > 300:
-            print(f"  ETA         : STALLED? no new games for {dur(idle)} (JVMs={jvms}, harness={'yes' if harness else 'no'})")
+    print("0|0|0|0|0|0|0|0"); raise SystemExit
+to=[r for r in rows if r.get("timeout")]
+done=[r for r in rows if r.get("completedNormally") and not r.get("timeout")]
+w=0
+for r in done:                      # seat-aware: these runs are seat-rotated
+    p=r.get("run",{}).get("aiProfiles",[])
+    if "Ultron" in p:
+        s=p.index("Ultron")
+        for pl in r.get("players",[]):
+            if pl.get("seat")==s and pl.get("won"): w+=1
+el=[r["elapsedMillis"]/1000 for r in rows if r.get("elapsedMillis")]
+lw=max((os.path.getmtime(f) for f in files if os.path.exists(f)), default=0)
+print("%d|%d|%d|%d|%.0f|%.0f|%.0f|%.0f" % (len(rows),len(done),len(to),w,
+      sum(el) if el else 0, st.median(el) if el else 0, max(el) if el else 0, lw))
 PY
 )
+echo "${stats}|${jvms}|${heap}|${drain}|${to40}|${wedge}|${oom}"
+EOS
+)
 
-  trouble=$(grep -ahoE "OutOfMemoryError|WEDGE \(log stalled [0-9]+s\)|exceeded its 40s per-decision timeout|still draining in the background" \
-            "$RUN_DIR"/*/*/run.log "$RUN_DIR"/*.log 2>/dev/null | sort | uniq -c | sort -rn | head -5)
-
-  # ---------------- compose the whole frame -------------------------------
-  frame="${B}=== ${RUN_NAME} ===${R}   ${now_s}"$'\n'
-  frame+="${D}${RUN_DIR}${R}"$'\n\n'
-  if [ "${jvms:-0}" -gt 0 ]; then
-    frame+="  status      : ${G}RUNNING${R} (${jvms} sim JVM(s))"$'\n'
-  elif [ "${WATCH_HARNESS:-0}" = "1" ]; then
-    frame+="  status      : ${Y}between rounds${R} (harness alive, no JVMs right now)"$'\n'
+probe_node() {  # node -> the probe line
+  local n="$1" host rundir
+  host="$(node_field "$n" 2)"
+  if [ -z "$host" ] || [ "$host" = "local" ]; then
+    rundir="$BASE/simstats/out/$RUN_NAME"
+    bash -s "$rundir" <<<"$PROBE" 2>/dev/null | tail -1
   else
-    frame+="  status      : ${D}COMPLETE${R} (no sim JVMs, no harness)"$'\n'
+    rundir="$REMOTE_REPO/simstats/out/$RUN_NAME"
+    timeout 25 ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" bash -s "$rundir" <<<"$PROBE" 2>/dev/null | tail -1
   fi
-  [ -n "$heap_lines" ] && frame+="$heap_lines"
-  [ -n "$round_line" ] && frame+="$round_line"$'\n'
-  [ -n "$recs_line" ]  && frame+="$recs_line"$'\n'
-  [ -n "$target_met" ] && frame+="$target_met"$'\n'
-  frame+="$stats"$'\n\n'
-  if [ -n "$trouble" ]; then
-    frame+="${Y}  trouble signatures:${R}"$'\n'
-    frame+="$(printf '%s\n' "$trouble" | sed 's/^/    /')"$'\n'
-  else
-    frame+="  trouble     : none (no OOM, no wedge, no decision timeouts)"$'\n'
-  fi
-  frame+=$'\n'"${D}  refresh ${REFRESH}s — [q] or Ctrl-C to quit, any key to refresh now (never affects the run)${R}"
+}
 
-  # ---------------- paint in ONE write ------------------------------------
-  # \033[H home, each line cleared to EOL (\033[K) so shorter lines leave no debris, then \033[J
-  # erases anything below. One write, no flicker, no sequential repaint.
-  #
-  # The erase-to-EOL is appended with bash parameter substitution, NOT sed: `sed 's/$/\033[K/'`
-  # emits the literal characters "33[K" at the end of every line, because GNU sed does not
-  # interpret \033 in a replacement. That is a display-corrupting bug, and it is invisible unless
-  # you capture the raw bytes.
+fmt_dur() { local s=${1:-0}; s=${s%.*}; local h=$((s/3600)) m=$(((s%3600)/60)); [ "$h" -gt 0 ] && echo "${h}h${m}m" || echo "${m}m"; }
+
+VIEW="a"   # a = aggregate, or a node index (1-based)
+
+while true; do
+  # -------- gather: one round trip per node --------
+  declare -A NG NC NT NW NS NM NX NL NJ NH ND N4 NWD NO
+  now=$(date +%s)
+  for i in "${!NODES[@]}"; do
+    n="${NODES[$i]}"
+    line="$(probe_node "$n")"
+    if [ -z "$line" ] || [ "$line" = "MISSING" ]; then
+      NG[$i]=-1; continue
+    fi
+    IFS='|' read -r g c t w su me mx lw j hp dr t4 wd om <<<"$line"
+    NG[$i]=${g:-0}; NC[$i]=${c:-0}; NT[$i]=${t:-0}; NW[$i]=${w:-0}
+    NS[$i]=${su:-0}; NM[$i]=${me:-0}; NX[$i]=${mx:-0}; NL[$i]=${lw:-0}
+    NJ[$i]=${j:-0}; NH[$i]="${hp:-}"; ND[$i]=${dr:-0}; N4[$i]=${t4:-0}; NWD[$i]=${wd:-0}; NO[$i]=${om:-0}
+  done
+
+  # -------- aggregate --------
+  tg=0; tc=0; tt=0; tw=0; tsu=0; tjv=0; tdr=0; t44=0; twd=0; tom=0; lastw=0; maxel=0
+  for i in "${!NODES[@]}"; do
+    [ "${NG[$i]}" = "-1" ] && continue
+    tg=$((tg+${NG[$i]})); tc=$((tc+${NC[$i]})); tt=$((tt+${NT[$i]})); tw=$((tw+${NW[$i]}))
+    tsu=$((tsu+${NS[$i]})); tjv=$((tjv+${NJ[$i]}))
+    tdr=$((tdr+${ND[$i]})); t44=$((t44+${N4[$i]})); twd=$((twd+${NWD[$i]})); tom=$((tom+${NO[$i]}))
+    [ "${NL[$i]}" -gt "$lastw" ] && lastw=${NL[$i]}
+    [ "${NX[$i]}" -gt "$maxel" ] && maxel=${NX[$i]}
+  done
+  idle=$(( now - ${lastw:-now} ))
+  finished=0; [ "$tjv" = "0" ] && [ "$idle" -gt 120 ] && finished=1
+
+  frame="${B}=== ${RUN_NAME} ===${R}  $(date '+%H:%M:%S')   ${D}[a]ggregate [1-9]node [n]ext [q]uit${R}"$'\n'
+
+  if [ "$VIEW" = "a" ]; then
+    frame+="${C}  ── AGGREGATE (all nodes) ──${R}"$'\n'
+    if [ "$tjv" -gt 0 ]; then frame+="  state       : ${G}RUNNING${R} ($tjv JVM(s) across $(( ${#NODES[@]} )) node(s))"$'\n'
+    elif [ "$finished" = "1" ]; then frame+="  state       : ${D}COMPLETE${R} (idle $(fmt_dur $idle))"$'\n'
+    else frame+="  state       : ${Y}between rounds${R} (no JVMs, last write $(fmt_dur $idle) ago)"$'\n'; fi
+    frame+="  games       : $tg logged   $tc completed   $tt timeout"
+    [ "$tg" -gt 0 ] && frame+="  ($(awk -v a=$tt -v b=$tg 'BEGIN{printf "%.1f", 100*a/b}')%)"
+    frame+=$'\n'
+    if [ "$tc" -gt 0 ]; then
+      frame+="  Ultron wins : $(awk -v w=$tw -v c=$tc 'BEGIN{p=w/c; h=1.96*sqrt(p*(1-p)/c); printf "%d/%d = %.1f%% (+/- %.1f)", w, c, 100*p, 100*h}')  ${D}null 50%${R}"$'\n'
+    fi
+    [ "$tg" -gt 0 ] && frame+="  game secs   : mean $(awk -v s=$tsu -v g=$tg 'BEGIN{printf "%.0f", s/g}')   max $maxel"$'\n'
+    frame+=$'\n'"${C}  ── PER NODE ──${R}"$'\n'
+    frame+="  ${D}node            games  compl   TO    win%   JVM  heap${R}"$'\n'
+    for i in "${!NODES[@]}"; do
+      n="${NODES[$i]}"
+      if [ "${NG[$i]}" = "-1" ]; then
+        frame+="$(printf '  %-2s %-13s %s' "$((i+1))" "$n" "${Y}no data / unreachable${R}")"$'\n'
+        continue
+      fi
+      wr="-"; [ "${NC[$i]}" -gt 0 ] && wr="$(awk -v w=${NW[$i]} -v c=${NC[$i]} 'BEGIN{printf "%.1f", 100*w/c}')"
+      frame+="$(printf '  %-2s %-13s %5s %6s %4s %6s %5s  %s' "$((i+1))" "$n" "${NG[$i]}" "${NC[$i]}" "${NT[$i]}" "$wr" "${NJ[$i]}" "${NH[$i]:-—}")"$'\n'
+    done
+    frame+=$'\n'
+    if [ $((tdr+t44+twd+tom)) -gt 0 ]; then
+      frame+="${Y}  trouble${R}     : drain=$tdr  40s-timeouts=$t44  wedges=$twd  OOM=$tom"$'\n'
+    else
+      frame+="  trouble     : none"$'\n'
+    fi
+  else
+    i=$((VIEW-1)); n="${NODES[$i]:-?}"
+    frame+="${C}  ── NODE $VIEW: $n ──${R}   ${D}host $(node_field "$n" 2), $(node_field "$n" 5)x$(node_field "$n" 6)${R}"$'\n'
+    if [ "${NG[$i]:--1}" = "-1" ]; then
+      frame+="  ${Y}no data for this run on this node (unreachable, or never ran here)${R}"$'\n'
+    else
+      st="idle"; [ "${NJ[$i]}" -gt 0 ] && st="${G}RUNNING${R}"
+      frame+="  state       : $st (${NJ[$i]} JVM(s))   heap ${NH[$i]:-—}"$'\n'
+      frame+="  games       : ${NG[$i]} logged   ${NC[$i]} completed   ${NT[$i]} timeout"$'\n'
+      if [ "${NC[$i]}" -gt 0 ]; then
+        frame+="  Ultron wins : $(awk -v w=${NW[$i]} -v c=${NC[$i]} 'BEGIN{p=w/c; h=1.96*sqrt(p*(1-p)/c); printf "%d/%d = %.1f%% (+/- %.1f)", w, c, 100*p, 100*h}')"$'\n'
+      fi
+      frame+="  game secs   : median ${NM[$i]}   max ${NX[$i]}"$'\n'
+      frame+="  last write  : $(fmt_dur $(( now - ${NL[$i]} ))) ago"$'\n'
+      frame+="  trouble     : drain=${ND[$i]}  40s=${N4[$i]}  wedge=${NWD[$i]}  OOM=${NO[$i]}"$'\n'
+      frame+="  share       : $(awk -v a=${NG[$i]} -v b=$tg 'BEGIN{if(b>0) printf "%.0f%% of all games", 100*a/b; else printf "-"}')"$'\n'
+    fi
+  fi
+
+  frame+=$'\n'"${D}  refresh ${REFRESH}s — [a]ggregate [1-9]node [n]ext [q]uit; watching never affects the run${R}"
+
   printf '\033[H%s\033[K\033[J' "${frame//$'\n'/$'\033[K\n'}"
 
-  # Interruptible wait. `read -t` on a tty returns the instant a signal or a keypress arrives, so
-  # Ctrl-C is immediate; a plain `sleep` would make bash defer the trap until the sleep finished.
-  # Also gives 'q' to quit and any other key to refresh now. Falls back to sleep when not a tty.
   if [ -t 0 ]; then
     if read -rsn1 -t "$REFRESH" key 2>/dev/null; then
-      case "$key" in q|Q) break ;; esac
+      case "$key" in
+        q|Q) break ;;
+        a|A) VIEW="a" ;;
+        n|N) if [ "$VIEW" = "a" ]; then VIEW=1; elif [ "$VIEW" -ge "${#NODES[@]}" ]; then VIEW="a"; else VIEW=$((VIEW+1)); fi ;;
+        [1-9]) [ "$key" -le "${#NODES[@]}" ] && VIEW="$key" ;;
+      esac
     fi
   else
     sleep "$REFRESH"
