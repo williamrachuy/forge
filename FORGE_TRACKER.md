@@ -4655,3 +4655,44 @@ thousand-game samples routine.
 3. **Tier-1 stochastic policy + league play** (`ULTRON_THEORY_OF_MIND_STUDY.md`) — the first step
    toward anything resembling deception, and the point at which a deterministic argmax stops being
    the ceiling.
+
+### TICKET-V4-025 RESULT (2026-07-28): round-1's gain is ~65% distributional, ~35% volume. Expert iteration validated, but the headline was overstated.
+
+**Why this was run.** V2 = V0 fine-tuned on 20,027 ON-POLICY records, and gated +9.2pp over V0
+(37.7% vs 28.5%). That was reported as proof that on-policy data works. But V2 also simply saw
+**20K more records than V0**, and no control was ever run to separate the two. The claim had a hole
+in it.
+
+**Method (cheap by design: ~4 min CPU, no new games).** Fine-tune V0 on a **size-matched 20K slice
+of the original all-Default corpus** (`v4_007`), byte-identical hyperparameters to V2's fine-tune
+(`--init-from V0 --aux-weight 0.0 --lr 1e-4 --epochs 15 --patience 3 --alpha 0.5 --seed 1234`), then
+score it on the **same on-policy validation split** V0 and V2 were scored on (5,954 samples / 162
+games). Size-matching required a new `train.py --max-records` (deterministic truncation, identical
+across both streaming passes).
+
+| model | fine-tuned on | on-policy val logloss | Δ vs V0 |
+|---|---|---|---|
+| V0 | — | 0.5322 | — |
+| **control** | 20K **all-Default** | **0.5282** | **−0.0040** |
+| V2 | 20K **on-policy** | 0.5209 | −0.0113 |
+
+**On-policy records are worth ~2.8x more per record** for on-policy performance. But **~35% of
+round 1's logloss improvement is reproduced by training on all-Default data** — i.e. by volume/more
+optimisation, not by distribution.
+
+**Conclusions:**
+1. **Expert iteration is real and directionally validated.** The distribution effect is the larger
+   share and cannot be had by simply training longer on old data.
+2. **The round-1 headline was overstated.** "+9.2pp proves on-policy data works" should have been
+   "+9.2pp, of which an unmeasured fraction is volume." Now measured.
+3. **Corpus SIZE is a genuine confound between rounds.** Round 2 will land near 14.4K records
+   (crash + asus washout) against round 1's 20,027 — a 28% shortfall, in a regime where volume
+   demonstrably moves the metric. A 420-game top-up is queued (`jobs_v4_026.tsv`) to restore parity
+   before V3 is trained. **Do not compare round 2 to round 1 on an unmatched corpus.**
+
+**Caveat, stated plainly:** this measures held-out LOGLOSS, not win rate. The control was not gated.
+A logloss decomposition need not map linearly onto win-rate decomposition — round 1 itself showed a
+2.1% relative logloss gain producing +9.2pp. Treat the 65/35 split as the best cheap estimate
+available, not as a win-rate attribution.
+
+**Script:** `tools/nn/run_control_v4_025.sh` (rerunnable; documents its own read-out thresholds).
