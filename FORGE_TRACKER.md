@@ -4748,3 +4748,37 @@ information that was never in the input.
 
 **Standing rule from here:** every gate reports play-quality deltas alongside win rate. A model that
 wins for the wrong reasons, or loses in a new way, is information we have been discarding.
+
+### TICKET-V4-024 STOPPED (2026-07-28): round-2 corpus halted mid-flight; Phase-E work was blocking Phase-A work
+
+**Decision:** stopped the round-2 corpus generation to free the box for the V4-026 gates. Not a
+failure — a priority correction that follows directly from the 2026-07-28 plan revision, which
+demotes expert-iteration rounds to **Phase E** and promotes the free runtime-knob gates to
+**Phase A**. Letting a Phase-E job block Phase-A jobs for nine hours was the wrong trade.
+
+**Data banked (nothing lost):** 244 games (`v4_024_v3_corpus_b`) + 228 (`v4_024_v3_corpus`, dell's
+pre-crash partial) + 79 (asus, final) = **551 games / 7,357 records**. Available whenever round 2
+becomes the priority again; it will need a top-up to reach parity with round 1's 20,027.
+
+**Why it was stopped rather than left to finish — a finding worth keeping.** Throughput had
+collapsed to **57 games/hour** against dell's recorded 119, with **both heaps pinned at
+6144M/6144M** and one OOM (stack: `TimeLimitedCodeBlock.runWithTimeout` → `FutureTask.get`, i.e.
+surfaced on main while awaiting a timed decision). Remaining work would have taken ~9 more hours.
+
+**This is NOT a V4-022 sibling.** Checked: `UltronStateLogger` holds no static collections, and
+`GameCollector` subscribes to each game's own event bus, which dies with the game. No unbounded
+retention.
+
+**But there IS an unexplained gap that matters for Phase B/C.** The V2 gate ran **987 games at 175
+games/hour on the same box with the same 6g heaps and never saturated** (observed 4074–5690M). The
+only material difference between that run and this one is **`nnLogging=true`**. So corpus
+generation with logging appears to roughly triple memory pressure and halve throughput, for reasons
+not yet accounted for by the logger's own data structures (a `Record` is float arrays only; ~13
+records/game at MAIN1).
+
+**Open question, to answer BEFORE Phase C generates new corpora:** why does enabling the state
+logger saturate a 6g heap? Phase C's encoder v3 will require regenerating corpora from scratch, and
+doing that at 57 games/hour instead of 175 would cost days. Candidate causes to check: per-decision
+encoder allocation (a fresh `float[1908]` per seat per captured decision, plus the `GameCopier`
+copies each decision already makes), `GameCollector.pending` growth in long games (uncapped until
+`finish()` downsamples), and Guava `EventBus` subscriber overhead per game.
