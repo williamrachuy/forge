@@ -459,3 +459,78 @@ The whole plan is dead if games don't finish. Two known, diagnosed defects:
 - [Learning With Generalised Card Representations for MTG (arXiv 2407.05879)](https://arxiv.org/abs/2407.05879)
 - [OpenMTG](https://github.com/CraigBanach/openmtg), [open-mtg-env](https://github.com/daniellawson9999/open-mtg-env) — surveyed, less applicable
 - Tesauro, *Temporal Difference Learning and TD-Gammon*, CACM 1995 — the architecture's existence proof
+
+---
+
+# PLAN REVISION 2026-07-28 — grounded in how Magic is actually played
+
+**Supersedes the phase ordering in §6 from this point forward.** Written after researching what
+makes a player good at Magic, and after `play_quality.py` measured how Ultron actually loses. The
+previous plan optimised the *training loop*; the evidence says the binding constraint is the *state
+representation*.
+
+## The three things the game is decided by that our encoder cannot see
+
+1. **TEMPO / mana efficiency.** One of the two fundamental resources (the other being card
+   advantage), and which one dominates depends on game stage — early, mana is the bottleneck and
+   tempo rules; late, mana is abundant and card advantage rules. There is **no mana-available,
+   untapped-mana or mana-spent feature** in `UltronStateEncoder`. Measured consequence (V4-027,
+   n=970): Ultron casts 0.14 fewer spells/turn than Default *and* ends with 0.42 more cards in hand.
+2. **RATE of resource accumulation.** Multiplayer threat assessment keys on *rate*, not on board
+   snapshots — the player who ramped to nine mana is the threat, not the one holding counterspells.
+   The encoder has **zero temporal/delta features**; every value is an instantaneous snapshot.
+3. **OPPONENT INFORMATION.** Reading the opponent's hand and playing around what they might hold is
+   a top-cited skill. We encode the opponent's hand as **one float: a count.** No history, no
+   belief. `PRUNE_HIDDEN_INFO` is additionally a determinization with K=1 and no sampling — the
+   configuration known to cause strategy-fusion pathologies.
+
+Also missing and cheap: card identity (Lightning Bolt and Shock encode **identically** — same MV,
+colour, type, `role=removal`, and there is no damage-magnitude feature), and the hand is *pooled*
+(sum+max+count) despite being bounded at ~7 cards, which is gratuitously lossy.
+
+## Why the architecture is still right
+
+Afterstate value avoids Magic's enormous variable action space, which is a real advantage — the
+MTG RL benchmark needed a 478-action masked space to work around exactly that. Keep it.
+
+But note the specific mismatch: TD-Gammon works because backgammon afterstates are fully
+observable. In Magic **much of a play's value is in retained options and hidden information, not
+the visible board** — "pass holding Counterspell" and "pass holding nothing" produce near-identical
+afterstates and wildly different game values. That is the structural reason V1 failed at instant
+speed, and it is an information problem, not a training problem.
+
+## Revised phase order
+
+**Phase A — free runtime knobs (no training, no schema change).** In flight as `jobs_v4_026.tsv`.
+  A1. Candidate breadth cap 4 → 10. The real decision truncates to 4 options pre-ranked by a
+      hand-tuned heuristic; 5,101 truncated decisions measured, median discarding half. The net can
+      only ever choose moves the heuristic already likes.
+  A2. **4-player checkpoint.** The project goal is 4p FFA (null 25%) and V0/V1/V2 were gated in 1v1
+      *only*. Three generations optimising a proxy whose transfer was never measured.
+
+**Phase B — stop locking data to the encoder (do BEFORE the next corpus).**
+  B1. Log a card-identity + scalar side-channel alongside the float vector, so a future encoder can
+      be re-derived offline from existing corpora instead of replaying thousands of games. Today
+      the corpus stores *encoded vectors*, so any encoder change invalidates every record we own.
+
+**Phase C — encoder v3: put the game's actual currencies in the state.** (schema + semver bump)
+  C1. Mana: untapped mana by colour, mana spent this turn, mana floated/wasted.
+  C2. Temporal deltas: per-turn change in cards, permanents, power, life — for rate/threat.
+  C3. Unpool the hand into ~7 canonical-sorted slots (48 floats each; +239 floats total, trivial).
+  C4. Magnitude features (damage dealt, cards drawn, mana produced) so Bolt ≠ Shock.
+  C5. Card identity embeddings over the fixed 666-card vocab — `vocabIdByName` is already built and
+      currently unused. Initialise from property features so rare cards start sensible.
+
+**Phase D — information and belief.** Opponent-hand belief sampled from the known shared-pool
+remainder (our computable-beliefs advantage), K=2–3 determinizations on the cheap neural path.
+Prerequisite for any competent instant-speed play — see the V1 negative.
+
+**Phase E — training-loop work, now that the state is adequate.** TD(λ) targets with λ<1 and a
+frozen target net; α off 0.5 (half the current target is Default's own board heuristic, an
+imitation anchor); depth-1; then expert-iteration rounds; then stochastic policy/league; self-play
+only once at or above parity (below parity, vs-Default data is strictly better than self-play data).
+
+## Standing evaluation rule
+
+Every gate reports **play-quality deltas alongside win rate** (`play_quality.py`). Scalar win rate
+hides why a model wins, and this project has already lost time to that twice.
