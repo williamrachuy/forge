@@ -4696,3 +4696,55 @@ A logloss decomposition need not map linearly onto win-rate decomposition — ro
 available, not as a win-rate attribution.
 
 **Script:** `tools/nn/run_control_v4_025.sh` (rerunnable; documents its own read-out thresholds).
+
+### TICKET-V4-027 (2026-07-28): play-quality diagnostics — Ultron loses on TEMPO, and the encoder cannot see tempo
+
+**Why.** This project has evaluated exclusively on scalar win rate, while every game logs 28
+per-player stats that were never used. V1's "durdling" was diagnosed by a human reading logs. The
+MTG RL benchmark literature (arXiv 2605.06066) states plainly that scalar win rate hides the
+diagnostic structure that matters. Tool: `tools/simstats/play_quality.py`.
+
+**Method.** PAIRED per-game deltas: Ultron-minus-opponent computed *within each game*, so game
+length, draw luck and board explosions cancel. A per-model average would confound all three.
+
+**Result — V2 gate, n=970 completed games (Ultron minus Default):**
+
+| axis | metric | delta |
+|---|---|---|
+| TEMPO | spells cast / turn | **−0.14** |
+| CARDS | cards drawn | −0.46 |
+| CARDS | **cards left in hand at end** | **+0.42** |
+| AGGRO | attacks declared | −1.15 |
+| AGGRO | combat damage dealt | −6.71 |
+| DEF | combat damage taken | +6.71 |
+| BOARD | permanents / creatures / power | −2.17 / −1.53 / −5.35 |
+
+**Ultron casts fewer spells per turn AND ends with more cards in hand.** That is mana inefficiency
+stated two ways — it is holding cards it never deploys. Mana efficiency *is* tempo, mechanically,
+and tempo is one of the two resources Magic is played on (the other being card advantage; see
+Wizards' "Tempo & Card Advantage: A Delicate Balance"). **Ultron is losing the tempo game.**
+
+**Won-vs-lost within V2 (366 won / 604 lost) — the non-tautological rows only.** Damage and blocks
+are near-tautological (the winner dealt 20 damage by definition), so ignore those. What is *not*
+tautological:
+
+| metric | won | lost | gap |
+|---|---|---|---|
+| spells / turn | +0.01 | **−0.23** | +0.25 |
+| cards drawn | +3.18 | **−2.66** | +5.84 |
+| abilities activated | −0.11 | −0.89 | +0.78 |
+
+In games it wins, Ultron matches Default's spell rate. In games it loses, it is systematically
+*less active* — fewer spells, fewer cards, fewer activations. It does not lose by making one bad
+attack; it loses by quietly under-using its resources for the whole game.
+
+**The connection that matters.** `UltronStateEncoder` has **no mana-available, no untapped-mana and
+no mana-spent feature anywhere** — only land colour counts and a raw normalised turn number. There
+are also **no temporal/delta features at all**, so rate-of-accumulation is unrepresentable, and rate
+is precisely the signal multiplayer threat assessment keys on. **We are asking the network to learn
+a game whose central currency it cannot perceive, and it plays exactly like an agent that cannot
+perceive it.** No training-loop refinement (TD targets, more iteration rounds, self-play) recovers
+information that was never in the input.
+
+**Standing rule from here:** every gate reports play-quality deltas alongside win rate. A model that
+wins for the wrong reasons, or loses in a new way, is information we have been discarding.
