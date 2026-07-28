@@ -34,7 +34,12 @@ else
   NODES=(local)
 fi
 
-cleanup() { printf '\033[?25h\033[?1049l'; }
+# Per-node result cache. A probe that times out must NOT blank the node -- the node is usually
+# fine and merely slow (a loaded asus-vivopc answers a bare ssh in 6-8s). Showing "unreachable" for
+# a healthy node is worse than showing slightly stale numbers, so the last good reading is kept and
+# labelled with its age.
+CACHE="$(mktemp -d)"
+cleanup() { printf '\033[?25h\033[?1049l'; rm -rf "$CACHE" 2>/dev/null; }
 on_signal() { exit 130; }
 trap cleanup EXIT
 trap on_signal INT TERM HUP
@@ -47,9 +52,16 @@ B=$'\033[1m'; R=$'\033[0m'; G=$'\033[32m'; Y=$'\033[33m'; D=$'\033[2m'; C=$'\033
 PROBE=$(cat <<'EOS'
 RUN="$1"
 cd "$RUN" 2>/dev/null || { echo "MISSING"; exit 0; }
-jvms=$(ps -eo comm | grep -c '^java$')
+# Count only JVMs belonging to THIS run. A plain java count is per-NODE, so a finished run would
+# report "RUNNING" whenever any other run happened to be using the box -- observed with a completed
+# gate showing 2 JVMs that actually belonged to a different corpus. Match the run dir in the cmdline.
+RUNBASE=$(basename "$RUN")
+# comm=="java" filter, NOT a bare grep: a `grep -c "<pattern>"` matches its OWN cmdline and reports
+# a phantom JVM. That self-match has now bitten this project three times (forge_nodes status, the
+# watcher liveness line, and here). Keying on comm makes it structurally impossible.
+jvms=$(ps -eo comm,args 2>/dev/null | awk -v r="$RUNBASE" '$1=="java" && index($0, "/" r "/") {n++} END{print n+0}')
 heap=""
-for p in $(ps -eo pid,comm | awk '$2=="java"{print $1}' | head -1); do
+for p in $(ps -eo pid,comm,args 2>/dev/null | awk -v r="$RUNBASE" '$2=="java" && index($0, "/" r "/") {print $1}' | head -1); do
   heap=$(timeout 3 jcmd "$p" GC.heap_info 2>/dev/null | grep -oE 'used [0-9]+M, capacity [0-9]+M' | head -1)
 done
 drain=$(grep -ahc "still draining in the background" */run.log */*/run.log 2>/dev/null | paste -sd+ | bc 2>/dev/null); drain=${drain:-0}
@@ -103,7 +115,7 @@ probe_node() {  # node -> the probe line
     bash -s "$rundir" <<<"$PROBE" 2>/dev/null | tail -1
   else
     rundir="$REMOTE_REPO/simstats/out/$RUN_NAME"
-    timeout 25 ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" bash -s "$rundir" <<<"$PROBE" 2>/dev/null | tail -1
+    timeout 60 ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" bash -s "$rundir" <<<"$PROBE" 2>/dev/null | tail -1
   fi
 }
 
@@ -115,16 +127,39 @@ while true; do
   # -------- gather: one round trip per node --------
   declare -A NG NC NT NW NS NM NX NL NJ NH ND N4 NWD NO
   now=$(date +%s)
+  # Probe every node IN PARALLEL. Sequential probing made a refresh cost the SUM of all nodes'
+  # latency, so one slow node starved the whole display and tripped its own timeout.
   for i in "${!NODES[@]}"; do
-    n="${NODES[$i]}"
-    line="$(probe_node "$n")"
-    if [ -z "$line" ] || [ "$line" = "MISSING" ]; then
-      NG[$i]=-1; continue
+    (
+      line="$(probe_node "${NODES[$i]}")"
+      if [ -n "$line" ] && [ "$line" != "MISSING" ]; then
+        printf '%s\n%s\n' "$(date +%s)" "$line" > "$CACHE/$i.ok"
+        echo OK > "$CACHE/$i.state"
+      elif [ "$line" = "MISSING" ]; then
+        echo NORUN > "$CACHE/$i.state"
+      else
+        echo FAIL > "$CACHE/$i.state"
+      fi
+    ) &
+  done
+  wait
+
+  declare -A NSTATE NAGE
+  for i in "${!NODES[@]}"; do
+    NSTATE[$i]="$(cat "$CACHE/$i.state" 2>/dev/null || echo FAIL)"
+    if [ -f "$CACHE/$i.ok" ]; then
+      ts="$(sed -n 1p "$CACHE/$i.ok")"; line="$(sed -n 2p "$CACHE/$i.ok")"
+      NAGE[$i]=$(( now - ${ts:-now} ))
+      IFS='|' read -r g c t w su me mx lw j hp dr t4 wd om <<<"$line"
+      NG[$i]=${g:-0}; NC[$i]=${c:-0}; NT[$i]=${t:-0}; NW[$i]=${w:-0}
+      NS[$i]=${su:-0}; NM[$i]=${me:-0}; NX[$i]=${mx:-0}; NL[$i]=${lw:-0}
+      NJ[$i]=${j:-0}; NH[$i]="${hp:-}"; ND[$i]=${dr:-0}; N4[$i]=${t4:-0}; NWD[$i]=${wd:-0}; NO[$i]=${om:-0}
+      # A cached reading older than two refreshes is stale, not current -- say so rather than
+      # presenting old numbers as live.
+      [ "${NSTATE[$i]}" != "OK" ] && [ "${NAGE[$i]}" -gt $(( REFRESH * 2 )) ] && NSTATE[$i]="STALE"
+    else
+      NG[$i]=-1; NAGE[$i]=0
     fi
-    IFS='|' read -r g c t w su me mx lw j hp dr t4 wd om <<<"$line"
-    NG[$i]=${g:-0}; NC[$i]=${c:-0}; NT[$i]=${t:-0}; NW[$i]=${w:-0}
-    NS[$i]=${su:-0}; NM[$i]=${me:-0}; NX[$i]=${mx:-0}; NL[$i]=${lw:-0}
-    NJ[$i]=${j:-0}; NH[$i]="${hp:-}"; ND[$i]=${dr:-0}; N4[$i]=${t4:-0}; NWD[$i]=${wd:-0}; NO[$i]=${om:-0}
   done
 
   # -------- aggregate --------
@@ -159,11 +194,19 @@ while true; do
     for i in "${!NODES[@]}"; do
       n="${NODES[$i]}"
       if [ "${NG[$i]}" = "-1" ]; then
-        frame+="$(printf '  %-2s %-13s %s' "$((i+1))" "$n" "${Y}no data / unreachable${R}")"$'\n'
+        case "${NSTATE[$i]}" in
+          NORUN) why="${D}this run has never executed on this node${R}" ;;
+          FAIL)  why="${Y}probe failed (node slow or unreachable) — no reading yet${R}" ;;
+          *)     why="${Y}no reading yet${R}" ;;
+        esac
+        frame+="$(printf '  %-2s %-13s %s' "$((i+1))" "$n" "$why")"$'\n'
         continue
       fi
       wr="-"; [ "${NC[$i]}" -gt 0 ] && wr="$(awk -v w=${NW[$i]} -v c=${NC[$i]} 'BEGIN{printf "%.1f", 100*w/c}')"
-      frame+="$(printf '  %-2s %-13s %5s %6s %4s %6s %5s  %s' "$((i+1))" "$n" "${NG[$i]}" "${NC[$i]}" "${NT[$i]}" "$wr" "${NJ[$i]}" "${NH[$i]:-—}")"$'\n'
+      tag=""
+      [ "${NSTATE[$i]}" = "STALE" ] && tag=" ${Y}(stale ${NAGE[$i]}s)${R}"
+      [ "${NSTATE[$i]}" = "FAIL" ] && tag=" ${Y}(probe failed; showing ${NAGE[$i]}s-old data)${R}"
+      frame+="$(printf '  %-2s %-13s %5s %6s %4s %6s %5s  %s' "$((i+1))" "$n" "${NG[$i]}" "${NC[$i]}" "${NT[$i]}" "$wr" "${NJ[$i]}" "${NH[$i]:-—}")$tag"$'\n'
     done
     frame+=$'\n'
     if [ $((tdr+t44+twd+tom)) -gt 0 ]; then
@@ -175,9 +218,13 @@ while true; do
     i=$((VIEW-1)); n="${NODES[$i]:-?}"
     frame+="${C}  ── NODE $VIEW: $n ──${R}   ${D}host $(node_field "$n" 2), $(node_field "$n" 5)x$(node_field "$n" 6)${R}"$'\n'
     if [ "${NG[$i]:--1}" = "-1" ]; then
-      frame+="  ${Y}no data for this run on this node (unreachable, or never ran here)${R}"$'\n'
+      case "${NSTATE[$i]:-FAIL}" in
+        NORUN) frame+="  ${D}this run has never executed on this node${R}"$'\n' ;;
+        *)     frame+="  ${Y}probe failed — node slow or unreachable, no reading yet${R}"$'\n' ;;
+      esac
     else
       st="idle"; [ "${NJ[$i]}" -gt 0 ] && st="${G}RUNNING${R}"
+      [ "${NSTATE[$i]}" != "OK" ] && st="$st ${Y}(reading ${NAGE[$i]}s old)${R}"
       frame+="  state       : $st (${NJ[$i]} JVM(s))   heap ${NH[$i]:-—}"$'\n'
       frame+="  games       : ${NG[$i]} logged   ${NC[$i]} completed   ${NT[$i]} timeout"$'\n'
       if [ "${NC[$i]}" -gt 0 ]; then
