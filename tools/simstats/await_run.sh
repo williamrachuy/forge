@@ -17,7 +17,12 @@
 # box" -- otherwise an unrelated run on the same machine makes a finished run look alive.
 set -uo pipefail
 
-RUN="${1:?usage: await_run.sh <run_name> [poll_seconds]}"
+# Accepts a COMMA-SEPARATED list of run names. A crash mid-run leaves surviving work under the
+# original name and resumed work under a new one (fresh seed range, separate dir so the partial is
+# not truncated); the completion signal has to span both or it fires early.
+RUNS_CSV="${1:?usage: await_run.sh <run_name>[,<run_name>...] [poll_seconds]}"
+IFS=',' read -ra RUNS <<< "$RUNS_CSV"
+RUN="${RUNS[0]}"
 POLL="${2:-300}"
 PROGRESS_EVERY="${PROGRESS_EVERY:-300}"
 STALL_MINUTES="${STALL_MINUTES:-45}"
@@ -46,10 +51,10 @@ o=$(grep -ahc "OutOfMemoryError" "$D"/*/run.log "$D"/*/*/run.log 2>/dev/null | p
 echo "${j}|${g}|${o:-0}"'
 
 probe() {
-  local n="$1" host
+  local n="$1" r="${2:-$RUN}" host
   host="$(node_field "$n" 2)"
-  if [ "$host" = "local" ]; then bash -s "$RUN" <<<"$PROBE" 2>/dev/null | tail -1
-  else timeout 60 ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" bash -s "$RUN" <<<"$PROBE" 2>/dev/null | tail -1; fi
+  if [ "$host" = "local" ]; then bash -s "$r" <<<"$PROBE" 2>/dev/null | tail -1
+  else timeout 60 ssh -o BatchMode=yes -o ConnectTimeout=15 "$host" bash -s "$r" <<<"$PROBE" 2>/dev/null | tail -1; fi
 }
 
 declare -A DONE_ANNOUNCED OOM_ANNOUNCED
@@ -58,18 +63,21 @@ last_total=0; last_change=$(date +%s); last_bucket=0
 while true; do
   total=0; alive=0; detail=""
   for n in "${NODES[@]}"; do
-    line="$(probe "$n")"
-    IFS='|' read -r j g o <<<"${line:-0|0|0}"
-    j=${j:-0}; g=${g:-0}; o=${o:-0}
+    j=0; g=0; o=0
+    for r in "${RUNS[@]}"; do
+      line="$(RUN="$r" probe "$n" "$r")"
+      IFS='|' read -r rj rg ro <<<"${line:-0|0|0}"
+      j=$(( j + ${rj:-0} )); g=$(( g + ${rg:-0} )); o=$(( o + ${ro:-0} ))
+    done
     total=$(( total + g ))
     [ "$j" -gt 0 ] && alive=1
     detail+="${n}=${g} "
     if [ "$o" -gt 0 ] && [ -z "${OOM_ANNOUNCED[$n]:-}" ]; then
-      echo "RUN $RUN: WARNING OutOfMemoryError on $n"; OOM_ANNOUNCED[$n]=1
+      echo "RUN $RUNS_CSV: WARNING OutOfMemoryError on $n"; OOM_ANNOUNCED[$n]=1
     fi
     # A node is finished when it has no JVMs for this run but did produce games.
     if [ "$j" = "0" ] && [ "$g" -gt 0 ] && [ -z "${DONE_ANNOUNCED[$n]:-}" ]; then
-      echo "RUN $RUN: $n FINISHED ($g games)"; DONE_ANNOUNCED[$n]=1
+      echo "RUN $RUNS_CSV: $n FINISHED ($g games)"; DONE_ANNOUNCED[$n]=1
     fi
   done
 
@@ -77,19 +85,19 @@ while true; do
   [ "$total" -ne "$last_total" ] && { last_change=$now; last_total=$total; }
 
   if [ "$alive" = "0" ] && [ "$total" -gt 0 ]; then
-    echo "RUN $RUN: COMPLETE - $total games total ($detail)"
+    echo "RUN $RUNS_CSV: COMPLETE - $total games total ($detail)"
     exit 0
   fi
 
   # Only surface progress at coarse intervals; every poll would be noise.
   bucket=$(( total / PROGRESS_EVERY ))
   if [ "$bucket" -gt "$last_bucket" ]; then
-    echo "RUN $RUN: progress $total games ($detail)"; last_bucket=$bucket
+    echo "RUN $RUNS_CSV: progress $total games ($detail)"; last_bucket=$bucket
   fi
 
   # Nothing produced for a long time while JVMs still exist = wedged, not working.
   if [ $(( (now - last_change) / 60 )) -ge "$STALL_MINUTES" ]; then
-    echo "RUN $RUN: ABANDONED - no new games for ${STALL_MINUTES}m at $total games ($detail)"
+    echo "RUN $RUNS_CSV: ABANDONED - no new games for ${STALL_MINUTES}m at $total games ($detail)"
     exit 1
   fi
 
