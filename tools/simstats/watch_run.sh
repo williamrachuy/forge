@@ -189,17 +189,24 @@ while true; do
       frame+="  Ultron wins : $(awk -v w=$tw -v c=$tc 'BEGIN{p=w/c; h=1.96*sqrt(p*(1-p)/c); printf "%d/%d = %.1f%% (+/- %.1f)", w, c, 100*p, 100*h}')  ${D}null 50%${R}"$'\n'
     fi
     [ "$tg" -gt 0 ] && frame+="  game secs   : mean $(awk -v s=$tsu -v g=$tg 'BEGIN{printf "%.0f", s/g}')   max $maxel"$'\n'
-    frame+=$'\n'"${C}  ── PER NODE ──${R}"$'\n'
+    part=0; for k in "${!NODES[@]}"; do [ "${NG[$k]}" != "-1" ] && part=$((part+1)); done
+    if [ "$part" -le 1 ]; then
+      frame+=$'\n'"${C}  ── PER NODE ──${R} ${D}(single-node run — only $part of ${#NODES[@]} nodes participated)${R}"$'\n'
+    else
+      frame+=$'\n'"${C}  ── PER NODE ──${R} ${D}($part of ${#NODES[@]} nodes participated)${R}"$'\n'
+    fi
     frame+="  ${D}node            games  compl   TO    win%   JVM  heap${R}"$'\n'
     for i in "${!NODES[@]}"; do
       n="${NODES[$i]}"
       if [ "${NG[$i]}" = "-1" ]; then
+        # Keep the table shape. A node that simply was not part of this run is NORMAL (most runs are
+        # single-node) and must not look like a fault -- it previously rendered as a bare sentence
+        # sitting where the numbers go, which reads as an error at a glance.
         case "${NSTATE[$i]}" in
-          NORUN) why="${D}this run has never executed on this node${R}" ;;
-          FAIL)  why="${Y}probe failed (node slow or unreachable) — no reading yet${R}" ;;
-          *)     why="${Y}no reading yet${R}" ;;
+          NORUN) frame+="$(printf '  %-2s %-13s %5s %6s %4s %6s %5s  %s' "$((i+1))" "$n" "-" "-" "-" "-" "-" "${D}not used by this run${R}")"$'\n' ;;
+          FAIL)  frame+="$(printf '  %-2s %-13s %5s %6s %4s %6s %5s  %s' "$((i+1))" "$n" "?" "?" "?" "?" "?" "${Y}PROBE FAILED — node slow or unreachable${R}")"$'\n' ;;
+          *)     frame+="$(printf '  %-2s %-13s %5s %6s %4s %6s %5s  %s' "$((i+1))" "$n" "?" "?" "?" "?" "?" "${Y}no reading yet${R}")"$'\n' ;;
         esac
-        frame+="$(printf '  %-2s %-13s %s' "$((i+1))" "$n" "$why")"$'\n'
         continue
       fi
       wr="-"; [ "${NC[$i]}" -gt 0 ] && wr="$(awk -v w=${NW[$i]} -v c=${NC[$i]} 'BEGIN{printf "%.1f", 100*w/c}')"
