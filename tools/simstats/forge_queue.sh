@@ -49,10 +49,10 @@ node_capacity() {
 
 node_can_host() {   # node, kind -> 0 if allowed
   local n="$1" kind="$2"
-  # A node explicitly flagged unsuitable takes generation only if someone asks for it by name, and
-  # never a gate. asus-vivopc earned this flag by OOMing and wedging on the NN-eval lane (V4-024).
+  # UNSUITABLE means unsuitable for the NN-eval lane FULL STOP -- gate or generation. asus-vivopc
+  # OOMed and wedged doing GENERATION (V4-024), so allowing it gen work would just re-run that.
   case "$(node_role "$n")" in
-    *UNSUITABLE*) [ "$kind" = "gate" ] && return 1 ;;
+    *UNSUITABLE*) return 1 ;;
   esac
   return 0
 }
