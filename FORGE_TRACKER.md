@@ -4590,3 +4590,58 @@ registry replaced with per-controller ownership plus an explicit end-of-game evi
 real surgery on a class shared with the interactive GUI path, and it was not worth the risk on the
 back of the V4-022 win. Note that `getSimStats(game, player)` (SimulateStats.java:268) reads this
 map and must keep working.
+
+### TICKET-V4-020 RESULT (2026-07-27): V2 BEATS V0 by +9.2pp — expert iteration works. First real model gain in the project.
+
+**V2 = V0 fine-tuned on an on-policy corpus.** Single variable: the state distribution.
+
+| model | training data | win rate vs Default (1v1 Monarch, null 50%) | n | timeouts |
+|---|---|---|---|---|
+| **V0** | off-policy (Default-vs-Default corpus, 284,458 records) | **28.5%** [25.9, 31.3] | 1083 | 1.5% |
+| **V2** | V0 warm-start + on-policy corpus (20,027 records) | **37.7%** [34.7, 40.8] | 970 | 1.7% |
+
+**+9.2 pp, two-proportion z = 4.430, one-sided p = 4.7e-06.** Wilson intervals do not overlap.
+Both runs: Ultron vs Default, 1v1 Battlebox Monarch, seat-rotated, NN eval, cap 4, post-V4-022
+runtime, on the same commit era. Model: `tools/nn/runs/20260727-130315/model.bin` (aux-weight 0.0).
+
+**Held-out logloss, both scored on the SAME on-policy validation split** (5,954 samples / 162 games):
+V0 **0.5322** -> V2 **0.5209**. Note V0 scored 0.509 on its own all-Default validation data but
+0.532 on on-policy states — **direct confirmation of the off-policy premise**: the value function was
+measurably worse at judging exactly the states its own policy reaches, which is the entire reason
+this ticket existed.
+
+**A modest logloss gain (2.1% relative) produced a large win-rate gain (+9.2pp).** Worth remembering
+next time a small held-out delta looks unpromising — for an argmax policy, what matters is the
+*ordering* of afterstates near the decision boundary, not average calibration.
+
+**The aux-head hazard was real in mechanism but immaterial in effect.** Primary (`--aux-weight 0.0`,
+0.5209) vs control (`--aux-weight 0.25`, 0.5214) — essentially identical. The orchestrator predicted
+randomly-initialised aux heads would corrupt the warm-started trunk; running the control settled it
+for ~10 minutes of CPU. Prediction was overstated; keep `0.0` anyway since the aux heads are dropped
+at export regardless.
+
+**Honest caveats:**
+- **V2 still loses to Default** (37.7% vs a 50% null; exact binomial p vs 50% = 1.0). This is a real
+  improvement, not parity. Do not report it as "Ultron beats Default".
+- Not a paired same-seed comparison. V0's baseline comes from the V4-020 corpus-generation run
+  (`nnLogging=true`), V2's from a dedicated 20-round gate (logging off). Configs are otherwise
+  identical and logging does not affect decisions, but this is two independent samples, not a
+  paired design.
+- The old **37.3% [26.1, 50.0] n=59** V0 figure (V4-018e) is superseded. At n=1083 V0 is 28.5%;
+  the n=59 result was an optimistic small-sample draw on the pre-V4-022 runtime where ~25% of games
+  were discarded as timeouts. **Cite 28.5%, not 37.3%, as V0's strength.**
+
+**Tooling bug fixed in passing:** `gate.py`'s `exact_binomial_sf` raised `OverflowError` at n=1083 —
+it multiplied `math.comb(n,k)` (an exact int with hundreds of digits) by floats. Rewritten in log
+space via `lgamma`, verified against known values. We only started hitting this because V4-022 made
+thousand-game samples routine.
+
+**Next levers, in order (unchanged in shape, now with evidence behind them):**
+1. **Round 2 of expert iteration** — regenerate on-policy with V2 driving, fine-tune again. This is
+   now a proven-productive loop, and at ~186 games/hour (+asus) a round is affordable. Watch for
+   diminishing returns; log the per-round delta.
+2. **Depth-1 search** — forced off by the monster, which is now dead. Increases *judgment* rather
+   than decision surface, which is the axis V4-018 showed matters.
+3. **Tier-1 stochastic policy + league play** (`ULTRON_THEORY_OF_MIND_STUDY.md`) — the first step
+   toward anything resembling deception, and the point at which a deterministic argmax stops being
+   the ceiling.

@@ -147,14 +147,34 @@ def wilson_ci(x, n, z=1.959963984540054):
 
 
 def exact_binomial_sf(x, n, p):
-    """P(X >= x) for X ~ Binomial(n, p) — exact, via math.comb (n <= ~1000 is fine)."""
+    """P(X >= x) for X ~ Binomial(n, p) — exact, computed in LOG space.
+
+    The original implementation multiplied `math.comb(n, k) * p**k * (1-p)**(n-k)` directly. That
+    raises OverflowError once n passes ~1030: math.comb returns an exact Python int with hundreds of
+    digits, and converting it to float to multiply overflows, even though the *product* is a
+    perfectly ordinary probability near 0. It crashed on the first n=1083 gate this project ran
+    (TICKET-V4-020) — a limit we only started hitting because the V4-022 throughput fix made
+    thousand-game samples routine. Doing the whole term in logs keeps every intermediate small.
+    """
     if x <= 0:
         return 1.0
     if x > n:
         return 0.0
-    total = 0.0
+    if p <= 0.0:
+        return 1.0 if x <= 0 else 0.0
+    if p >= 1.0:
+        return 1.0 if x <= n else 0.0
+    log_p, log_q = math.log(p), math.log1p(-p)
+    # log C(n,k) via lgamma; sum the terms with a running max for numerical stability.
+    terms = []
     for k in range(x, n + 1):
-        total += math.comb(n, k) * (p ** k) * ((1 - p) ** (n - k))
+        log_term = (math.lgamma(n + 1) - math.lgamma(k + 1) - math.lgamma(n - k + 1)
+                    + k * log_p + (n - k) * log_q)
+        terms.append(log_term)
+    if not terms:
+        return 0.0
+    m = max(terms)
+    total = math.exp(m) * sum(math.exp(t - m) for t in terms)
     return min(1.0, total)
 
 
