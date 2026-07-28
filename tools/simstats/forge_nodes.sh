@@ -3,6 +3,7 @@
 #
 #   bash tools/simstats/forge_nodes.sh status
 #   bash tools/simstats/forge_nodes.sh sync    <node>
+#   bash tools/simstats/forge_nodes.sh push-model <node> <abs path to model.bin>
 #   bash tools/simstats/forge_nodes.sh run     <node> <config.ini> <games> <run_name> [seed_base]
 #   bash tools/simstats/forge_nodes.sh collect <run_name>
 #   bash tools/simstats/forge_nodes.sh offload <config.ini> <total_games> <run_name>
@@ -126,8 +127,22 @@ cmd_run() {
     return 1
   fi
 
+  # The NN model is NOT in git (tools/nn/runs/ is gitignored), so `sync` cannot carry it. Without
+  # ULTRON_NN_MODEL_PATH the JVM logs "neural eval unavailable" and silently falls back to the
+  # heuristic AI -- producing a corpus with no network in it and no error anywhere. Refuse instead.
+  local model="${ULTRON_NN_MODEL_PATH:-}"
+  if [ -z "$model" ]; then
+    echo "REFUSING: ULTRON_NN_MODEL_PATH is not set. Export it (absolute path) before running." >&2
+    return 1
+  fi
+  if ! run_script "$n" "[ -f '$model' ] && echo OK" 2>/dev/null | grep -q OK; then
+    echo "REFUSING: $n has no model at $model" >&2
+    echo "          run: bash tools/simstats/forge_nodes.sh push-model $n $model" >&2
+    return 1
+  fi
+
   local out="${REMOTE_REPO}/simstats/out/${run_name}"
-  echo "==> $n: $games games, seed_base=$seed_base, ${workers}x${xmx} -> simstats/out/${run_name}"
+  echo "==> $n: $games games, seed_base=$seed_base, ${workers}x${xmx}, model=$(basename "$(dirname "$model")")/model.bin"
   run_script "$n" "$(cat <<EOS
 set -uo pipefail
 cd $REMOTE_REPO || exit 1
@@ -138,7 +153,7 @@ sed -e 's/^seed=.*/seed=$seed_base/' \
     -e 's/^name=.*/name=$run_name/' '$cfg' > '$out/run.ini'
 bash tools/simstats/install_watcher.sh '$out' $games >/dev/null 2>&1
 tmux kill-session -t forge_run 2>/dev/null
-tmux new-session -d -s forge_run "cd $REMOTE_REPO && export ULTRON_NN_EVAL=true ULTRON_SIM_MAX_TOP_LEVEL_CANDIDATES=4 FORGE_SKIP_GROOM=1 && bash tools/simstats/run_parallel.sh '$out/run.ini' --workers $workers --xmx $xmx > '$out/node_run.log' 2>&1"
+tmux new-session -d -s forge_run "cd $REMOTE_REPO && export ULTRON_NN_EVAL=true ULTRON_NN_MODEL_PATH=$model ULTRON_SIM_MAX_TOP_LEVEL_CANDIDATES=4 FORGE_SKIP_GROOM=1 && bash tools/simstats/run_parallel.sh '$out/run.ini' --workers $workers --xmx $xmx > '$out/node_run.log' 2>&1"
 sleep 3
 echo "sim JVMs on \$(hostname): \$(ps -eo pid,comm,args 2>/dev/null | awk '\$2==\"java\" && /simstats -config/ {n++} END{print n+0}')"
 EOS
@@ -201,8 +216,20 @@ EOS
 )"
 }
 
+cmd_push_model() {
+  local n="$1" model="$2"; require_node "$n"
+  local host; host="$(node_field "$n" 2)"
+  [ "$host" = "local" ] && { echo "'$n' is local; model already here"; return 0; }
+  [ -f "$model" ] || { echo "no such model: $model" >&2; return 1; }
+  echo "==> copying $(du -h "$model" | cut -f1) model to $n:$model"
+  run_script "$n" "mkdir -p '$(dirname "$model")'"
+  rsync -a "$model" "${host}:${model}" || return 1
+  run_script "$n" "ls -la '$model'"
+}
+
 case "${1:-}" in
   status)  cmd_status ;;
+  push-model) cmd_push_model "${2:?node}" "${3:?model path}" ;;
   sync)    cmd_sync "${2:?node}" ;;
   run)     cmd_run "${2:?node}" "${3:?config}" "${4:?games}" "${5:?run_name}" "${6:-}" ;;
   collect) cmd_collect "${2:?run_name}" ;;
