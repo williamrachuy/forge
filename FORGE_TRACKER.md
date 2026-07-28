@@ -4870,3 +4870,53 @@ merely *skipped* the block could not pass.
 shaded-jar rebuild and the queue is mid-gate (rebuilding would swap the jar under the next queued
 job). Build and generate a smoke corpus once the queue drains, then confirm `read_nn_states.py`
 reports `format_version=2` with populated zones.
+
+### TICKET-V4-026a RESULT (2026-07-28): breadth cap 4→10 is a CLEAN NEGATIVE. The improvement operator is not the bottleneck — the evaluation function is.
+
+| model | win rate vs Default (1v1, null 50%) | n | timeouts |
+|---|---|---|---|
+| V2 @ cap-4 (baseline) | 37.7% [34.7, 40.8] | 970 | 1.7% |
+| **V2 @ cap-10** | **36.4% [33.5, 39.5]** | 985 | 1.5% |
+
+**−1.3 pp, z = −0.59, two-sided p = 0.56.** No effect. Same model, same everything, one runtime
+knob; no training was required, which is why this was ranked first.
+
+**The hypothesis it kills was mine, and it was ranked #1.** I argued the cap was a hard ceiling:
+every real decision truncates the legal move list to 4, pre-ranked by `ComputerUtilAbility.saEvaluator`
+— a hand-tuned heuristic — and I measured 5,101 truncated decisions with a median discarding half
+the options. All of that is factually true. **Giving the network 2.5x more options changed nothing.**
+
+**Play-quality deltas make it unambiguous** (`play_quality.py`, Ultron minus opponent, paired):
+
+| metric | cap-4 | cap-10 |
+|---|---|---|
+| spells / turn | −0.14 | −0.15 |
+| cards drawn | −0.46 | −0.41 |
+| attacks | −1.15 | −1.56 |
+| permanents | −2.17 | −2.29 |
+
+Behaviour is essentially identical. If the value function could tell good moves from bad ones,
+widening the option set would have changed how it plays. It did not.
+
+**Interpretation.** Action *selection* is not the constraint; position *evaluation* is. Two
+mechanisms, both consistent with the data:
+1. The heuristic pre-ranker is good enough that the best move is usually already in its top 4, so
+   the extra six are genuinely worse and the net gains nothing.
+2. `argmax` over N noisy estimates carries an optimistic bias that grows with N (the winner's
+   curse). With a weak `V`, *more* breadth can actively hurt — which is the direction the
+   non-significant −1.3 pp points.
+
+**This downgrades depth-1 too.** Depth is the same class of lever — a better *improvement operator*
+over the same evaluator. If widening the search did nothing because `V` cannot rank what it is
+shown, deepening it should be expected to do little for the same reason. Depth-1 is not cancelled,
+but it drops below encoder work and should be re-justified before it is run.
+
+**This promotes the encoder, on evidence rather than argument.** The 2026-07-28 plan revision argued
+from Magic strategy that the encoder cannot see tempo, rate-of-accumulation, or opponent
+information. This experiment independently reaches the same place from the other direction: the
+network's *choices* are not limited by its options, so they are limited by its *judgement*, and its
+judgement is limited by what it can perceive. **Phase C (encoder v3) is now the main line.**
+
+**Cost of learning this: ~4 hours of one box, zero training, zero new corpus.** Exactly what cheap
+runtime-knob experiments are for — it removed the top-ranked hypothesis before any expensive work
+was built on it.

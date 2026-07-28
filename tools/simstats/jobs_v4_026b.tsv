@@ -1,0 +1,3 @@
+# V4-026b: the 4-player checkpoint. Breadth (job 1) came back a clean negative, and the corpus
+# top-up is Phase E work the plan deprioritised, so this is the only job left worth the box.
+v4_026_4p_check | gate | configs/simstats/v3_ultron_vs_default_4p.ini | 600 | /home/william/github/forge/tools/nn/runs/20260727-130315/model.bin |

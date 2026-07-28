@@ -101,11 +101,11 @@ run_job() {
 
   bash "$BASE/tools/simstats/await_run.sh" "$name" "$POLL" | sed 's/^/    /'
   log "  $name finished"
-  summarise "$name" "$node" "$kind" "$env"
+  summarise "$name" "$node" "$kind" "$env" "$cfg"
 }
 
 summarise() {
-  local name="$1" node="$2" kind="$3" env="$4"
+  local name="$1" node="$2" kind="$3" env="$4" cfg="${5:-}"
   local tmp; tmp="$(mktemp)"
   if [ "$(node_field "$node" 2)" = "local" ]; then
     cat "$BASE/simstats/out/$name"/round_*/shard_*/games.jsonl "$BASE/simstats/out/$name"/shard_*/games.jsonl 2>/dev/null > "$tmp"
@@ -114,7 +114,7 @@ summarise() {
     cat "$BASE/simstats/out/$name/nodes/$node"/shard_*/games.jsonl 2>/dev/null > "$tmp"
   fi
   local null=0.5
-  grep -qE '^players=4' "$BASE/$5" 2>/dev/null && null=0.25
+  [ -n "$cfg" ] && grep -qE "^players=4" "$BASE/$cfg" 2>/dev/null && null=0.25
   {
     echo "### $name  [$kind on $node]  ${env:+env: $env}"
     python3 "$BASE/tools/simstats/gate.py" "$tmp" --profile Ultron --null "$null" 2>/dev/null \
