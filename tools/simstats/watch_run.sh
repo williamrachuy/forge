@@ -88,6 +88,13 @@ while true; do
     fi
   fi
 
+  export WATCH_JVMS="$jvms"
+  # Is the harness itself still alive? A finished run has no JVMs AND no harness.
+  if pgrep -f "run_gate_.*\.sh|run_v4_.*corpus\.sh|run_parallel\.sh" >/dev/null 2>&1; then
+    export WATCH_HARNESS=1
+  else
+    export WATCH_HARNESS=0
+  fi
   stats=$(python3 - "$RUN_DIR" <<'PY'
 import sys, json, glob, statistics as st, os
 run = sys.argv[1]
@@ -150,10 +157,28 @@ def dur(sec):
 mtimes = [os.path.getmtime(f) for f in files if os.path.exists(f)]
 if mtimes and start:
     import time
-    span = time.time() - start
+    now = time.time()
+    last_write = max(mtimes)
+    idle = now - last_write
+    jvms = os.environ.get("WATCH_JVMS", "0").strip() or "0"
+    harness = os.environ.get("WATCH_HARNESS", "0").strip() == "1"
+
+    # A run is FINISHED when nothing is producing games any more: no sim JVMs, no harness, and no
+    # new output for a while. Without this the watcher chased a target it could never reach --
+    # `20 rounds x 50` implies 1000, but wedged rounds are killed by the watchdog and record fewer,
+    # so a completed gate sat at "987/1000, ETA 5m" forever. Worse, ETA used `now` as the span end,
+    # so with progress stopped the measured rate decayed and the ETA *grew* over time.
+    finished = (jvms == "0") and (not harness) and (idle > 120)
+
+    # Measure throughput over the productive window (start -> last game written), never to `now`;
+    # otherwise an idle or finished run reports an ever-falling rate.
+    span = (last_write - start) if finished else (now - start)
     if span > 60:
         rate = len(rows)/(span/3600)          # games/hour
-        print(f"  throughput  : {rate:.0f} games/hour   elapsed {dur(span)}")
+        if finished:
+            print(f"  throughput  : {rate:.0f} games/hour   ran {dur(span)}")
+        else:
+            print(f"  throughput  : {rate:.0f} games/hour   elapsed {dur(span)}")
 
         # ETA is driven by whichever target this run is actually pacing against:
         # a corpus run stops on RECORD count, a gate run stops on game count.
@@ -171,13 +196,25 @@ if mtimes and start:
             left = int(tgt) - len(rows)
             pct = 100*len(rows)/int(tgt)
             print(f"  progress    : {len(rows)}/{tgt} games ({pct:.0f}%)")
-            if left > 0:
+            if left > 0 and not finished:
                 eta_h = left/rate
-        if eta_h is not None:
+
+        if finished:
+            # The target is games ATTEMPTED; recorded games can legitimately fall short when the
+            # watchdog kills a wedged round mid-way. Report the shortfall as a fact, not as work
+            # still pending.
+            note = ""
+            if tgt and tgt.isdigit() and len(rows) < int(tgt):
+                short = int(tgt) - len(rows)
+                note = f"  ({short} short of the {tgt} attempted — wedged rounds recorded fewer)"
+            print(f"  ETA         : COMPLETE — finished {dur(idle)} ago{note}")
+        elif eta_h is not None:
             finish = time.strftime("%H:%M", time.localtime(time.time() + eta_h*3600))
             print(f"  ETA         : {dur(eta_h*3600)} remaining  ->  finish ~{finish}")
         elif tgt and tgt.isdigit() and len(rows) >= int(tgt):
             print("  ETA         : target reached")
+        elif idle > 300:
+            print(f"  ETA         : STALLED? no new games for {dur(idle)} (JVMs={jvms}, harness={'yes' if harness else 'no'})")
 PY
 )
 
@@ -189,8 +226,10 @@ PY
   frame+="${D}${RUN_DIR}${R}"$'\n\n'
   if [ "${jvms:-0}" -gt 0 ]; then
     frame+="  status      : ${G}RUNNING${R} (${jvms} sim JVM(s))"$'\n'
+  elif [ "${WATCH_HARNESS:-0}" = "1" ]; then
+    frame+="  status      : ${Y}between rounds${R} (harness alive, no JVMs right now)"$'\n'
   else
-    frame+="  status      : ${Y}no sim JVMs alive${R} (finished, or between rounds)"$'\n'
+    frame+="  status      : ${D}COMPLETE${R} (no sim JVMs, no harness)"$'\n'
   fi
   [ -n "$heap_lines" ] && frame+="$heap_lines"
   [ -n "$round_line" ] && frame+="$round_line"$'\n'
