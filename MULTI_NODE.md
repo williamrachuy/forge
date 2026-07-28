@@ -29,11 +29,17 @@ worth doing even when it does not shorten the wall clock.
 | node | host | cores | RAM | safe workers | role |
 |---|---|---|---|---|---|
 | **dell-xps15** | local | 8 | 31 GB | 2 × 6g | primary — builds, gates, training, interactive |
-| **asus-vivopc** | `asus-vivopc` | 4 (i5-6400 @ 2.7GHz) | 15 GB (~9 free) | 1 × 6g | generation only |
+| **asus-vivopc** | `asus-vivopc` | 4 (i5-6400 @ 2.7GHz) | 15 GB (~9 free) | 1 × 4g | generation only |
 
-**asus-vivopc is roughly 3x slower for this workload**, and the reason is RAM, not cores: at ~9 GB
-actually free it fits one 6g worker, not two. Measured expectation ~50–70 games/hour against
-dell-xps15's ~186. It is a useful *addition* (~+30% aggregate), not a replacement.
+**asus-vivopc is materially slower, and the reason is RAM, not cores.** Measured on a 4-game smoke
+(2026-07-27, commit `90cff9023a`): at 1×6g the box hit 12.0 GB / 15.9 GB used with 951 MB swapped,
+and the **first game took 257.8 s** against this laptop's 21 s median. Once warm, the second game
+took **24.4 s** — competitive. So the profile is *high variance with a bad cold start under memory
+pressure*, not uniform slowness. `xmx` was lowered 6g → 4g to keep the heap off swap.
+
+Plan for **~60–100 games/hour** against dell-xps15's ~186, i.e. a useful *addition* of roughly
++30–50% aggregate, not a replacement. Long runs amortise the cold start; short ones do not, which
+is the concrete reason for the >2 hour threshold in §5.
 
 `workers`/`xmx` in `nodes.conf` are the **safe** numbers, not the maximum. Do not raise them
 without re-measuring free RAM on that box first.
