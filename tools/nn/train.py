@@ -149,12 +149,25 @@ def _softmax(xs: List[float]) -> List[float]:
     return [e / s for e in exps]
 
 
+MAX_RECORDS = 0  # 0 = unlimited; set from --max-records
+
+
 def _iter_all_records(paths: List[str]) -> Iterator[Record]:
     """Chains `read_records` across every input path. Called ONCE per pass (twice total) -- never
     accumulated into a list. Each `Record` (and its boxed-float vectors) is garbage the moment its
-    loop body finishes, so at most one record's worth of vectors is ever live."""
+    loop body finishes, so at most one record's worth of vectors is ever live.
+
+    MAX_RECORDS truncates deterministically (first N in file order, identical across both passes --
+    a random subsample would differ between pass 1 and pass 2 and corrupt the preallocated arrays).
+    Exists so a CONTROL run can be size-matched to the run it is controlling for: comparing a 20K
+    fine-tune against a 142K one would confound corpus size with whatever the control is testing."""
+    n = 0
     for p in paths:
-        yield from read_records(p)
+        for rec in read_records(p):
+            yield rec
+            n += 1
+            if MAX_RECORDS and n >= MAX_RECORDS:
+                return
 
 
 def build_game_tables(paths: List[str]):
@@ -835,6 +848,9 @@ def build_argparser():
                           "validation set (comparing across different val sets is not valid, per "
                           "the orchestrator's correction -- this flag produces the same-val-set "
                           "before number). Writes no model.bin.")
+    ap.add_argument("--max-records", type=int, default=0,
+                    help="cap records read (0=all). For size-matched CONTROL runs; truncation is "
+                         "deterministic so both streaming passes see the identical subset.")
     ap.add_argument("--aux-weight", type=float, default=AUX_WEIGHT,
                      help="Weight on the placement/length aux-head losses added to the value loss "
                           "(default matches the historical hardcoded AUX_WEIGHT=0.25, so omitting "
@@ -860,6 +876,8 @@ def main(argv=None):
         return 0
     if not args.data:
         ap.error("--data is required unless --self-test")
+    global MAX_RECORDS
+    MAX_RECORDS = getattr(args, "max_records", 0) or 0
     return train(args)
 
 

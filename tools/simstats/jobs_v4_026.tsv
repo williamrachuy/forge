@@ -1,0 +1,16 @@
+# V4-026: the two experiments that need NO training — pure runtime knobs on V2.
+# Both are GATES, so both pin to the primary node (MULTI_NODE.md 3.4).
+#
+# name | kind | config | games | model | env
+#
+# (1) BREADTH. The real decision truncates the legal move list to 4, pre-ranked by
+#     ComputerUtilAbility.saEvaluator -- a hand-tuned heuristic. Measured over the round-2 corpus:
+#     5101 truncated decisions, median discarding half the options, 1500+ discarding 60-75%.
+#     The net can only ever pick among moves the heuristic already likes. Raising to 10 costs ~10
+#     copies against an 18/decision budget: free on dell post-V4-022. Compare vs V2's 37.7%.
+v4_026_breadth10 | gate | configs/simstats/v4_012_gate_nn_1v1_monarch.ini | 1000 | /home/william/github/forge/tools/nn/runs/20260727-130315/model.bin | ULTRON_SIM_MAX_TOP_LEVEL_CANDIDATES=10
+#
+# (2) FOUR-PLAYER CHECKPOINT. The project's actual goal is 4p FFA Monarch, null 25%. V0, V1 and V2
+#     were ALL gated in 1v1 only -- three generations optimising a proxy whose transfer has never
+#     been measured. All-Default 4p control is 24.7% (V3-007).
+v4_026_4p_check  | gate | configs/simstats/v3_ultron_vs_default_4p.ini    | 600  | /home/william/github/forge/tools/nn/runs/20260727-130315/model.bin |
