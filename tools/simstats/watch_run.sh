@@ -68,6 +68,21 @@ drain=$(grep -ahc "still draining in the background" */run.log */*/run.log 2>/de
 to40=$(grep -ahc "exceeded its 40s per-decision" */run.log */*/run.log 2>/dev/null | paste -sd+ | bc 2>/dev/null); to40=${to40:-0}
 wedge=$(grep -ahc "WEDGE (log stalled" *.log 2>/dev/null | paste -sd+ | bc 2>/dev/null); wedge=${wedge:-0}
 oom=$(grep -ahc "OutOfMemoryError" */run.log */*/run.log 2>/dev/null | paste -sd+ | bc 2>/dev/null); oom=${oom:-0}
+# Per-node TARGET and launch time, so progress and ETA are computable per node. offload writes
+# run.ini with this node's share; round harnesses write round_N.ini. run.ini's mtime is the launch
+# instant, which is a better clock than first-game time (it includes JVM startup).
+tgt=0; start=0
+if [ -f run.ini ]; then
+  tgt=$(grep -m1 '^games=' run.ini 2>/dev/null | cut -d= -f2)
+  start=$(stat -c %Y run.ini 2>/dev/null)
+elif ls round_*.ini >/dev/null 2>&1; then
+  per=$(grep -hm1 '^games=' round_1.ini 2>/dev/null | cut -d= -f2)
+  rounds=$(ls -1 round_*.ini 2>/dev/null | wc -l)
+  tot=$(grep -aoE 'round [0-9]+/[0-9]+' *.log 2>/dev/null | tail -1 | cut -d/ -f2)
+  [ -n "$tot" ] && rounds=$tot
+  tgt=$(( ${per:-0} * ${rounds:-0} ))
+  start=$(stat -c %Y round_1.ini 2>/dev/null)
+fi
 stats=$(python3 - "$RUN" <<'PY'
 import sys, json, glob, os, statistics as st
 run = sys.argv[1]
@@ -103,7 +118,7 @@ print("%d|%d|%d|%d|%.0f|%.0f|%.0f|%.0f" % (len(rows),len(done),len(to),w,
       sum(el) if el else 0, st.median(el) if el else 0, max(el) if el else 0, lw))
 PY
 )
-echo "${stats}|${jvms}|${heap}|${drain}|${to40}|${wedge}|${oom}"
+echo "${stats}|${jvms}|${heap}|${drain}|${to40}|${wedge}|${oom}|${tgt:-0}|${start:-0}"
 EOS
 )
 
@@ -125,7 +140,7 @@ VIEW="a"   # a = aggregate, or a node index (1-based)
 
 while true; do
   # -------- gather: one round trip per node --------
-  declare -A NG NC NT NW NS NM NX NL NJ NH ND N4 NWD NO
+  declare -A NG NC NT NW NS NM NX NL NJ NH ND N4 NWD NO NTG NST NETA
   now=$(date +%s)
   # Probe every node IN PARALLEL. Sequential probing made a refresh cost the SUM of all nodes'
   # latency, so one slow node starved the whole display and tripped its own timeout.
@@ -150,10 +165,11 @@ while true; do
     if [ -f "$CACHE/$i.ok" ]; then
       ts="$(sed -n 1p "$CACHE/$i.ok")"; line="$(sed -n 2p "$CACHE/$i.ok")"
       NAGE[$i]=$(( now - ${ts:-now} ))
-      IFS='|' read -r g c t w su me mx lw j hp dr t4 wd om <<<"$line"
+      IFS='|' read -r g c t w su me mx lw j hp dr t4 wd om tg0 st0 <<<"$line"
       NG[$i]=${g:-0}; NC[$i]=${c:-0}; NT[$i]=${t:-0}; NW[$i]=${w:-0}
       NS[$i]=${su:-0}; NM[$i]=${me:-0}; NX[$i]=${mx:-0}; NL[$i]=${lw:-0}
       NJ[$i]=${j:-0}; NH[$i]="${hp:-}"; ND[$i]=${dr:-0}; N4[$i]=${t4:-0}; NWD[$i]=${wd:-0}; NO[$i]=${om:-0}
+      NTG[$i]=${tg0:-0}; NST[$i]=${st0:-0}
       # A cached reading older than two refreshes is stale, not current -- say so rather than
       # presenting old numbers as live.
       [ "${NSTATE[$i]}" != "OK" ] && [ "${NAGE[$i]}" -gt $(( REFRESH * 2 )) ] && NSTATE[$i]="STALE"
@@ -175,6 +191,27 @@ while true; do
   idle=$(( now - ${lastw:-now} ))
   finished=0; [ "$tjv" = "0" ] && [ "$idle" -gt 120 ] && finished=1
 
+  # Per-node ETA, and the aggregate target. The run finishes when the LAST node finishes, so the
+  # overall ETA is the MAX of per-node ETAs -- never a pooled rate, which would understate by
+  # assuming a finished fast node keeps contributing.
+  ttgt=0; worst=0; worstnode=""
+  for i in "${!NODES[@]}"; do
+    NETA[$i]=-1
+    [ "${NG[$i]}" = "-1" ] && continue
+    ttgt=$(( ttgt + ${NTG[$i]:-0} ))
+    el=$(( now - ${NST[$i]:-now} ))
+    if [ "${NTG[$i]:-0}" -gt 0 ] && [ "${NG[$i]}" -gt 0 ] && [ "$el" -gt 60 ] && [ "${NJ[$i]}" -gt 0 ]; then
+      left=$(( ${NTG[$i]} - ${NG[$i]} ))
+      if [ "$left" -gt 0 ]; then
+        eta=$(( left * el / ${NG[$i]} ))
+        NETA[$i]=$eta
+        [ "$eta" -gt "$worst" ] && { worst=$eta; worstnode="${NODES[$i]}"; }
+      else
+        NETA[$i]=0
+      fi
+    fi
+  done
+
   frame="${B}=== ${RUN_NAME} ===${R}  $(date '+%H:%M:%S')   ${D}[a]ggregate [1-9]node [n]ext [q]uit${R}"$'\n'
 
   if [ "$VIEW" = "a" ]; then
@@ -189,13 +226,23 @@ while true; do
       frame+="  Ultron wins : $(awk -v w=$tw -v c=$tc 'BEGIN{p=w/c; h=1.96*sqrt(p*(1-p)/c); printf "%d/%d = %.1f%% (+/- %.1f)", w, c, 100*p, 100*h}')  ${D}null 50%${R}"$'\n'
     fi
     [ "$tg" -gt 0 ] && frame+="  game secs   : mean $(awk -v s=$tsu -v g=$tg 'BEGIN{printf "%.0f", s/g}')   max $maxel"$'\n'
+    if [ "$ttgt" -gt 0 ]; then
+      frame+="  progress    : $tg/$ttgt games ($(awk -v a=$tg -v b=$ttgt 'BEGIN{printf "%.0f", 100*a/b}')%)"$'\n'
+      if [ "$finished" = "1" ]; then
+        frame+="  ETA         : ${D}complete${R}"$'\n'
+      elif [ "$worst" -gt 0 ]; then
+        frame+="  ETA         : ${B}$(fmt_dur $worst)${R} remaining  ->  finish ~$(date -d "+$worst seconds" '+%H:%M')   ${D}(limited by $worstnode)${R}"$'\n'
+      else
+        frame+="  ETA         : ${D}measuring...${R}"$'\n'
+      fi
+    fi
     part=0; for k in "${!NODES[@]}"; do [ "${NG[$k]}" != "-1" ] && part=$((part+1)); done
     if [ "$part" -le 1 ]; then
       frame+=$'\n'"${C}  ── PER NODE ──${R} ${D}(single-node run — only $part of ${#NODES[@]} nodes participated)${R}"$'\n'
     else
       frame+=$'\n'"${C}  ── PER NODE ──${R} ${D}($part of ${#NODES[@]} nodes participated)${R}"$'\n'
     fi
-    frame+="  ${D}node            games  compl   TO    win%   JVM  heap${R}"$'\n'
+    frame+="  ${D}node           games/target    %   compl  TO   win%  JVM    ETA   heap${R}"$'\n'
     for i in "${!NODES[@]}"; do
       n="${NODES[$i]}"
       if [ "${NG[$i]}" = "-1" ]; then
@@ -213,7 +260,12 @@ while true; do
       tag=""
       [ "${NSTATE[$i]}" = "STALE" ] && tag=" ${Y}(stale ${NAGE[$i]}s)${R}"
       [ "${NSTATE[$i]}" = "FAIL" ] && tag=" ${Y}(probe failed; showing ${NAGE[$i]}s-old data)${R}"
-      frame+="$(printf '  %-2s %-13s %5s %6s %4s %6s %5s  %s' "$((i+1))" "$n" "${NG[$i]}" "${NC[$i]}" "${NT[$i]}" "$wr" "${NJ[$i]}" "${NH[$i]:-—}")$tag"$'\n'
+      pgt="${NG[$i]}/${NTG[$i]:-?}"
+      pct="-"; [ "${NTG[$i]:-0}" -gt 0 ] && pct="$(awk -v a=${NG[$i]} -v b=${NTG[$i]} 'BEGIN{printf "%.0f", 100*a/b}')%"
+      eta="-"
+      [ "${NETA[$i]}" = "0" ] && eta="done"
+      [ "${NETA[$i]}" -gt 0 ] 2>/dev/null && eta="$(fmt_dur ${NETA[$i]})"
+      frame+="$(printf '  %-2s %-12s %13s %5s %6s %4s %6s %4s %6s  %s' "$((i+1))" "$n" "$pgt" "$pct" "${NC[$i]}" "${NT[$i]}" "$wr" "${NJ[$i]}" "$eta" "${NH[$i]:-—}")$tag"$'\n'
     done
     frame+=$'\n'
     if [ $((tdr+t44+twd+tom)) -gt 0 ]; then
@@ -234,6 +286,12 @@ while true; do
       [ "${NSTATE[$i]}" != "OK" ] && st="$st ${Y}(reading ${NAGE[$i]}s old)${R}"
       frame+="  state       : $st (${NJ[$i]} JVM(s))   heap ${NH[$i]:-—}"$'\n'
       frame+="  games       : ${NG[$i]} logged   ${NC[$i]} completed   ${NT[$i]} timeout"$'\n'
+      if [ "${NTG[$i]:-0}" -gt 0 ]; then
+        frame+="  progress    : ${NG[$i]}/${NTG[$i]} ($(awk -v a=${NG[$i]} -v b=${NTG[$i]} 'BEGIN{printf "%.0f", 100*a/b}')%)"
+        if [ "${NETA[$i]}" = "0" ]; then frame+="   ${D}target reached${R}"
+        elif [ "${NETA[$i]}" -gt 0 ] 2>/dev/null; then frame+="   ETA $(fmt_dur ${NETA[$i]}) -> ~$(date -d "+${NETA[$i]} seconds" '+%H:%M')"; fi
+        frame+=$'\n'
+      fi
       if [ "${NC[$i]}" -gt 0 ]; then
         frame+="  Ultron wins : $(awk -v w=${NW[$i]} -v c=${NC[$i]} 'BEGIN{p=w/c; h=1.96*sqrt(p*(1-p)/c); printf "%d/%d = %.1f%% (+/- %.1f)", w, c, 100*p, 100*h}')"$'\n'
       fi

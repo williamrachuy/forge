@@ -196,10 +196,14 @@ cmd_offload() {
   local cfg="$1" total="$2" run_name="$3"
   local names=() weights=() sum=0 i=0
   for n in $(node_names); do
-    local w; w="$(node_field "$n" 5)"; [ -z "$w" ] && w=1
+    # Weight by MEASURED throughput (field 7), not worker count. Equal-worker weighting assumes
+    # equal speed; it does not hold here and left the primary idle for hours waiting on the tail.
+    local w; w="$(node_field "$n" 7)"
+    [ -z "$w" ] && w="$(node_field "$n" 5)"
+    [ -z "$w" ] && w=1
     names+=("$n"); weights+=("$w"); sum=$(( sum + w ))
   done
-  echo "==> splitting $total games across ${#names[@]} node(s), weighted by workers (total weight $sum)"
+  echo "==> splitting $total games across ${#names[@]} node(s), weighted by measured games/hour (total $sum/h)"
   for n in "${names[@]}"; do
     local share=$(( total * weights[i] / sum ))
     # Seed ranges 10,000,000 apart: far wider than any run consumes, so no two nodes can ever
