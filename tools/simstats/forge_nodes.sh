@@ -141,6 +141,14 @@ cmd_run() {
     return 1
   fi
 
+  # The config is read on the NODE. A new/uncommitted config does not exist there (sync is a git
+  # push), and sed fails with "can't read" -- the run silently never starts. Verify before launching.
+  if ! run_script "$n" "[ -f '$REMOTE_REPO/$cfg' ] && echo OK" 2>/dev/null | grep -q OK; then
+    echo "REFUSING: $n has no config at $cfg" >&2
+    echo "          commit it and re-sync:  git add $cfg && git commit && forge_nodes.sh sync $n" >&2
+    return 1
+  fi
+
   local out="${REMOTE_REPO}/simstats/out/${run_name}"
   echo "==> $n: $games games, seed_base=$seed_base, ${workers}x${xmx}, model=$(basename "$(dirname "$model")")/model.bin"
   run_script "$n" "$(cat <<EOS
@@ -155,7 +163,7 @@ bash tools/simstats/install_watcher.sh '$out' $games >/dev/null 2>&1
 tmux kill-session -t forge_run 2>/dev/null
 tmux new-session -d -s forge_run "cd $REMOTE_REPO && export ULTRON_NN_EVAL=true ULTRON_NN_MODEL_PATH=$model ULTRON_SIM_MAX_TOP_LEVEL_CANDIDATES=4 FORGE_SKIP_GROOM=1 && bash tools/simstats/run_parallel.sh '$out/run.ini' --workers $workers --xmx $xmx > '$out/node_run.log' 2>&1"
 sleep 3
-echo "sim JVMs on \$(hostname): \$(ps -eo pid,comm,args 2>/dev/null | awk '\$2==\"java\" && /simstats -config/ {n++} END{print n+0}')"
+sleep 2; echo "sim JVMs on \$(hostname): \$(ps -eo comm | grep -c '^java$')"
 EOS
 )"
   if [ "$host" = "local" ]; then
