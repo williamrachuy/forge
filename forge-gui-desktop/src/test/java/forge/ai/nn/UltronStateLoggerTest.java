@@ -197,6 +197,23 @@ public class UltronStateLoggerTest extends AITest {
         ParsedRecord r0 = records.get(0);
         Assert.assertEquals(r0.magic, UltronStateLogger.MAGIC);
         Assert.assertEquals(r0.formatVersion, UltronStateLogger.FORMAT_VERSION);
+        // TICKET-V4-028: the card-identity side-channel must actually contain something. A reader
+        // that merely skips the block would pass without this, and the whole point of the channel
+        // is that a future encoder can be re-derived from it offline.
+        for (SeatBlock sb : r0.seats) {
+            Assert.assertNotNull(sb.zonePack, "v2 record must carry a zone pack per seat");
+            Assert.assertTrue(sb.zonePack.length >= 1, "zone pack must at least state its zone count");
+            int zoneCount = sb.zonePack[0];
+            Assert.assertEquals(zoneCount, 5, "expected battlefield/hand/graveyard/exile/command");
+            // Walk it the way an offline re-encoder would, proving the framing is self-consistent.
+            int idx = 1;
+            for (int z = 0; z < zoneCount; z++) {
+                Assert.assertTrue(idx + 1 < sb.zonePack.length, "zone header runs past end of pack");
+                int cardCount = sb.zonePack[idx + 1];
+                idx += 2 + 2 * cardCount;
+            }
+            Assert.assertEquals(idx, sb.zonePack.length, "zone pack framing must consume exactly the array");
+        }
         Assert.assertEquals(r0.schemaHash, UltronStateEncoder.SCHEMA_HASH);
         Assert.assertEquals(r0.semanticVersion, UltronStateEncoder.ENCODER_SEMANTIC_VERSION);
         Assert.assertEquals(r0.gameId, gameId);
@@ -273,6 +290,15 @@ public class UltronStateLoggerTest extends AITest {
             sb.heuristicScore = in.readFloat();
             sb.eliminationTurn = in.readInt();
             sb.placement = in.readInt();
+            // TICKET-V4-028: FORMAT_VERSION >= 2 appends the card-identity side-channel per seat.
+            // Branch on the version rather than assuming -- v1 files must still parse.
+            if (r.formatVersion >= 2) {
+                int packLen = in.readInt();
+                sb.zonePack = new int[packLen];
+                for (int j = 0; j < packLen; j++) {
+                    sb.zonePack[j] = in.readInt();
+                }
+            }
             r.seats[i] = sb;
         }
         return r;
@@ -290,5 +316,6 @@ public class UltronStateLoggerTest extends AITest {
         float heuristicScore;
         int eliminationTurn;
         int placement;
+        int[] zonePack;
     }
 }

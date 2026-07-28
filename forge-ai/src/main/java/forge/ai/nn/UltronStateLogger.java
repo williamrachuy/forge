@@ -5,6 +5,8 @@ import forge.ai.ComputerUtil;
 import forge.ai.ComputerUtilAbility;
 import forge.ai.llm.UltronConfig;
 import forge.game.Game;
+import forge.game.card.Card;
+import forge.game.zone.ZoneType;
 import forge.game.card.CardCollectionView;
 import forge.game.event.GameEvent;
 import forge.game.event.GameEventPlayerPriority;
@@ -115,7 +117,7 @@ public final class UltronStateLogger {
 
     /** Magic + format version for each record's self-describing header. */
     static final int MAGIC = 0x554E5331; // "UNS1"
-    static final int FORMAT_VERSION = 1;
+    static final int FORMAT_VERSION = 2; // 2 = +card-identity side-channel (TICKET-V4-028)
 
     static final int MAX_RECORDS_PER_GAME = 200;
     static final int ALWAYS_KEEP_FINAL_TURNS = 3;
@@ -281,6 +283,7 @@ public final class UltronStateLogger {
             List<Integer> liveSeats = new ArrayList<>();
             List<float[]> vectors = new ArrayList<>();
             List<Float> scores = new ArrayList<>();
+            List<int[]> zonePacks = new ArrayList<>();
             for (int i = 0; i < players.size(); i++) {
                 Player p = players.get(i);
                 if (p.hasLost()) {
@@ -289,12 +292,79 @@ public final class UltronStateLogger {
                 liveSeats.add(i);
                 vectors.add(UltronStateEncoder.encode(game, p));
                 scores.add((float) ComputerUtil.evaluateBoardPosition(null, p));
+                zonePacks.add(packZones(p));
             }
             if (liveSeats.isEmpty()) {
                 return;
             }
 
-            pending.add(new Record(turn, phase.ordinal(), actingSeat, liveSeats, vectors, scores));
+            pending.add(new Record(turn, phase.ordinal(), actingSeat, liveSeats, vectors, scores, zonePacks));
+        }
+
+        // TICKET-V4-028 zone codes. Append only -- a reader keyed on these must keep old meanings.
+        static final int ZONE_BATTLEFIELD = 0, ZONE_HAND = 1, ZONE_GRAVEYARD = 2,
+                         ZONE_EXILE = 3, ZONE_COMMAND = 4;
+
+        /**
+         * TICKET-V4-028: pack this player's card IDENTITIES alongside the encoded float vector.
+         *
+         * <p><b>Why.</b> The corpus stores ENCODED VECTORS, so any encoder change bumps
+         * {@code SCHEMA_HASH} and invalidates every record we own -- V0's 284K and every corpus
+         * since. Encoder v3 (mana, deltas, unpooled hand, magnitudes, card embeddings) is expected
+         * to iterate several times; without this, each iteration costs a full regeneration of
+         * thousands of games. With it, a future encoder can be re-derived OFFLINE from the identity
+         * stream for anything expressible from card identity + the flags below.
+         *
+         * <p><b>Format</b> (flat int[], so it costs ~400 bytes/seat against the vector's 7.6KB):
+         * {@code [zoneCount, (zoneCode, cardCount, (vocabId, flags) * cardCount) * zoneCount]}.
+         * {@code flags} bit0 = tapped, bit1 = summoning-sick, bit2 = has attachment; 0 off-battlefield.
+         *
+         * <p><b>Ground truth, deliberately.</b> Opponent hands are logged as they really are, not as
+         * the seat could see them. Re-encoding must therefore apply its own visibility rules -- but
+         * hiding information at log time would be unrecoverable, while hiding it later is trivial.
+         * It also makes the corpus a usable substrate for the belief/ToM work (plan Phase D).
+         */
+        private int[] packZones(Player p) {
+            java.util.List<int[]> zones = new ArrayList<>();
+            zones.add(packZone(ZONE_BATTLEFIELD, p.getCardsIn(ZoneType.Battlefield), true));
+            zones.add(packZone(ZONE_HAND, p.getCardsIn(ZoneType.Hand), false));
+            zones.add(packZone(ZONE_GRAVEYARD, p.getCardsIn(ZoneType.Graveyard), false));
+            zones.add(packZone(ZONE_EXILE, p.getCardsIn(ZoneType.Exile), false));
+            zones.add(packZone(ZONE_COMMAND, p.getCardsIn(ZoneType.Command), false));
+            int len = 1;
+            for (int[] z : zones) {
+                len += z.length;
+            }
+            int[] out = new int[len];
+            int w = 0;
+            out[w++] = zones.size();
+            for (int[] z : zones) {
+                System.arraycopy(z, 0, out, w, z.length);
+                w += z.length;
+            }
+            return out;
+        }
+
+        private int[] packZone(int zoneCode, Iterable<Card> cards, boolean withFlags) {
+            java.util.List<Card> list = new ArrayList<>();
+            for (Card c : cards) {
+                list.add(c);
+            }
+            int[] z = new int[2 + 2 * list.size()];
+            int w = 0;
+            z[w++] = zoneCode;
+            z[w++] = list.size();
+            for (Card c : list) {
+                z[w++] = UltronCardFeatureTable.getVocabId(c.getName());
+                int flags = 0;
+                if (withFlags) {
+                    if (c.isTapped()) flags |= 1;
+                    if (c.isSick()) flags |= 2;
+                    if (c.isEnchanted() || c.isEquipped()) flags |= 4;
+                }
+                z[w++] = flags;
+            }
+            return z;
         }
 
         /** Ordered stack-instance-id signature, or {@code "empty"} -- see class javadoc. */
@@ -416,6 +486,13 @@ public final class UltronStateLogger {
                 out.writeFloat(r.heuristicScores.get(i));
                 out.writeInt(eliminationTurn[seat]);
                 out.writeInt(placement[seat]);
+                // FORMAT_VERSION 2 (TICKET-V4-028): card-identity side-channel. Readers must branch
+                // on FORMAT_VERSION -- v1 files have no such block and must still parse.
+                int[] pack = (r.zonePacks == null || i >= r.zonePacks.size()) ? new int[]{0} : r.zonePacks.get(i);
+                out.writeInt(pack.length);
+                for (int v : pack) {
+                    out.writeInt(v);
+                }
             }
         }
     }
@@ -463,15 +540,19 @@ public final class UltronStateLogger {
         final List<Integer> liveSeats;
         final List<float[]> vectors;
         final List<Float> heuristicScores;
+        /** TICKET-V4-028 card-identity side-channel, one packed array per live seat. See {@link
+         *  GameCollector#packZones}. Null on records read back from a FORMAT_VERSION 1 file. */
+        final List<int[]> zonePacks;
 
         Record(int turn, int phaseOrdinal, int actingSeat, List<Integer> liveSeats, List<float[]> vectors,
-                List<Float> heuristicScores) {
+                List<Float> heuristicScores, List<int[]> zonePacks) {
             this.turn = turn;
             this.phaseOrdinal = phaseOrdinal;
             this.actingSeat = actingSeat;
             this.liveSeats = liveSeats;
             this.vectors = vectors;
             this.heuristicScores = heuristicScores;
+            this.zonePacks = zonePacks;
         }
     }
 }

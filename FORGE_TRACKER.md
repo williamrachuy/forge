@@ -4824,3 +4824,49 @@ Tests: `UltronRuntimeSimCopyRetentionTest` + `UltronValueNetParityTest` green (6
 **Lesson worth keeping:** a bound that holds only because of an unrelated harness detail is not a
 bound. "~15 per JVM" was true of the harness in use at the time and became false the moment the
 harness changed, with no code change and no warning.
+
+### TICKET-V4-028 (2026-07-28): card-identity side-channel — corpora are no longer encoder-locked
+
+**Problem.** The corpus stores **encoded float vectors**, not game states. So any encoder change
+bumps `SCHEMA_HASH` and invalidates every record we own — V0's 284K and every corpus since. Phase C
+(encoder v3: mana, deltas, unpooled hand, magnitudes, card embeddings) is expected to iterate
+*several times*, and each iteration would otherwise cost a full regeneration of thousands of games.
+At the corpus rates we have measured that is days per attempt.
+
+**Fix.** `UltronStateLogger` now writes card IDENTITIES alongside the vector, at
+`FORMAT_VERSION = 2`. Uses `UltronCardFeatureTable.getVocabId`, which already existed and whose
+docstring said it was "exposed for a future card-ID-embedding ticket to log alongside these
+vectors" — this is that ticket.
+
+Packed flat, one array per live seat:
+`[zoneCount, (zoneCode, cardCount, (vocabId, flags) * cardCount) * zoneCount]`
+over battlefield / hand / graveyard / exile / command. `flags` bit0 tapped, bit1 summoning-sick,
+bit2 attached (battlefield only). Costs ~400 bytes/seat against the vector's 7.6KB — negligible.
+
+**Ground truth is logged deliberately.** Opponent hands are recorded as they really are, not as the
+seat could see them. Re-encoding must apply its own visibility rules — but hiding information at
+log time is unrecoverable, whereas hiding it later is trivial, and the full-information stream is
+exactly the substrate the belief/ToM work (Phase D) will need.
+
+**Backward compatibility.** `SUPPORTED_FORMAT_VERSIONS = (1, 2)`; v1 files (every corpus we own)
+still parse — verified against `v4_020_v2_onpolicy_corpus` (465 records, `format_version=1`).
+
+**Two regressions caught and fixed during this work, both worth recording:**
+1. I updated the *Python* reader and forgot there is also a **Java** reader inside
+   `UltronStateLoggerTest`. It parsed the per-seat block positionally and ran straight off the end
+   of the new field. Two tests failed. A format change has **two** readers on this project.
+2. Running `-Dtest='UltronStateLoggerTest'` **alone** fails with `ExceptionInInitializerError` →
+   `PhaseType.<clinit>` → `Localizer.resourceBundle` null. That is a test-ordering artifact, not a
+   real failure: some other class in the full selection initialises the localizer first. **Always
+   compare against the full baseline selection** (`forge.ai.simulation.*Test,forge.ai.ultron.*Test,
+   forge.ai.nn.*Test,forge.ai.llm.runtime.*Test` = 325 run / 8 pre-existing failures / 1 skip),
+   never a single class in isolation.
+
+**Status: 325 run, 8 failures (baseline), 1 skip.** The new test walks the zone pack the way an
+offline re-encoder would and asserts the framing consumes the array exactly — so a reader that
+merely *skipped* the block could not pass.
+
+**NOT yet verified end-to-end:** no v2 file has been produced by a real run, because that needs a
+shaded-jar rebuild and the queue is mid-gate (rebuilding would swap the jar under the next queued
+job). Build and generate a smoke corpus once the queue drains, then confirm `read_nn_states.py`
+reports `format_version=2` with populated zones.

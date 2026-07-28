@@ -54,7 +54,28 @@ from dataclasses import dataclass, field
 from typing import BinaryIO, Iterator, List
 
 MAGIC = 0x554E5331
-FORMAT_VERSION = 1
+def _unpack_zones(pack):
+    """[zoneCount, (zoneCode, cardCount, (vocabId, flags)*n)*zoneCount] -> {zoneCode: [(id, flags)]}.
+
+    TICKET-V4-028. Exists so a future encoder can be re-derived OFFLINE from an existing corpus:
+    the corpus stores ENCODED VECTORS, so without this every encoder change would invalidate every
+    record and force regenerating thousands of games.
+    """
+    out, i = {}, 0
+    if not pack:
+        return out
+    nzones = pack[i]; i += 1
+    for _ in range(nzones):
+        code = pack[i]; n = pack[i + 1]; i += 2
+        cards = []
+        for _c in range(n):
+            cards.append((pack[i], pack[i + 1])); i += 2
+        out[code] = cards
+    return out
+
+
+FORMAT_VERSION = 2
+SUPPORTED_FORMAT_VERSIONS = (1, 2)  # v1 = pre-TICKET-V4-028 (no card-identity block)
 
 _HEADER_FMT = ">iiqiqiiii"  # magic, formatVersion, schemaHash, semanticVersion, gameId, turn, phaseOrdinal, actingSeat, gameLength
 _HEADER_SIZE = struct.calcsize(_HEADER_FMT)
@@ -70,6 +91,9 @@ class SeatBlock:
     heuristic_score: float
     elimination_turn: int
     placement: int
+    # TICKET-V4-028 card-identity side-channel; None for FORMAT_VERSION 1 files. Packed as
+    # [zoneCount, (zoneCode, cardCount, (vocabId, flags) * cardCount) * zoneCount].
+    zones: object = None
 
 
 @dataclass
@@ -108,9 +132,9 @@ def read_records(path: str) -> Iterator[Record]:
             if magic != MAGIC:
                 raise ValueError(f"bad magic 0x{magic:08x} (expected 0x{MAGIC:08x}) -- "
                                   f"corrupt file or format mismatch")
-            if fmt_version != FORMAT_VERSION:
+            if fmt_version not in SUPPORTED_FORMAT_VERSIONS:
                 raise ValueError(f"unsupported format version {fmt_version} "
-                                  f"(this reader supports {FORMAT_VERSION})")
+                                  f"(this reader supports {SUPPORTED_FORMAT_VERSIONS})")
 
             (num_players,) = struct.unpack(_NUM_PLAYERS_FMT, _read_exact(f, 4))
             seats = []
@@ -120,7 +144,12 @@ def read_records(path: str) -> Iterator[Record]:
                 vector = list(struct.unpack(f">{vector_len}f", vector_bytes))
                 heuristic_score, elimination_turn, placement = struct.unpack(
                     _SEAT_TAIL_FMT, _read_exact(f, 12))
-                seats.append(SeatBlock(seat, vector, heuristic_score, elimination_turn, placement))
+                zones = None
+                if fmt_version >= 2:
+                    (pack_len,) = struct.unpack(">i", _read_exact(f, 4))
+                    pack = struct.unpack(f">{pack_len}i", _read_exact(f, 4 * pack_len))
+                    zones = _unpack_zones(pack)
+                seats.append(SeatBlock(seat, vector, heuristic_score, elimination_turn, placement, zones))
 
             yield Record(magic, fmt_version, schema_hash, semantic_version, game_id, turn,
                          phase_ordinal, acting_seat, game_length, seats)
