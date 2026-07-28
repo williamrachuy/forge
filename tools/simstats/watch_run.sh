@@ -28,8 +28,14 @@ for cand in "$RUN_DIR/gate.log" "$RUN_DIR/corpus.log" "$RUN_DIR/run.log"; do
 done
 
 # Alternate screen + hidden cursor, restored on any exit.
+#
+# NOTE: a bash trap on INT runs the handler and then CONTINUES execution -- it does not exit on its
+# own. Trapping INT with a cleanup that only restores the terminal made Ctrl-C redraw instead of
+# quit. The signal handler must exit explicitly; only the EXIT trap does cleanup.
 cleanup() { printf '\033[?25h\033[?1049l'; }
-trap cleanup EXIT INT TERM
+on_signal() { exit 130; }
+trap cleanup EXIT
+trap on_signal INT TERM HUP
 printf '\033[?1049h\033[?25l\033[2J'
 
 B=$'\033[1m'; R=$'\033[0m'; G=$'\033[32m'; Y=$'\033[33m'; D=$'\033[2m'
@@ -195,7 +201,7 @@ PY
   else
     frame+="  trouble     : none (no OOM, no wedge, no decision timeouts)"$'\n'
   fi
-  frame+=$'\n'"${D}  refresh ${REFRESH}s — Ctrl-C to stop watching (does NOT affect the run)${R}"
+  frame+=$'\n'"${D}  refresh ${REFRESH}s — [q] or Ctrl-C to quit, any key to refresh now (never affects the run)${R}"
 
   # ---------------- paint in ONE write ------------------------------------
   # \033[H home, each line cleared to EOL (\033[K) so shorter lines leave no debris, then \033[J
@@ -207,5 +213,14 @@ PY
   # you capture the raw bytes.
   printf '\033[H%s\033[K\033[J' "${frame//$'\n'/$'\033[K\n'}"
 
-  sleep "$REFRESH"
+  # Interruptible wait. `read -t` on a tty returns the instant a signal or a keypress arrives, so
+  # Ctrl-C is immediate; a plain `sleep` would make bash defer the trap until the sleep finished.
+  # Also gives 'q' to quit and any other key to refresh now. Falls back to sleep when not a tty.
+  if [ -t 0 ]; then
+    if read -rsn1 -t "$REFRESH" key 2>/dev/null; then
+      case "$key" in q|Q) break ;; esac
+    fi
+  else
+    sleep "$REFRESH"
+  fi
 done
