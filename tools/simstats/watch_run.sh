@@ -47,6 +47,10 @@ printf '\033[?1049h\033[?25l\033[2J'
 
 B=$'\033[1m'; R=$'\033[0m'; G=$'\033[32m'; Y=$'\033[33m'; D=$'\033[2m'; C=$'\033[36m'
 
+# ONE format for the per-node header AND its rows. They were previously separate strings -- a
+# hand-written header over printf-formatted rows -- so the columns could not line up, and did not.
+ROWFMT='  %-2s %-12s %13s %5s %7s %4s %7s %4s %8s  %s\n'
+
 # One probe, run once per node per refresh (a single round trip). Emits one pipe-delimited line:
 #   games|completed|timeouts|wins|sum_el|med_el|max_el|last_write|jvms|heap|drain|to40|wedge|oom
 PROBE=$(cat <<'EOS'
@@ -137,27 +141,35 @@ probe_node() {  # node -> the probe line
 fmt_dur() { local s=${1:-0}; s=${s%.*}; local h=$((s/3600)) m=$(((s%3600)/60)); [ "$h" -gt 0 ] && echo "${h}h${m}m" || echo "${m}m"; }
 
 VIEW="a"   # a = aggregate, or a node index (1-based)
+PROBING=0; PROBE_START=0; LAST_REFRESH=0; TICK=0
 
 while true; do
   # -------- gather: one round trip per node --------
   declare -A NG NC NT NW NS NM NX NL NJ NH ND N4 NWD NO NTG NST NETA
   now=$(date +%s)
-  # Probe every node IN PARALLEL. Sequential probing made a refresh cost the SUM of all nodes'
-  # latency, so one slow node starved the whole display and tripped its own timeout.
-  for i in "${!NODES[@]}"; do
-    (
-      line="$(probe_node "${NODES[$i]}")"
-      if [ -n "$line" ] && [ "$line" != "MISSING" ]; then
-        printf '%s\n%s\n' "$(date +%s)" "$line" > "$CACHE/$i.ok"
-        echo OK > "$CACHE/$i.state"
-      elif [ "$line" = "MISSING" ]; then
-        echo NORUN > "$CACHE/$i.state"
-      else
-        echo FAIL > "$CACHE/$i.state"
-      fi
-    ) &
-  done
-  wait
+  # Probes run in the BACKGROUND, in parallel, and the loop does NOT block on them. Blocking meant a
+  # keypress sat unhandled for a whole probe cycle (~8s per slow node) before the view changed --
+  # which reads as the tool being broken. Input is now serviced against cached data immediately, and
+  # a spinner shows when a refresh is actually in flight.
+  if [ "$PROBING" = "0" ]; then
+    PROBING=1; PROBE_START=$(date +%s); rm -f "$CACHE"/*.done 2>/dev/null
+    for i in "${!NODES[@]}"; do
+      (
+        line="$(probe_node "${NODES[$i]}")"
+        if [ -n "$line" ] && [ "$line" != "MISSING" ]; then
+          printf '%s\n%s\n' "$(date +%s)" "$line" > "$CACHE/$i.ok"
+          echo OK > "$CACHE/$i.state"
+        elif [ "$line" = "MISSING" ]; then
+          echo NORUN > "$CACHE/$i.state"
+        else
+          echo FAIL > "$CACHE/$i.state"
+        fi
+        touch "$CACHE/$i.done"
+      ) &
+    done
+  fi
+  ndone=$(ls -1 "$CACHE"/*.done 2>/dev/null | wc -l)
+  [ "$ndone" -ge "${#NODES[@]}" ] && { PROBING=0; LAST_REFRESH=$(date +%s); }
 
   declare -A NSTATE NAGE
   for i in "${!NODES[@]}"; do
@@ -212,7 +224,17 @@ while true; do
     fi
   done
 
-  frame="${B}=== ${RUN_NAME} ===${R}  $(date '+%H:%M:%S')   ${D}[a]ggregate [1-9]node [n]ext [q]uit${R}"$'\n'
+  # Visual cue that a refresh is in flight: a growing ellipsis, plus how long it has been running.
+  # Silence during a multi-second ssh round trip is indistinguishable from a hang.
+  if [ "$PROBING" = "1" ]; then
+    dots=$(( (TICK / 2) % 4 )); e=""
+    for ((z=0; z<=dots; z++)); do e+="."; done
+    act="${Y}refreshing${e}${R}$(printf '%*s' $((4-dots)) '')${D}($(( $(date +%s) - PROBE_START ))s)${R}"
+  else
+    nxt=$(( REFRESH - ( $(date +%s) - LAST_REFRESH ) )); [ "$nxt" -lt 0 ] && nxt=0
+    act="${D}next refresh ${nxt}s${R}"
+  fi
+  frame="${B}=== ${RUN_NAME} ===${R}  $(date '+%H:%M:%S')  $act   ${D}[a]ggregate [1-9]node [n]ext [q]uit${R}"$'\n'
 
   if [ "$VIEW" = "a" ]; then
     frame+="${C}  ── AGGREGATE (all nodes) ──${R}"$'\n'
@@ -242,7 +264,7 @@ while true; do
     else
       frame+=$'\n'"${C}  ── PER NODE ──${R} ${D}($part of ${#NODES[@]} nodes participated)${R}"$'\n'
     fi
-    frame+="  ${D}node           games/target    %   compl  TO   win%  JVM    ETA   heap${R}"$'\n'
+    frame+="${D}$(printf "$ROWFMT" "" "node" "games/target" "%" "compl" "TO" "win%" "JVM" "ETA" "heap")${R}"$'\n'
     for i in "${!NODES[@]}"; do
       n="${NODES[$i]}"
       if [ "${NG[$i]}" = "-1" ]; then
@@ -250,9 +272,9 @@ while true; do
         # single-node) and must not look like a fault -- it previously rendered as a bare sentence
         # sitting where the numbers go, which reads as an error at a glance.
         case "${NSTATE[$i]}" in
-          NORUN) frame+="$(printf '  %-2s %-13s %5s %6s %4s %6s %5s  %s' "$((i+1))" "$n" "-" "-" "-" "-" "-" "${D}not used by this run${R}")"$'\n' ;;
-          FAIL)  frame+="$(printf '  %-2s %-13s %5s %6s %4s %6s %5s  %s' "$((i+1))" "$n" "?" "?" "?" "?" "?" "${Y}PROBE FAILED — node slow or unreachable${R}")"$'\n' ;;
-          *)     frame+="$(printf '  %-2s %-13s %5s %6s %4s %6s %5s  %s' "$((i+1))" "$n" "?" "?" "?" "?" "?" "${Y}no reading yet${R}")"$'\n' ;;
+          NORUN) frame+="$(printf "$ROWFMT" "$((i+1))" "$n" "-" "-" "-" "-" "-" "-" "-" "${D}not used by this run${R}")"$'\n' ;;
+          FAIL)  frame+="$(printf "$ROWFMT" "$((i+1))" "$n" "?" "?" "?" "?" "?" "?" "?" "${Y}PROBE FAILED — node slow or unreachable${R}")"$'\n' ;;
+          *)     frame+="$(printf "$ROWFMT" "$((i+1))" "$n" "?" "?" "?" "?" "?" "?" "?" "${Y}no reading yet${R}")"$'\n' ;;
         esac
         continue
       fi
@@ -265,7 +287,7 @@ while true; do
       eta="-"
       [ "${NETA[$i]}" = "0" ] && eta="done"
       [ "${NETA[$i]}" -gt 0 ] 2>/dev/null && eta="$(fmt_dur ${NETA[$i]})"
-      frame+="$(printf '  %-2s %-12s %13s %5s %6s %4s %6s %4s %6s  %s' "$((i+1))" "$n" "$pgt" "$pct" "${NC[$i]}" "${NT[$i]}" "$wr" "${NJ[$i]}" "$eta" "${NH[$i]:-—}")$tag"$'\n'
+      frame+="$(printf "$ROWFMT" "$((i+1))" "$n" "$pgt" "$pct" "${NC[$i]}" "${NT[$i]}" "$wr" "${NJ[$i]}" "$eta" "${NH[$i]:-—}")$tag"$'\n'
     done
     frame+=$'\n'
     if [ $((tdr+t44+twd+tom)) -gt 0 ]; then
@@ -306,15 +328,20 @@ while true; do
 
   printf '\033[H%s\033[K\033[J' "${frame//$'\n'/$'\033[K\n'}"
 
+  # Short poll so a keypress is serviced within ~0.4s and redraws from cache immediately, rather
+  # than waiting out a probe cycle. The probe is re-launched only when REFRESH has actually elapsed.
   if [ -t 0 ]; then
-    if read -rsn1 -t "$REFRESH" key 2>/dev/null; then
+    if read -rsn1 -t 0.4 key 2>/dev/null; then
       case "$key" in
         q|Q) break ;;
         a|A) VIEW="a" ;;
         n|N) if [ "$VIEW" = "a" ]; then VIEW=1; elif [ "$VIEW" -ge "${#NODES[@]}" ]; then VIEW="a"; else VIEW=$((VIEW+1)); fi ;;
         [1-9]) [ "$key" -le "${#NODES[@]}" ] && VIEW="$key" ;;
+        r|R) LAST_REFRESH=0 ;;
       esac
     fi
+    TICK=$((TICK+1))
+    [ "$PROBING" = "0" ] && [ $(( $(date +%s) - LAST_REFRESH )) -lt "$REFRESH" ] && continue
   else
     sleep "$REFRESH"
   fi
