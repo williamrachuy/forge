@@ -38,12 +38,11 @@ public final class UltronRuntimeController {
     // Simulation copies -- the pathological case, thousands per game -- are now kept out of this map
     // entirely by getOrCreate(); see its javadoc for the measurements.
     //
-    // KNOWN RESIDUAL (bounded, deliberately not fixed here): real Games registered below are still
-    // retained for the life of the JVM. That is ~15 games per sim shard JVM (~150-200MB), and is
-    // bounded by process lifetime rather than unbounded like the simulation-copy case was. Fixing it
-    // properly means the value must not reach the key at all -- both the `game` AND `player` fields
-    // would have to become weak, since Player holds Game strongly -- which is real surgery on a class
-    // shared with the interactive GUI path. Filed rather than rushed. See TICKET-V4-023.
+    // TICKET-V4-023 (FIXED): real Games registered below were never evicted either. That was filed as
+    // "bounded, ~15 games per shard JVM" -- an estimate that silently assumed the ROUND HARNESS
+    // restarting a JVM every 25 games. It does not hold for a single long run, and the queue harness
+    // launches exactly those: a 500-game shard retained 500 Game graphs and saturated the heap.
+    // Callers that know a game is over must now call forget(game); SimulateStats does so per game.
     private static final Map<Game, Map<Player, UltronRuntimeController>> INSTANCES =
             new WeakHashMap<>();
 
@@ -110,6 +109,29 @@ public final class UltronRuntimeController {
      */
     static synchronized int registeredGameCountForTesting() {
         return INSTANCES.size();
+    }
+
+    /**
+     * TICKET-V4-023: evict a finished game from {@link #INSTANCES}. Call once per game, at game end.
+     *
+     * <p>V4-022 stopped simulation COPIES from being registered, which removed the unbounded leak.
+     * Real games still registered and were never evicted, and that residual was filed as "bounded,
+     * ~15 games per shard JVM" — an estimate that silently assumed the round harness restarting a
+     * JVM every 25 games. It does not hold for a single long run: a 500-game shard retains 500
+     * {@code Game} object graphs. Measured on a live gate: <b>12 games played, 10 live
+     * {@code forge.game.Game}, 10 {@code Match}, 9 controllers</b> — one retained per game, heap
+     * climbing ~80MB/game toward certain saturation.
+     *
+     * <p>Explicit eviction rather than making the map genuinely weak: the value transitively holds
+     * its own key ({@code game}, and {@code player} → {@code player.getGame()}), so weak keys can
+     * never clear while the value lives. Both fields would have to become weak references — real
+     * surgery on a class shared with the interactive GUI path. A caller that knows the game is over
+     * is the smaller, safer change, and the sim harness knows exactly that.
+     */
+    public static synchronized void forget(Game game) {
+        if (game != null) {
+            INSTANCES.remove(game);
+        }
     }
 
     /** Returns the sim stats for this controller, or null if no instance exists. */

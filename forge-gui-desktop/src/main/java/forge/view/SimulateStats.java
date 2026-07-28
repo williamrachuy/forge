@@ -202,6 +202,14 @@ public final class SimulateStats {
                     }
                 }
 
+                // TICKET-V4-023: release this finished game from UltronRuntimeController's static
+                // registry. MUST come after findUltronSimStats/findUltronCoverage above, which read
+                // from that registry. Without this a single long run retains one Game object graph
+                // per game played -- measured at 10 live Games after 12 games, ~80MB each -- which
+                // saturated a 6g heap and halved throughput. The round harness hid it by restarting
+                // the JVM every 25 games; the queue harness runs 500 games in one JVM and does not.
+                UltronRuntimeController.forget(game);
+
                 System.out.printf("Game %d/%d finished in %d ms%s%s%n", i + 1, config.getGames(), elapsed,
                         timeout ? " timeout" : "", error == null ? "" : " error");
             }

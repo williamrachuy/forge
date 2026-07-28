@@ -4782,3 +4782,45 @@ doing that at 57 games/hour instead of 175 would cost days. Candidate causes to 
 encoder allocation (a fresh `float[1908]` per seat per captured decision, plus the `GameCopier`
 copies each decision already makes), `GameCollector.pending` growth in long games (uncapped until
 `finish()` downsamples), and Guava `EventBus` subscriber overhead per game.
+
+### TICKET-V4-023 RESULT (2026-07-28): FIXED. One retained Game per game played → one, total.
+
+**The residual came due.** V4-022 stopped simulation *copies* entering `UltronRuntimeController`'s
+static registry. Real games still entered and were never evicted, filed as "bounded, ~15 games per
+shard JVM (~150–200MB)". **That estimate silently assumed the round harness restarting a JVM every
+25 games.** The queue harness I later wrote (`forge_nodes.sh run`) launches a *single long run* —
+1000 games across 2 shards = **500 games per JVM** — so the same code retained 500 `Game` object
+graphs.
+
+**Measured on the live breadth10 gate before the fix: 12 games played → 10 live `forge.game.Game`,
+10 `Match`, 9 controllers.** One retained per game, heap climbing ~80MB/game. It would have
+saturated near game 80 and produced a timeout-biased gate — exactly the V4-021 bias — so the gate
+was stopped at 12 games and its partial discarded.
+
+**This also explains V4-024's collapse**, previously logged as unexplained: 57 games/hour with both
+heaps pinned at 6144M, versus the V2 gate's 175 games/hour that never saturated. It was never
+`nnLogging`; it was that the V2 gate ran the *round harness* (25 games/JVM) while the corpus ran
+376 games/JVM. Same leak, hidden by restarts.
+
+**Fix:** `UltronRuntimeController.forget(Game)` + a call at game end in `SimulateStats`, placed
+*after* `findUltronSimStats`/`findUltronCoverage`, which read from that registry.
+
+Explicit eviction rather than genuinely-weak keys: the value transitively holds its own key
+(`game`, and `player` → `player.getGame()`), so weak keys can never clear while the value lives.
+Both fields would have to become weak — real surgery on a class shared with the interactive GUI
+path. A caller that knows the game is over is smaller and safer, and the sim harness knows exactly
+that.
+
+**Verified under load, same config, same 6g heap:**
+
+| | games played | live `forge.game.Game` | heap |
+|---|---|---|---|
+| before | 12 | **10** | 1306M and climbing |
+| after | **21** | **1** | 1170M, steady/falling |
+
+Tests: `UltronRuntimeSimCopyRetentionTest` + `UltronValueNetParityTest` green (6 run, 0 failures,
+1 pre-existing skip).
+
+**Lesson worth keeping:** a bound that holds only because of an unrelated harness detail is not a
+bound. "~15 per JVM" was true of the harness in use at the time and became false the moment the
+harness changed, with no code change and no warning.
