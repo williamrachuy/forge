@@ -4920,3 +4920,58 @@ judgement is limited by what it can perceive. **Phase C (encoder v3) is now the 
 **Cost of learning this: ~4 hours of one box, zero training, zero new corpus.** Exactly what cheap
 runtime-knob experiments are for — it removed the top-ranked hypothesis before any expensive work
 was built on it.
+
+### TICKET-V4-026b RESULT (2026-07-28): 4-PLAYER = 7.9% vs a 25% null. The 1v1→4p transfer premise has FAILED.
+
+**The first 4-player measurement of any V4-era model.** V0, V1 and V2 were all gated in 1v1 only,
+while the project's actual goal has always been 4-player FFA Battlebox Monarch.
+
+| lane | Ultron | null | ratio to null |
+|---|---|---|---|
+| 1v1 | 37.7% [34.7, 40.8] n=970 | 50% | **0.75** |
+| **4p FFA** | **7.9% [5.4, 11.5] n=303** | **25%** | **0.32** |
+
+Timeouts 17/320 = 5%; worst case (every timeout counted a loss) 7.5% — the result is not a
+timeout-exclusion artifact. All-Default 4p control is 24.7% (TICKET-V3-007), so the null is sound.
+
+**Ultron is not merely below par in 4-player; it is proportionally more than twice as far below par
+as it is in 1v1.** Replacing one of four Default AIs with Ultron takes that seat from ~25% to ~8%.
+
+**Play-quality deltas show every deficit amplifying** (`play_quality.py`, Ultron minus the average
+opponent, paired within game):
+
+| metric | 1v1 | 4p |
+|---|---|---|
+| spells / turn | −0.14 | **−0.42** |
+| cards drawn | −0.46 | **−2.11** |
+| cards left in hand | +0.42 | **+1.19** |
+| attacks | −1.15 | **−4.14** |
+| combat damage dealt | −6.71 | **−11.75** |
+
+Same failure mode as 1v1 — under-deploying, hoarding cards, under-attacking — roughly **3x worse**.
+
+**Leading explanation: the model has never seen a real 4-player position.** `UltronStateEncoder`
+represents 1v1 as "a 4-player game with two seats eliminated" (plan §4.1), so the opp2/opp3 blocks
+have been **zero-padded in 100% of training data** — V0's corpus was 1v1 all-Default, V2's
+fine-tune was 1v1 on-policy. In a real 4p game those blocks are populated and the network is
+evaluating far outside its training distribution. The architecture transfers; the *learning* did not.
+
+**This is exactly what plan §5.3 warned about**, now measured: *"A Stage-A-only net will be weak at
+exactly the reasoning 4-player FFA is made of. Do not ship a 1v1-trained net into a 4-player lane
+and call the plan done."* The warning was right and we ran three generations past it.
+
+**Consequences — these reorder the roadmap:**
+1. **1v1 is not a valid proxy for the goal.** Optimising it further is optimising the wrong metric.
+   Every future encoder/training decision must be validated in **4p**.
+2. **Training data must be 4-player.** The cheap-bootstrap-then-transfer premise is dead.
+3. **4p generation is ~6x more expensive**: 27 games/hour vs 1v1's ~175. A 1000-game 4p corpus is
+   ~37 hours. Throughput now matters far more than it did.
+4. **TICKET-V4-028's side-channel is worth much more than when it was built.** At 37 hours per 4p
+   corpus, being able to re-derive an encoder offline instead of regenerating is the difference
+   between hours and days per encoder iteration.
+5. **Encoder-first is now doubly right.** Spending 37 hours generating a 4p corpus against an
+   encoder that cannot see tempo, rate, or opponent information would be the most expensive mistake
+   available to us.
+
+**Run stopped at 320/600 games.** The answer is unambiguous at n=303 and further precision changes
+no decision; 30+ hours of box time is better spent on Phase C.
