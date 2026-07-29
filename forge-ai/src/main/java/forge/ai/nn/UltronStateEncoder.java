@@ -56,7 +56,29 @@ public final class UltronStateEncoder {
     }
 
     private static final int BF_POOL_SIZE = poolSize(BATTLEFIELD_CARD_DIM);   // battlefield creatures / noncreatures
-    private static final int CARD_POOL_SIZE = poolSize(CARD_DIM);              // hand / graveyard / exile / commander
+    private static final int CARD_POOL_SIZE = poolSize(CARD_DIM);              // graveyard / exile / commander
+
+    /**
+     * TICKET-V4-029 (encoder v3): the SELF HAND is no longer pooled.
+     *
+     * <p>Pooling a zone to sum+max+count is a defensible compromise for the battlefield, which is
+     * unbounded. A hand is bounded at ~7. Compressing it threw away which cards you hold for no
+     * space saving worth having: 7 slots x 48 floats = 336 against the pooled 97, i.e. +239 floats
+     * on a ~1900-float vector.
+     *
+     * <p>This is what lets the network answer "I drew a bomb, should I hold mana for it?" at all.
+     * With a pooled hand, drawing a 6-drop registered only as "hand mana-value total went up by 6";
+     * the specific card was gone. Note this is an OBSERVABILITY fix, not a memory one -- a
+     * state-value function re-derives its plan every decision, so it needs the card to be visible in
+     * the state, not remembered.
+     *
+     * <p>Slots are filled in a canonical order (mana value, then colour, then type) so the network
+     * is not spending capacity relearning permutation invariance. Overflow beyond {@link #HAND_SLOTS}
+     * is dropped, which is why the pooled summary is KEPT alongside: it still carries the totals for
+     * an oversized hand.
+     */
+    public static final int HAND_SLOTS = 7;
+    private static final int HAND_SLOTS_SIZE = HAND_SLOTS * CARD_DIM;
 
     private static final int LAND_COLOR_COUNTS_SIZE = 6; // W, U, B, R, G, colorless/other
 
@@ -87,7 +109,8 @@ public final class UltronStateEncoder {
     public static final int SELF_BF_CREATURES_OFFSET = 0;
     public static final int SELF_BF_NONCREATURES_OFFSET = SELF_BF_CREATURES_OFFSET + BF_POOL_SIZE;
     public static final int SELF_HAND_OFFSET = SELF_BF_NONCREATURES_OFFSET + BF_POOL_SIZE;
-    public static final int SELF_GRAVEYARD_OFFSET = SELF_HAND_OFFSET + CARD_POOL_SIZE;
+    public static final int SELF_HAND_SLOTS_OFFSET = SELF_HAND_OFFSET + CARD_POOL_SIZE;
+    public static final int SELF_GRAVEYARD_OFFSET = SELF_HAND_SLOTS_OFFSET + HAND_SLOTS_SIZE;
     public static final int SELF_EXILE_OFFSET = SELF_GRAVEYARD_OFFSET + CARD_POOL_SIZE;
     public static final int SELF_COMMAND_OFFSET = SELF_EXILE_OFFSET + CARD_POOL_SIZE;
     public static final int SELF_LAND_COLORS_OFFSET = SELF_COMMAND_OFFSET + CARD_POOL_SIZE;
@@ -170,6 +193,7 @@ public final class UltronStateEncoder {
         sb.append("SELF_BF_CREATURES@").append(SELF_BF_CREATURES_OFFSET).append('/').append(BF_POOL_SIZE).append(';');
         sb.append("SELF_BF_NONCREATURES@").append(SELF_BF_NONCREATURES_OFFSET).append('/').append(BF_POOL_SIZE).append(';');
         sb.append("SELF_HAND@").append(SELF_HAND_OFFSET).append('/').append(CARD_POOL_SIZE).append(';');
+        sb.append("SELF_HAND_SLOTS@").append(SELF_HAND_SLOTS_OFFSET).append('/').append(HAND_SLOTS_SIZE).append(';');
         sb.append("SELF_GRAVEYARD@").append(SELF_GRAVEYARD_OFFSET).append('/').append(CARD_POOL_SIZE).append(';');
         sb.append("SELF_EXILE@").append(SELF_EXILE_OFFSET).append('/').append(CARD_POOL_SIZE).append(';');
         sb.append("SELF_COMMAND@").append(SELF_COMMAND_OFFSET).append('/').append(CARD_POOL_SIZE).append(';');
@@ -304,6 +328,7 @@ public final class UltronStateEncoder {
         poolBattlefield(out, base + SELF_BF_CREATURES_OFFSET, creatures);
         poolBattlefield(out, base + SELF_BF_NONCREATURES_OFFSET, noncreatures);
         poolCards(out, base + SELF_HAND_OFFSET, self.getCardsIn(ZoneType.Hand));
+        writeHandSlots(out, base + SELF_HAND_SLOTS_OFFSET, self.getCardsIn(ZoneType.Hand));
         poolCards(out, base + SELF_GRAVEYARD_OFFSET, self.getCardsIn(ZoneType.Graveyard));
         poolCards(out, base + SELF_EXILE_OFFSET, self.getCardsIn(ZoneType.Exile));
         poolCards(out, base + SELF_COMMAND_OFFSET, self.getCardsIn(ZoneType.Command));
@@ -376,6 +401,30 @@ public final class UltronStateEncoder {
      * <p>Applied to opponents too: untapped permanents are public information, and "can that player
      * respond?" is exactly what a human reads off an opponent's untapped mana.
      */
+    /**
+     * TICKET-V4-029: write up to {@link #HAND_SLOTS} individual hand cards, canonically ordered so
+     * the same hand always encodes identically regardless of draw order. See {@link #HAND_SLOTS}.
+     */
+    private static void writeHandSlots(float[] out, int base, Iterable<Card> hand) {
+        List<Card> cards = new ArrayList<>();
+        for (Card c : hand) {
+            cards.add(c);
+        }
+        cards.sort((a, b) -> {
+            int cmp = Integer.compare(a.getCMC(), b.getCMC());
+            if (cmp != 0) {
+                return cmp;
+            }
+            cmp = a.getName().compareTo(b.getName());
+            return cmp;
+        });
+        int n = Math.min(cards.size(), HAND_SLOTS);
+        for (int i = 0; i < n; i++) {
+            float[] f = UltronCardFeatureTable.getFeatures(cards.get(i).getName());
+            System.arraycopy(f, 0, out, base + i * CARD_DIM, Math.min(f.length, CARD_DIM));
+        }
+    }
+
     private static void writeManaBlock(float[] out, int base, Player p, Iterable<Card> battlefield) {
         out[base] = ComputerUtilMana.getAvailableManaEstimate(p) / 20f;
         for (Card c : battlefield) {

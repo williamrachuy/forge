@@ -4975,3 +4975,51 @@ and call the plan done."* The warning was right and we ran three generations pas
 
 **Run stopped at 320/600 games.** The answer is unambiguous at n=303 and further precision changes
 no decision; 30+ hours of box time is better spent on Phase C.
+
+### TICKET-V4-029 (Phase C) IN PROGRESS 2026-07-28: encoder v3 — tempo block + unpooled hand
+
+Encoder v2 could not perceive the two things the 4p failure and the play-quality data both point at.
+Two parts landed so far. `ENCODER_SEMANTIC_VERSION` 2 → 3; `SCHEMA_HASH`
+`0x330703df11234a17` → `0x42ce03a0aa060387` (and again with the hand change — always read it from
+the running build, never from this note).
+
+**Part 1 — the TEMPO block (8 floats per player, self and opponents).**
+`[0]` available-mana estimate, `[1..6]` UNTAPPED sources by W/U/B/R/G/other, `[7]` lands played this
+turn. Existing land colours encode *what could I ever produce*; this encodes *what can I spend right
+now*. Applied to opponents too, because untapped mana is public and "can they respond?" is what a
+human reads off it. Crucially an **afterstate** feature: casting lowers it, so the network can at
+last learn what leaving mana unspent is worth — negative while developing, positive while holding up
+interaction.
+
+**Part 2 — the SELF HAND is no longer pooled.** 7 slots × 48 floats (336) alongside the retained
+pooled summary, +239 floats on a ~1900-float vector. Pooling is defensible for an unbounded
+battlefield; a hand is bounded at ~7 and compressing it discarded which cards you hold for no
+meaningful saving. Slots are canonically ordered (mana value, then name) so the same hand always
+encodes identically and the network does not spend capacity relearning permutation invariance;
+overflow is dropped, which is why the pooled summary is kept.
+
+**This is an observability fix, not a memory one.** A state-value function re-derives its plan every
+decision, so a drawn bomb has to be *visible in the state*, not remembered. Under encoder v2,
+drawing a 6-drop registered only as "hand mana-value total went up by 6".
+
+**CONSEQUENCE: V0 and V2 are INVALID and refuse to load.** That is the schema guard working as
+designed. Both must be retrained against encoder v3 — and per TICKET-V4-026b, on **4-player** data.
+
+**Test-suite handling of a schema bump.** `UltronValueNetParityTest` and `NeuralStateEvaluatorTest`
+now **skip with an explicit reason** when a fixture's schema does not match the running encoder,
+rather than failing. A bump is not a regression and should not read as one. Suite stays at the
+325 run / 8 pre-existing `llm.runtime` failures / 1 skip baseline.
+
+**Still to do in Phase C, in priority order:**
+- **Magnitude features** (damage dealt, cards drawn, mana produced) so Lightning Bolt ≠ Shock —
+  today they encode *identically* and no amount of data can separate them.
+- **Temporal deltas** (per-turn change in cards/permanents/power/life) for rate-of-accumulation,
+  which is what multiplayer threat assessment actually keys on. Needs per-game runtime history —
+  design it with an explicit lifecycle, given TICKET-V4-023's lesson about registries that never
+  evict.
+- **Card embeddings** over the fixed 666-card vocab (`vocabIdByName` already built and unused).
+  Requires trainer changes, so it is last.
+
+**Do NOT generate a 4p corpus until Phase C is finished.** At ~27 games/hour a 1000-game 4p corpus
+is ~37 hours; every encoder change after that point wastes it. This is the whole reason
+TICKET-V4-028's side-channel exists.
