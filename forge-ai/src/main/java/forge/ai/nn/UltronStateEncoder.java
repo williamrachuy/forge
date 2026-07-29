@@ -1,5 +1,6 @@
 package forge.ai.nn;
 
+import forge.ai.ComputerUtilMana;
 import forge.game.Game;
 import forge.game.card.Card;
 import forge.game.card.CardCollectionView;
@@ -58,6 +59,25 @@ public final class UltronStateEncoder {
     private static final int CARD_POOL_SIZE = poolSize(CARD_DIM);              // hand / graveyard / exile / commander
 
     private static final int LAND_COLOR_COUNTS_SIZE = 6; // W, U, B, R, G, colorless/other
+
+    /**
+     * TICKET-V4-029 (encoder v3) — the TEMPO block. Magic is played on two resources, tempo and card
+     * advantage, and which dominates depends on game stage. Mana efficiency *is* tempo, mechanically.
+     * Encoder v2 had no mana feature of any kind: only total land colours and a normalised turn
+     * number. Measured consequence (TICKET-V4-027, n=970): Ultron casts 0.14 fewer spells per turn
+     * than Default while ending with 0.42 MORE cards in hand -- it holds cards it never deploys, and
+     * in 4-player that widens to -0.42 and +1.19. It plays exactly like something that cannot see
+     * the currency it is losing, because it could not.
+     *
+     * <p>Critically this is an AFTERSTATE feature: casting a spell lowers available mana, so with
+     * this block the network can finally learn what leaving mana unspent is worth -- negative when
+     * developing, positive when holding up interaction.
+     */
+    private static final int MANA_AVAILABLE_SIZE = 1;      // ComputerUtilMana.getAvailableManaEstimate
+    private static final int MANA_UNTAPPED_COLORS_SIZE = 6; // untapped sources by W,U,B,R,G,C
+    private static final int MANA_LANDS_PLAYED_SIZE = 1;   // land drop made this turn -- direct tempo
+    private static final int MANA_BLOCK_SIZE =
+            MANA_AVAILABLE_SIZE + MANA_UNTAPPED_COLORS_SIZE + MANA_LANDS_PLAYED_SIZE;
     private static final int LIFE_POISON_ENERGY_SIZE = 3;
 
     // -----------------------------------------------------------------------
@@ -71,7 +91,8 @@ public final class UltronStateEncoder {
     public static final int SELF_EXILE_OFFSET = SELF_GRAVEYARD_OFFSET + CARD_POOL_SIZE;
     public static final int SELF_COMMAND_OFFSET = SELF_EXILE_OFFSET + CARD_POOL_SIZE;
     public static final int SELF_LAND_COLORS_OFFSET = SELF_COMMAND_OFFSET + CARD_POOL_SIZE;
-    public static final int SELF_SCALARS_OFFSET = SELF_LAND_COLORS_OFFSET + LAND_COLOR_COUNTS_SIZE;
+    public static final int SELF_MANA_OFFSET = SELF_LAND_COLORS_OFFSET + LAND_COLOR_COUNTS_SIZE;
+    public static final int SELF_SCALARS_OFFSET = SELF_MANA_OFFSET + MANA_BLOCK_SIZE;
     public static final int SELF_BLOCK_SIZE = SELF_SCALARS_OFFSET + LIFE_POISON_ENERGY_SIZE;
 
     // -----------------------------------------------------------------------
@@ -85,7 +106,8 @@ public final class UltronStateEncoder {
     public static final int OPP_GRAVEYARD_OFFSET = OPP_HAND_COUNT_OFFSET + OPP_HAND_COUNT_SIZE;
     public static final int OPP_COMMAND_OFFSET = OPP_GRAVEYARD_OFFSET + CARD_POOL_SIZE;
     public static final int OPP_LAND_COLORS_OFFSET = OPP_COMMAND_OFFSET + CARD_POOL_SIZE;
-    public static final int OPP_SCALARS_OFFSET = OPP_LAND_COLORS_OFFSET + LAND_COLOR_COUNTS_SIZE;
+    public static final int OPP_MANA_OFFSET = OPP_LAND_COLORS_OFFSET + LAND_COLOR_COUNTS_SIZE;
+    public static final int OPP_SCALARS_OFFSET = OPP_MANA_OFFSET + MANA_BLOCK_SIZE;
     public static final int OPP_ELIMINATED_OFFSET = OPP_SCALARS_OFFSET + LIFE_POISON_ENERGY_SIZE;
     public static final int OPP_BLOCK_SIZE = OPP_ELIMINATED_OFFSET + 1;
 
@@ -128,7 +150,7 @@ public final class UltronStateEncoder {
      * garbage. Any change to HOW a feature is computed -- not just to the vector layout -- must
      * bump this constant.
      */
-    public static final int ENCODER_SEMANTIC_VERSION = 2;
+    public static final int ENCODER_SEMANTIC_VERSION = 3; // 3 = +tempo/mana block (TICKET-V4-029)
 
     /**
      * Stable hash of the feature layout AND semantics, per plan sect. 4.3: model files and
@@ -152,6 +174,7 @@ public final class UltronStateEncoder {
         sb.append("SELF_EXILE@").append(SELF_EXILE_OFFSET).append('/').append(CARD_POOL_SIZE).append(';');
         sb.append("SELF_COMMAND@").append(SELF_COMMAND_OFFSET).append('/').append(CARD_POOL_SIZE).append(';');
         sb.append("SELF_LAND_COLORS@").append(SELF_LAND_COLORS_OFFSET).append('/').append(LAND_COLOR_COUNTS_SIZE).append(';');
+        sb.append("SELF_MANA@").append(SELF_MANA_OFFSET).append('/').append(MANA_BLOCK_SIZE).append(';');
         sb.append("SELF_SCALARS@").append(SELF_SCALARS_OFFSET).append('/').append(LIFE_POISON_ENERGY_SIZE).append(';');
         sb.append("SELF_BLOCK_SIZE=").append(SELF_BLOCK_SIZE).append(';');
         sb.append("OPP_BF_CREATURES@").append(OPP_BF_CREATURES_OFFSET).append('/').append(BF_POOL_SIZE).append(';');
@@ -160,6 +183,7 @@ public final class UltronStateEncoder {
         sb.append("OPP_GRAVEYARD@").append(OPP_GRAVEYARD_OFFSET).append('/').append(CARD_POOL_SIZE).append(';');
         sb.append("OPP_COMMAND@").append(OPP_COMMAND_OFFSET).append('/').append(CARD_POOL_SIZE).append(';');
         sb.append("OPP_LAND_COLORS@").append(OPP_LAND_COLORS_OFFSET).append('/').append(LAND_COLOR_COUNTS_SIZE).append(';');
+        sb.append("OPP_MANA@").append(OPP_MANA_OFFSET).append('/').append(MANA_BLOCK_SIZE).append(';');
         sb.append("OPP_SCALARS@").append(OPP_SCALARS_OFFSET).append('/').append(LIFE_POISON_ENERGY_SIZE).append(';');
         sb.append("OPP_ELIMINATED@").append(OPP_ELIMINATED_OFFSET).append('/').append(1).append(';');
         sb.append("OPP_BLOCK_SIZE=").append(OPP_BLOCK_SIZE).append(';');
@@ -284,6 +308,7 @@ public final class UltronStateEncoder {
         poolCards(out, base + SELF_EXILE_OFFSET, self.getCardsIn(ZoneType.Exile));
         poolCards(out, base + SELF_COMMAND_OFFSET, self.getCardsIn(ZoneType.Command));
         writeLandColorCounts(out, base + SELF_LAND_COLORS_OFFSET, battlefield);
+        writeManaBlock(out, base + SELF_MANA_OFFSET, self, battlefield);
         writeScalars(out, base + SELF_SCALARS_OFFSET, self);
     }
 
@@ -308,6 +333,7 @@ public final class UltronStateEncoder {
         poolCards(out, base + OPP_GRAVEYARD_OFFSET, opp.getCardsIn(ZoneType.Graveyard));
         poolCards(out, base + OPP_COMMAND_OFFSET, opp.getCardsIn(ZoneType.Command));
         writeLandColorCounts(out, base + OPP_LAND_COLORS_OFFSET, battlefield);
+        writeManaBlock(out, base + OPP_MANA_OFFSET, opp, battlefield);
         writeScalars(out, base + OPP_SCALARS_OFFSET, opp);
         out[base + OPP_ELIMINATED_OFFSET] = 0f;
     }
@@ -338,6 +364,49 @@ public final class UltronStateEncoder {
      * subtype at all and were previously reporting zero color production. See
      * {@link #ENCODER_SEMANTIC_VERSION}.
      */
+    /**
+     * TICKET-V4-029 (encoder v3): the TEMPO block — see {@link #MANA_BLOCK_SIZE}.
+     *
+     * <p>Layout: [0] available-mana estimate, [1..6] UNTAPPED mana sources by W,U,B,R,G,other,
+     * [7] lands played this turn. The untapped counts deliberately mirror
+     * {@link #writeLandColorCounts}'s per-source dedup (a dual that taps for W or U increments both)
+     * but count only sources that can actually be used right now — which is the difference between
+     * "what colours could I ever produce" (already encoded) and "what can I spend this instant".
+     *
+     * <p>Applied to opponents too: untapped permanents are public information, and "can that player
+     * respond?" is exactly what a human reads off an opponent's untapped mana.
+     */
+    private static void writeManaBlock(float[] out, int base, Player p, Iterable<Card> battlefield) {
+        out[base] = ComputerUtilMana.getAvailableManaEstimate(p) / 20f;
+        for (Card c : battlefield) {
+            if (c.isTapped() || c.getManaAbilities().isEmpty()) {
+                continue;
+            }
+            boolean[] produced = new boolean[LAND_COLOR_COUNTS_SIZE];
+            for (SpellAbility m : c.getManaAbilities()) {
+                m.setActivatingPlayer(c.getController());
+                for (AbilityManaPart mp : m.getAllManaParts()) {
+                    String colorsStr = mp.mana(m);
+                    if (colorsStr == null || colorsStr.isEmpty()) {
+                        continue;
+                    }
+                    for (String token : colorsStr.split(" ")) {
+                        markProducedColor(produced, token);
+                    }
+                }
+            }
+            for (int i = 0; i < LAND_COLOR_COUNTS_SIZE; i++) {
+                if (produced[i]) {
+                    out[base + MANA_AVAILABLE_SIZE + i] += 1f;
+                }
+            }
+        }
+        for (int i = 0; i < LAND_COLOR_COUNTS_SIZE; i++) {
+            out[base + MANA_AVAILABLE_SIZE + i] /= 10f;
+        }
+        out[base + MANA_AVAILABLE_SIZE + MANA_UNTAPPED_COLORS_SIZE] = p.getLandsPlayedThisTurn() / 2f;
+    }
+
     private static void writeLandColorCounts(float[] out, int base, Iterable<Card> battlefield) {
         for (Card c : battlefield) {
             if (!c.isLand()) {
