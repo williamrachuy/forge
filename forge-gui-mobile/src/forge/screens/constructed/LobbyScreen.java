@@ -55,7 +55,7 @@ import forge.util.GuiPrefBinders;
 
 public abstract class LobbyScreen extends LaunchScreen implements ILobbyView {
     private static final ForgePreferences prefs = FModel.getPreferences();
-    private static final float PADDING = Utils.scale(5);
+    protected static final float PADDING = Utils.scale(5);
     public static final int MAX_PLAYERS = 4;
     private static final FSkinFont VARIANTS_FONT = FSkinFont.get(12);
 
@@ -600,11 +600,9 @@ public abstract class LobbyScreen extends LaunchScreen implements ILobbyView {
     @Override
     public void update(final boolean fullUpdate) {
         int playerCount = lobby.getNumberOfSlots();
-
-        updateVariantSelection();
-
         final boolean allowNetworking = lobby.isAllowNetworking();
 
+        updateVariantSelection();
         setStartButtonAvailability();
 
         for (int i = 0; i < MAX_PLAYERS; i++) {
@@ -619,7 +617,7 @@ public abstract class LobbyScreen extends LaunchScreen implements ILobbyView {
                     isNewPanel = !panel.isVisible();
                 }
                 else {
-                    panel = new PlayerPanel(this, allowNetworking, i, slot, lobby.mayEdit(i), lobby.hasControl());
+                    panel = new PlayerPanel(this, i, slot, lobby.mayEdit(i), lobby.hasControl());
                     // Register before initialize: deck-chooser populate fires onSelectionChange synchronously, which can recurse into updateDeck(i).
                     playerPanels.add(panel);
                     playersScroll.add(panel);
@@ -640,7 +638,10 @@ public abstract class LobbyScreen extends LaunchScreen implements ILobbyView {
                 if (type != LobbySlotType.AI) {
                     panel.setPlayerName(slot.getName());
                     panel.setAvatarIndex(slot.getAvatarIndex());
-                    panel.setSleeveIndex(slot.getSleeveIndex());
+                    final Deck slotDeck = slot.getDeck();
+                    panel.setSleeve(slot.getSleeveIndex(),
+                            slotDeck == null ? "" : slotDeck.getSleeveArtKey(),
+                            slotDeck == null ? Deck.DEFAULT_SLEEVE_OFFSET : slotDeck.getSleeveArtOffset());
                 } else {
                     //AI: this one overrides the setplayername if blank
                     if (panel.getPlayerName().isEmpty())
@@ -653,7 +654,7 @@ public abstract class LobbyScreen extends LaunchScreen implements ILobbyView {
                 panel.setIsReady(slot.isReady());
                 panel.setIsDevMode(slot.isDevMode());
                 panel.setIsArchenemy(slot.isArchenemy());
-                panel.setUseAiSimulation(slot.getAiOptions().contains(AIOption.USE_SIMULATION));
+                panel.setUseAiSimulation(slot.getAiOptions().contains(AIOption.USE_FULL_SIMULATION));
                 panel.setMayEdit(lobby.mayEdit(i));
                 panel.setMayControl(lobby.mayControl(i));
                 panel.setMayRemove(lobby.mayRemove(i));
@@ -793,6 +794,7 @@ public abstract class LobbyScreen extends LaunchScreen implements ILobbyView {
         }
 
         decks[playerIndex] = playerDeck;
+        playerPanels.get(playerIndex).refreshSleeveFromDeck(playerDeck);
         if (playerChangeListener != null) {
             playerChangeListener.update(playerIndex, UpdateLobbyPlayerEvent.deckUpdate(playerDeck));
             playerChangeListener.update(playerIndex, UpdateLobbyPlayerEvent.setDeckSchemePlaneVanguard(TextUtil.fastReplace(deckName," Generated Deck", ""), SchemeDeckName, PlanarDeckname, VanguardAvatar));
@@ -817,8 +819,15 @@ public abstract class LobbyScreen extends LaunchScreen implements ILobbyView {
         }
     }
 
+    // Re-broadcasts a deck whose card-art sleeve changed, so networked opponents pick up the new sleeve
+    void updateDeckSleeve(final int index, final Deck deck) {
+        if (playerChangeListener != null && deck != null) {
+            playerChangeListener.update(index, UpdateLobbyPlayerEvent.deckUpdate(deck));
+        }
+    }
+
     void setReady(final int index, final boolean ready) {
-        if (lobby.isAllowNetworking()){
+        if (lobby.isAllowNetworking()) {
             updateDeck(index);
             fireReady(index, ready);
             return;
@@ -843,11 +852,8 @@ public abstract class LobbyScreen extends LaunchScreen implements ILobbyView {
         int playerCount = lobby.getNumberOfSlots();
         // clear ready for everyone
         for (int i = 0; i < playerCount; i++) {
-            final PlayerPanel panel = playerPanels.get(i);
-            final boolean wasReady = panel.isReady();
-            panel.setIsReady(false);
-            if (wasReady && playerChangeListener != null) {
-                playerChangeListener.update(i, UpdateLobbyPlayerEvent.isReadyUpdate(false));
+            if (playerPanels.get(i).isReady()) {
+                fireReady(i, false);
             }
         }
     }
@@ -856,7 +862,7 @@ public abstract class LobbyScreen extends LaunchScreen implements ILobbyView {
             playerChangeListener.update(index, getSlot(index));
         }
     }
-    void fireReady(final int index, boolean ready){
+    void fireReady(final int index, boolean ready) {
         playerPanels.get(index).setIsReady(ready);
         if (playerChangeListener != null) {
             playerChangeListener.update(index, UpdateLobbyPlayerEvent.isReadyUpdate(ready));
@@ -914,6 +920,11 @@ public abstract class LobbyScreen extends LaunchScreen implements ILobbyView {
         lblGamesInMatch.setVisible(visible);
         cbGamesInMatch.setVisible(visible);
         playersScroll.setVisible(visible);
+    }
+
+    protected void setVariantsVisible(boolean visible) {
+        lblVariants.setVisible(visible);
+        cbVariants.setVisible(visible);
     }
 
     public void setStartButtonAvailability() {

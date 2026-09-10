@@ -144,9 +144,12 @@ public class ManaAi extends SpellAbilityAi {
                 return true;
             }
         }
-        
+
         CardCollection manaSources = ComputerUtilMana.getAvailableManaSources(ai, true);
         int numManaSrcs = manaSources.size();
+        if (manaSources.contains(host) && ComputerUtilCost.isSacrificeSelfCost(sa.getRootAbility().getPayCosts())) {
+            numManaSrcs--;
+        }
         int manaReceived = sa.hasParam("Amount") ? AbilityUtils.calculateAmount(host, sa.getParam("Amount"), sa) : 1;
         manaReceived *= sa.getParam("Produced").split(" ").length;
 
@@ -191,7 +194,7 @@ public class ManaAi extends SpellAbilityAi {
             ManaCost cost = testSa.getPayCosts().getTotalMana();
             boolean canPayWithAvailableColors = cost.canBePaidWithAvailable(ColorSet.fromNames(
                     ComputerUtilCost.getAvailableManaColors(ai, (List<Card>)null)).getColor());
-            
+
             if (cost.getCMC() == 0 && cost.countX() == 0) {
                 // no mana cost, no need to activate this SA then (additional mana not needed)
                 continue;
@@ -263,11 +266,11 @@ public class ManaAi extends SpellAbilityAi {
         if (mp.isEmpty()) {
             // TODO use color from ability
             test = new Mana((byte) ManaAtom.COLORLESS, source, null, ai);
-            mp.addMana(test, false);
+            mp.addManaNoEvent(test);
         }
         boolean lose = mp.willManaBeLostAtEndOfPhase();
         if (test != null) {
-            mp.removeMana(test, false);
+            mp.removeManaNoEvent(test);
         }
         return !lose;
     }

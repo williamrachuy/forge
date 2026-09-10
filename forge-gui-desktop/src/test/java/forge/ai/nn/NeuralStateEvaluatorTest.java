@@ -173,8 +173,8 @@ public class NeuralStateEvaluatorTest extends AITest {
                 "Non-terminal state must not produce the terminal short-circuit sentinel values, got " + score.value);
         Assert.assertTrue(score.value >= 0 && score.value <= 100_000,
                 "value must be a rounded win-probability-times-100000 in [0, 100000], got " + score.value);
-        Assert.assertTrue(score.summonSickValue >= 0 && score.summonSickValue <= 100_000,
-                "summonSickValue must also be in [0, 100000], got " + score.summonSickValue);
+        Assert.assertTrue(score.availableValue >= 0 && score.availableValue <= 100_000,
+                "availableValue must also be in [0, 100000], got " + score.availableValue);
     }
 
     @Test
@@ -199,14 +199,14 @@ public class NeuralStateEvaluatorTest extends AITest {
     @Test
     public void summonSickMaskIsPhaseConditionalNotUnconditional() {
         // TICKET-V4-015 regression pin. The V4-010 implementation masked summon-sick creatures
-        // out of the summonSickValue pass UNCONDITIONALLY; combined with SpellAbilityPicker's
-        // `bestSaValue.summonSickValue <= origGameScore.summonSickValue -> bestSa = null` gate,
+        // out of the availableValue pass UNCONDITIONALLY; combined with SpellAbilityPicker's
+        // `bestSaValue.availableValue <= origGameScore.availableValue -> bestSa = null` gate,
         // that made "cast a creature" lose to "pass" at EVERY phase (masked afterstate = hand card
         // spent, creature invisible), producing the fully passive 0/12 loss streak of the
         // TICKET-V4-014 15-game run. The fix mirrors GameStateEvaluator's semantics exactly: mask
         // only when the phase is before MAIN2. This test pins both halves:
         //   MAIN1  -> masked pass differs from the plain value (deferral signal active);
-        //   MAIN2  -> summonSickValue == value (sick creatures count fully; a fresh creature on
+        //   MAIN2  -> availableValue == value (sick creatures count fully; a fresh creature on
         //             the battlefield must never be scored as invisible in second main).
         initAndCreateGame();
         UltronValueNet net;
@@ -225,16 +225,16 @@ public class NeuralStateEvaluatorTest extends AITest {
 
         setMainPhase(game, ultron); // MAIN1
         Score main1 = evaluator.getScoreForGameState(game, ultron);
-        Assert.assertNotEquals(main1.summonSickValue, main1.value,
-                "MAIN1 with a summon-sick creature: the masked summonSickValue pass must actually "
+        Assert.assertNotEquals(main1.availableValue, main1.value,
+                "MAIN1 with a summon-sick creature: the masked availableValue pass must actually "
                 + "differ from the unmasked value (mask active before MAIN2)");
 
         game.getPhaseHandler().devModeSet(PhaseType.MAIN2, ultron);
         game.getPhaseHandler().onStackResolved();
         game.getAction().checkStateEffects(true);
         Score main2 = evaluator.getScoreForGameState(game, ultron);
-        Assert.assertEquals(main2.summonSickValue, main2.value,
-                "MAIN2 with a summon-sick creature: summonSickValue must equal value (mask must NOT "
+        Assert.assertEquals(main2.availableValue, main2.value,
+                "MAIN2 with a summon-sick creature: availableValue must equal value (mask must NOT "
                 + "apply at/after MAIN2 -- unconditional masking is the exact bug that made Ultron "
                 + "never cast creatures, TICKET-V4-014/015)");
     }

@@ -4,7 +4,6 @@ import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.Font;
 import java.awt.Rectangle;
-import java.awt.event.KeyAdapter;
 import java.awt.event.KeyEvent;
 
 import javax.swing.BorderFactory;
@@ -48,17 +47,6 @@ public class KeyboardShortcutsDialog extends FDialog {
 
             final KeyboardShortcutField field = new KeyboardShortcutField(shortcut);
             field.setFont(FSkin.getRelativeFont(11));
-            // Transfer focus away once a non-modifier key completes the binding.
-            field.addKeyListener(new KeyAdapter() {
-                @Override
-                public void keyPressed(final KeyEvent e) {
-                    final int code = e.getKeyCode();
-                    if (code != KeyEvent.VK_SHIFT && code != KeyEvent.VK_CONTROL
-                            && code != KeyEvent.VK_ALT && code != KeyEvent.VK_META) {
-                        content.requestFocusInWindow();
-                    }
-                }
-            });
             content.add(field, "w 120!, h 22!");
         }
 

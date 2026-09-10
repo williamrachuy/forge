@@ -1,5 +1,6 @@
 package forge.gamemodes.net;
 
+import forge.gamemodes.match.AbstractGuiGame;
 import forge.gamemodes.match.GameLobby.GameLobbyData;
 import forge.gamemodes.match.LobbySlotType;
 import forge.gamemodes.net.client.ClientGameLobby;
@@ -24,6 +25,7 @@ import forge.util.Localizer;
 import forge.util.URLValidator;
 import org.apache.commons.lang3.StringUtils;
 
+import java.util.ArrayList;
 import java.util.List;
 
 public class NetConnectUtil {
@@ -92,6 +94,7 @@ public class NetConnectUtil {
                 return null;
             }
         });
+        server.setDraftHandler(view.getDraftHandler());
         chatInterface.setGameClient(new IRemote() {
             @Override
             public void send(final NetEvent event) {
@@ -116,48 +119,51 @@ public class NetConnectUtil {
         return new ChatMessage(null, Localizer.getInstance().getMessage("lblHostingPortOnN", String.valueOf(port)));
     }
 
-    public static void copyHostedServerUrl() {
-        final Localizer localizer = Localizer.getInstance();
-        String internalAddress = FServerManager.getLocalAddress();
-        String externalAddress = FServerManager.getExternalAddress();
-        String internalUrl = internalAddress + ":" + FModel.getNetPreferences().getPrefInt(ForgeNetPreferences.FNetPref.NET_PORT);
-        String externalUrl = null;
+    /**
+     * Snapshot of the hosted server's reachable addresses, used by the desktop and mobile
+     * server-URL dialogs. {@code starIndex} is the row to auto-copy and visually mark — either
+     * the previously remembered URL (if still present) or the first row as a fallback.
+     */
+    public static final class ServerAddressList {
+        public final List<String> labels;
+        public final List<String> urls;
+        public final int starIndex;
+
+        ServerAddressList(final List<String> labels, final List<String> urls, final int starIndex) {
+            this.labels = labels;
+            this.urls = urls;
+            this.starIndex = starIndex;
+        }
+    }
+
+    public static ServerAddressList collectHostedServerAddresses() {
+        final ForgeNetPreferences netPrefs = FModel.getNetPreferences();
+        final int port = netPrefs.getPrefInt(ForgeNetPreferences.FNetPref.NET_PORT);
+        final String externalAddress = FServerManager.getExternalAddress();
+
+        final List<String> labels = new ArrayList<>();
+        final List<String> urls = new ArrayList<>();
         if (externalAddress != null) {
-            externalUrl = externalAddress + ":" + FModel.getNetPreferences().getPrefInt(ForgeNetPreferences.FNetPref.NET_PORT);
-            GuiBase.getInterface().copyToClipboard(externalUrl);
-        } else {
-            GuiBase.getInterface().copyToClipboard(internalUrl);
+            labels.add("External (WAN)");
+            urls.add(externalAddress + ":" + port);
+        }
+        for (final java.util.Map.Entry<String, String> entry : FServerManager.getAllLocalAddresses().entrySet()) {
+            labels.add(entry.getKey());
+            urls.add(entry.getValue() + ":" + port);
         }
 
-        String message;
-        String title = localizer.getMessage("lblServerURL");
-        List<String> options;
-        int closeIndex;
-        int localCopyIndex;
-
-        if (externalUrl != null) {
-            message = localizer.getMessage("lblShareURLToMakePlayerJoinServer", externalUrl, internalUrl);
-            options = List.of(
-                    localizer.getMessage("lblCopyExternalURL"),
-                    localizer.getMessage("lblCopyLocalURL"),
-                    localizer.getMessage("lblClose"));
-            closeIndex = 2;
-            localCopyIndex = 1;
-        } else {
-            message = localizer.getMessage("lblForgeUnableDetermineYourExternalIP", internalUrl);
-            options = List.of(
-                    localizer.getMessage("lblCopyLocalURL"),
-                    localizer.getMessage("lblClose"));
-            closeIndex = 1;
-            localCopyIndex = 0;
+        final String rememberedUrl = netPrefs.getPref(ForgeNetPreferences.FNetPref.NET_LAST_COPIED_URL);
+        int starIndex = urls.indexOf(rememberedUrl);
+        if (starIndex < 0) {
+            starIndex = urls.isEmpty() ? -1 : 0;
         }
+        return new ServerAddressList(labels, urls, starIndex);
+    }
 
-        int result = SOptionPane.showOptionDialog(message, title, SOptionPane.INFORMATION_ICON, options, closeIndex);
-        if (externalUrl != null && result == 0) {
-            GuiBase.getInterface().copyToClipboard(externalUrl);
-        } else if (result == localCopyIndex) {
-            GuiBase.getInterface().copyToClipboard(internalUrl);
-        }
+    public static void rememberCopiedServerUrl(final String url) {
+        final ForgeNetPreferences netPrefs = FModel.getNetPreferences();
+        netPrefs.setPref(ForgeNetPreferences.FNetPref.NET_LAST_COPIED_URL, url);
+        netPrefs.save();
     }
 
     public static ChatMessage join(final String url, final IOnlineLobby onlineLobby, final IOnlineChatInterface chatInterface) {
@@ -174,12 +180,15 @@ public class NetConnectUtil {
         port = hostPort.port();
         if (port == -1) port = Integer.valueOf(ForgeNetPreferences.FNetPref.NET_PORT.getDefault());
 
-        final FGameClient client = new FGameClient(FModel.getPreferences().getPref(FPref.PLAYER_NAME), "0", gui, hostname, port);
+        final FGameClient client = new FGameClient(FModel.getPreferences().getPref(FPref.PLAYER_NAME), gui, hostname, port);
         onlineLobby.setClient(client);
         chatInterface.setGameClient(client);
         final ClientGameLobby lobby = new ClientGameLobby();
         final ILobbyView view =  onlineLobby.setLobby(lobby);
         lobby.setListener(view);
+        if (gui instanceof AbstractGuiGame agg) {
+            agg.setClientLobby(lobby);
+        }
         client.addLobbyListener(new ILobbyListener() {
             @Override
             public void message(final String source, final String message, final ChatMessage.MessageType type) {
@@ -192,7 +201,6 @@ public class NetConnectUtil {
             }
             @Override
             public void close() {
-                GuiBase.setInterrupted(true);
                 onlineLobby.closeConn(Localizer.getInstance().getMessage("lblYourConnectionToHostWasInterrupted", url));
             }
             @Override
@@ -200,6 +208,7 @@ public class NetConnectUtil {
                 return lobby;
             }
         });
+        client.setDraftHandler(view.getDraftHandler());
         view.setPlayerChangeListener((index, event) -> client.send(event));
 
         NetworkLogConfig.activateNetworkLogging();

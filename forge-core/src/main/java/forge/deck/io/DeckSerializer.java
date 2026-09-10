@@ -45,6 +45,12 @@ public class DeckSerializer {
         out.add(TextUtil.enclosedBracket("metadata"));
     
         out.add(TextUtil.concatNoSpace(DeckFileHeader.NAME,"=", d.getName().replaceAll("\n", "")));
+        if (d.getDeckFormat() != null) {
+            out.add(TextUtil.concatNoSpace(DeckFileHeader.DECK_TYPE, "=", d.getDeckFormat().name()));
+        }
+        if (d.getSourceUrl() != null) {
+            out.add(TextUtil.concatNoSpace(DeckFileHeader.SOURCE_URL, "=", d.getSourceUrl().replaceAll("\n", "")));
+        }
         // these are optional
         if (d.getComment() != null) {
             out.add(TextUtil.concatNoSpace(DeckFileHeader.COMMENT,"=", d.getComment().replaceAll("\n", "")));
@@ -68,9 +74,15 @@ public class DeckSerializer {
             }
             out.add(TextUtil.concatNoSpace(metadata.getKey(), "=", metadata.getValue()));
         }
+        if (!d.getSleeveArtKey().isEmpty()) {
+            out.add(TextUtil.concatNoSpace(DeckFileHeader.SLEEVE_ART, "=", d.getSleeveArtKey()));
+            if (d.getSleeveArtOffset() != Deck.DEFAULT_SLEEVE_OFFSET) {
+                out.add(TextUtil.concatNoSpace(DeckFileHeader.SLEEVE_OFFSET, "=", String.valueOf(d.getSleeveArtOffset())));
+            }
+        }
 
         for (Entry<DeckSection, CardPool> s : d) {
-            if(s.getValue().isEmpty())
+            if (s.getValue().isEmpty())
                 continue;
             out.add(TextUtil.enclosedBracket(s.getKey().toString()));
             out.add(s.getValue().toCardList(System.lineSeparator()));
@@ -113,6 +125,8 @@ public class DeckSerializer {
 
         Deck d = new Deck(dh.getName());
         d.setComment(dh.getComment());
+        d.setDeckFormat(dh.getDeckType());
+        d.setSourceUrl(dh.getSourceUrl());
         d.setAiHints(dh.getAiHints());
         d.getTags().addAll(dh.getTags());
         d.setDraftNotes(dh.getDraftNotes());
@@ -120,6 +134,8 @@ public class DeckSerializer {
         for (String keyCard : dh.getKeyCards()) {
             d.addKeyCard(keyCard);
         }
+        d.setSleeveArtKey(dh.getSleeveArtKey());
+        d.setSleeveArtOffset(dh.getSleeveArtOffset());
         d.setDeferredSections(sections);
         return d;
     }
@@ -130,6 +146,10 @@ public class DeckSerializer {
                 || DeckFileHeader.TAGS.equalsIgnoreCase(key)
                 || DeckFileHeader.AI_HINTS.equalsIgnoreCase(key)
                 || DeckFileHeader.DRAFT_NOTES.equalsIgnoreCase(key)
-                || DeckFileHeader.KEY_CARDS.equalsIgnoreCase(key);
+                || DeckFileHeader.KEY_CARDS.equalsIgnoreCase(key)
+                || DeckFileHeader.DECK_TYPE.equalsIgnoreCase(key)
+                || DeckFileHeader.SOURCE_URL.equalsIgnoreCase(key)
+                || DeckFileHeader.SLEEVE_ART.equalsIgnoreCase(key)
+                || DeckFileHeader.SLEEVE_OFFSET.equalsIgnoreCase(key);
     }
 }

@@ -190,7 +190,7 @@ public class FCardImageRenderer {
             boolean hasPTBox = false;
             if (!card.isSplitCard() && !card.isFlipCard()) {
                 final CardStateView state = card.getState(card.hasSecondaryState() ? false : altState);
-                if ((state.isCreature() && !state.getKeywordKey().contains("Level up"))
+                if ((state.isCreature() && !state.getOracleText().startsWith("Level up"))
                         || state.isPlaneswalker() || state.isBattle() || state.isVehicle())
                     hasPTBox = true;
             }
@@ -264,8 +264,7 @@ public class FCardImageRenderer {
                 g.rotate(Math.PI);
             }
             drawFlipCardImage(g, state, text, flipState, flipText, width, height - heightAdjust, art);
-        } else if (card.hasSecondaryState() ||
-                (card.hasAlternateState() && card.getAlternateState().getState() == CardStateName.PreparedSpell)) {
+        } else if (card.hasSecondaryState() || card.hasPreparedSpell()) {
             boolean needTranslation = !card.isToken() || card.getCloneOrigin() != null;
             final CardStateView state = card.getState(false);
             final String text = card.getText(state, needTranslation ? CardTranslation.getTranslationTexts(state) : null);
@@ -342,8 +341,7 @@ public class FCardImageRenderer {
         }
 
         //handle leveler cards
-        boolean isLevelup = (state.getKeywordKey().contains("Level up"));
-        if (isLevelup) {
+        if (state.getOracleText().startsWith("Level up")) {
             int textBoxHeightDiv3 = Math.round(textBoxHeight / 3f);
             String [] paragraphs = linebreakPattern.split(text);
             StringBuilder sb = new StringBuilder();

@@ -560,6 +560,7 @@ public class FDeckChooser extends FScreen {
                     cmbDeckTypes.addItem(DeckType.PIONEER_CARDGEN_DECK);
                     cmbDeckTypes.addItem(DeckType.HISTORIC_CARDGEN_DECK);
                 }
+                cmbDeckTypes.addItem(DeckType.NET_EVENT_DECK);
                 cmbDeckTypes.addItem(DeckType.NET_DECK);
                 cmbDeckTypes.addItem(DeckType.NET_ARCHIVE_STANDARD_DECK);
                 cmbDeckTypes.addItem(DeckType.NET_ARCHIVE_PIONEER_DECK);
@@ -601,6 +602,7 @@ public class FDeckChooser extends FScreen {
                 cmbDeckTypes.addItem(DeckType.PRECONSTRUCTED_DECK);
                 cmbDeckTypes.addItem(DeckType.PRECON_COMMANDER_DECK);
                 cmbDeckTypes.addItem(DeckType.QUEST_OPPONENT_DECK);
+                cmbDeckTypes.addItem(DeckType.NET_EVENT_DECK);
                 cmbDeckTypes.addItem(DeckType.NET_DECK);
                 cmbDeckTypes.addItem(DeckType.NET_COMMANDER_DECK);
                 cmbDeckTypes.addItem(DeckType.NET_ARCHIVE_STANDARD_DECK);
@@ -1058,6 +1060,10 @@ public class FDeckChooser extends FScreen {
                 pool = DeckProxy.getNetArchiveBlockDecks(NetDeckArchiveBlock);
                 config = ItemManagerConfig.NET_ARCHIVE_BLOCK_DECKS;
                 break;
+        case NET_EVENT_DECK:
+            pool = DeckProxy.getAllNetworkEventDecks();
+            config = ItemManagerConfig.NET_EVENT_DECKS;
+            break;
         case NET_DECK:
         case NET_COMMANDER_DECK:
             if (netDeckCategory != null) {
@@ -1072,8 +1078,8 @@ public class FDeckChooser extends FScreen {
         }
 
         lstDecks.setSelectionSupport(1, maxSelections);
-        lstDecks.setPool(pool);
         lstDecks.setup(config);
+        lstDecks.setPool(pool);
 
         if (config == ItemManagerConfig.STRING_ONLY) {
             //hide edit/view buttons for string-only lists

@@ -6,7 +6,7 @@ import forge.card.CardRules;
 import forge.deck.Deck;
 import forge.game.ability.AbilityFactory;
 import forge.game.card.Card;
-import forge.game.card.CardDamageMap;
+import forge.game.card.CardDamageTable;
 import forge.game.player.IGameEntitiesFactory;
 import forge.game.player.Player;
 import forge.game.player.PlayerController;
@@ -140,7 +140,7 @@ public class MatchBattleboxSharedZoneTest {
         final Player damagingPlayer = game.getPlayers().get(0);
         final Player damagedPlayer = game.getPlayers().get(1);
         final Card attacker = addBattlefieldCreature(game, damagingPlayer);
-        final CardDamageMap damageMap = new CardDamageMap();
+        final CardDamageTable damageMap = new CardDamageTable();
         damageMap.put(attacker, damagedPlayer, 1);
 
         assignBattleboxMonarchOnFirstCombatDamage(game, damageMap);
@@ -362,8 +362,8 @@ public class MatchBattleboxSharedZoneTest {
         return (boolean) method.invoke(game.getPhaseHandler(), phase);
     }
 
-    private static void assignBattleboxMonarchOnFirstCombatDamage(final Game game, final CardDamageMap damageMap) throws Exception {
-        final Method method = GameAction.class.getDeclaredMethod("assignBattleboxMonarchOnFirstCombatDamage", CardDamageMap.class);
+    private static void assignBattleboxMonarchOnFirstCombatDamage(final Game game, final CardDamageTable damageMap) throws Exception {
+        final Method method = GameAction.class.getDeclaredMethod("assignBattleboxMonarchOnFirstCombatDamage", CardDamageTable.class);
         method.setAccessible(true);
         method.invoke(game.getAction(), damageMap);
     }

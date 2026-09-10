@@ -3,6 +3,8 @@ package forge.gamemodes.match;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.primitives.Ints;
+import org.apache.commons.lang3.StringUtils;
+
 import forge.LobbyPlayer;
 import forge.ai.AIOption;
 import forge.deck.CardPool;
@@ -16,6 +18,7 @@ import forge.game.GameView;
 import forge.game.IHasGameType;
 import forge.game.player.Player;
 import forge.game.player.RegisteredPlayer;
+import forge.gamemodes.net.NetworkEventView;
 import forge.gamemodes.net.event.UpdateLobbyPlayerEvent;
 import forge.gui.GuiBase;
 import forge.gui.interfaces.IGuiGame;
@@ -28,7 +31,6 @@ import forge.model.FModel;
 import forge.player.GamePlayerUtil;
 import forge.util.Localizer;
 import forge.util.NameGenerator;
-import org.apache.commons.lang3.StringUtils;
 
 import java.io.Serializable;
 import java.util.*;
@@ -42,15 +44,11 @@ public abstract class GameLobby implements IHasGameType {
 
     private IUpdateable listener;
 
-    private final boolean allowNetworking;
     private HostedMatch hostedMatch;
     private final HashMap<LobbySlot, IGameController> gameControllers = Maps.newHashMap();
-    protected GameLobby(final boolean allowNetworking) {
-        this.allowNetworking = allowNetworking;
-    }
 
-    public final boolean isAllowNetworking() {
-        return allowNetworking;
+    public boolean isAllowNetworking() {
+        return true;
     }
 
     public final boolean isMatchActive() {
@@ -139,6 +137,16 @@ public abstract class GameLobby implements IHasGameType {
         }
         return data.slots.get(index);
     }
+
+    /** First non-OPEN slot that isn't ready, or null if every filled slot is ready. */
+    public LobbySlot findFirstUnreadySlot() {
+        for (int i = 0; i < getNumberOfSlots(); i++) {
+            LobbySlot slot = getSlot(i);
+            if (slot == null || slot.getType() == LobbySlotType.OPEN) continue;
+            if (!slot.isReady()) return slot;
+        }
+        return null;
+    }
     public void applyToSlot(final int index, final UpdateLobbyPlayerEvent event) {
         final LobbySlot slot = getSlot(index);
         if (slot == null || event == null) {
@@ -165,6 +173,7 @@ public abstract class GameLobby implements IHasGameType {
                     lastArchenemy = otherIndex;
                 }
                 otherSlot.setIsArchenemy(becomesArchenemy);
+                otherSlot.setTeam(becomesArchenemy ? 0 : 1);
             }
         }
 
@@ -194,8 +203,8 @@ public abstract class GameLobby implements IHasGameType {
 
     public void addSlot() {
         final int newIndex = getNumberOfSlots();
-        final LobbySlotType type = allowNetworking ? LobbySlotType.OPEN : LobbySlotType.AI;
-        addSlot(new LobbySlot(type, null, newIndex, newIndex, newIndex, false, !allowNetworking, Collections.emptySet()));
+        final LobbySlotType type = isAllowNetworking() ? LobbySlotType.OPEN : LobbySlotType.AI;
+        addSlot(new LobbySlot(type, null, newIndex, newIndex, newIndex, false, !isAllowNetworking(), Collections.emptySet()));
     }
     protected final void addSlot(final LobbySlot slot) {
         if (slot == null) {
@@ -434,10 +443,27 @@ public abstract class GameLobby implements IHasGameType {
         return true;
     }
 
-    protected final void updateView(final boolean fullUpdate) {
+    protected void updateView(final boolean fullUpdate) {
         if (listener != null) {
             listener.update(fullUpdate);
         }
+    }
+
+    /** Formats one "name: problem" line, indenting any card list the problem appends. */
+    private static String legalityProblemEntry(final String name, final String problem) {
+        return name + ": " + problem.replace("\n", "\n    ");
+    }
+
+    /** Lists every illegal deck in one warning and offers to ignore it. Returns true if the user chose to continue anyway. */
+    private static boolean confirmIgnoreDeckLegality(final List<String> problems) {
+        final Localizer localizer = Localizer.getInstance();
+        final StringBuilder message = new StringBuilder(localizer.getMessage("lblDecksNotLegal"));
+        message.append('\n');
+        for (final String problem : problems) {
+            message.append('\n').append(problem);
+        }
+        return SOptionPane.showConfirmDialog(message.toString(), localizer.getMessage("lblInvalidDeck"),
+                localizer.getMessage("lblIgnore"), localizer.getMessage("lblCancel"), false);
     }
 
     /** Returns a runnable to start a match with the applied variants if allowed. */
@@ -493,15 +519,10 @@ public abstract class GameLobby implements IHasGameType {
                 SOptionPane.showMessageDialog(Localizer.getInstance().getMessage("lblPleaseSpecifyPlayerDeck", slot.getName()));
                 return null;
             }
-            if (hasVariant(GameType.Commander) || hasVariant(GameType.Oathbreaker) || hasVariant(GameType.TinyLeaders) || hasVariant(GameType.Brawl)) {
-                if (!slot.getDeck().has(DeckSection.Commander)) {
-                    SOptionPane.showMessageDialog(Localizer.getInstance().getMessage("lblPlayerDoesntHaveCommander", slot.getName()));
-                    return null;
-                }
-            }
         }
 
         final boolean checkLegality = FModel.getPreferences().getPrefBoolean(FPref.ENFORCE_DECK_LEGALITY);
+        final List<String> legalityProblems = new ArrayList<>();
 
         //Auto-generated decks don't need to be checked here
         //Commander deck replaces regular deck and is checked later
@@ -510,12 +531,12 @@ public abstract class GameLobby implements IHasGameType {
         }
 
         if (checkLegality && autoGenerateVariant == null && !isCommanderMatch && !isBattleboxMatch) {
+            final DeckFormat deckFormat = data.isLimitedMode() ? DeckFormat.Limited : GameType.Constructed.getDeckFormat();
             for (final LobbySlot slot : activeSlots) {
                 final String name = slot.getName();
-                final String errMsg = GameType.Constructed.getDeckFormat().getDeckConformanceProblem(slot.getDeck());
+                final String errMsg = deckFormat.getDeckConformanceProblem(slot.getDeck());
                 if (null != errMsg) {
-                    SOptionPane.showErrorDialog(Localizer.getInstance().getMessage("lblPlayerDeckError", name, errMsg), Localizer.getInstance().getMessage("lblInvalidDeck"));
-                    return null;
+                    legalityProblems.add(legalityProblemEntry(name, errMsg));
                 }
             }
         }
@@ -530,7 +551,7 @@ public abstract class GameLobby implements IHasGameType {
             final int avatar = slot.getAvatarIndex();
             final int sleeve = slot.getSleeveIndex();
             final boolean isArchenemy = slot.isArchenemy();
-            final int team = GameType.Archenemy.equals(currentGameType) && !isArchenemy ? 1 : slot.getTeam();
+            final int team = slot.getTeam();
             final Set<AIOption> aiOptions = slot.getAiOptions(); // TODO: could AiOptions carry the choice of which AI is selected to play against?
 
             final boolean isAI = slot.getType() == LobbySlotType.AI;
@@ -538,8 +559,7 @@ public abstract class GameLobby implements IHasGameType {
             if (isAI) {
                 String aiProfileOverride = slot.getAiProfile();
                 lobbyPlayer = GamePlayerUtil.createAiPlayer(name, avatar, sleeve, aiOptions, aiProfileOverride);
-            }
-            else {
+            } else {
                 boolean setNameNow = false;
                 if (!hasNameBeenSet && slot.getType() == LobbySlotType.LOCAL) {
                     setNameNow = true;
@@ -547,14 +567,19 @@ public abstract class GameLobby implements IHasGameType {
                 }
                 lobbyPlayer = GamePlayerUtil.getGuiPlayer(name, avatar, sleeve, setNameNow);
             }
+            final Deck slotDeck = slot.getDeck();
+            lobbyPlayer.setSleeveArtKey(slotDeck == null ? "" : slotDeck.getSleeveArtKey());
+            lobbyPlayer.setSleeveArtOffset(slotDeck == null ? Deck.DEFAULT_SLEEVE_OFFSET : slotDeck.getSleeveArtOffset());
 
             Deck deck = isBattleboxMatch ? battleboxDeck : slot.getDeck();
             if (autoGenerateVariant != null) {
                 deck = autoGenerateVariant.autoGenerateDeck(null);
             }
-            RegisteredPlayer rp = new RegisteredPlayer(deck);
 
-            if (!variantTypes.isEmpty()) {
+            RegisteredPlayer rp;
+            if (variantTypes.isEmpty()) {
+                rp = new RegisteredPlayer(deck);
+            } else {
                 if (isCommanderMatch) {
                     final GameType commanderGameType =
                             isOathbreakerMatch ? GameType.Oathbreaker :
@@ -564,8 +589,7 @@ public abstract class GameLobby implements IHasGameType {
                     if (checkLegality) {
                         final String errMsg = commanderGameType.getDeckFormat().getDeckConformanceProblem(deck);
                         if (errMsg != null) {
-                            SOptionPane.showErrorDialog(Localizer.getInstance().getMessage("lblPlayerDeckError", name, errMsg), Localizer.getInstance().getMessage("lblInvalidCommanderGameTypeDeck", commanderGameType));
-                            return null;
+                            legalityProblems.add(legalityProblemEntry(name, errMsg));
                         }
                     }
                 }
@@ -581,8 +605,7 @@ public abstract class GameLobby implements IHasGameType {
                     if (checkLegality) {
                         final String errMsg = DeckFormat.getSchemeSectionConformanceProblem(schemePool);
                         if (null != errMsg) {
-                            SOptionPane.showErrorDialog(Localizer.getInstance().getMessage("lblPlayerDeckError", name, errMsg), Localizer.getInstance().getMessage("lblInvalidSchemeDeck"));
-                            return null;
+                            legalityProblems.add(legalityProblemEntry(name, errMsg));
                         }
                     }
                     schemes = schemePool == null ? Collections.emptyList() : schemePool.toFlatList();
@@ -593,8 +616,7 @@ public abstract class GameLobby implements IHasGameType {
                     if (checkLegality) {
                         final String errMsg = DeckFormat.getPlaneSectionConformanceProblem(planePool);
                         if (null != errMsg) {
-                            SOptionPane.showErrorDialog(Localizer.getInstance().getMessage("lblPlayerDeckError", name, errMsg), Localizer.getInstance().getMessage("lblInvalidPlanarDeck"));
-                            return null;
+                            legalityProblems.add(legalityProblemEntry(name, errMsg));
                         }
                     }
                     planes = planePool == null ? Collections.emptyList() : planePool.toFlatList();
@@ -630,22 +652,21 @@ public abstract class GameLobby implements IHasGameType {
             if (!isAI) {
                 guis.put(rp, gui);
             }
-            //override starting life for 1v1 Brawl
-            if (hasVariant(GameType.Brawl) && activeSlots.size() == 2){
-                for (RegisteredPlayer player : players){
-                    player.setStartingLife(25);
-                }
-            }
             playerToSlot.put(rp, slot);
         }
 
+        if (!legalityProblems.isEmpty() && !confirmIgnoreDeckLegality(legalityProblems)) {
+            return null;
+        }
+
         //if above checks succeed, return runnable that can be used to finish starting game
+        final GameType baseGameType = data.isLimitedMode() ? GameType.Draft : GameType.Constructed;
         return () -> {
             hostedMatch = GuiBase.getInterface().hostMatch();
             hostedMatch.setOnMatchOver(this::onMatchOver);
 
             // Create GameRules with battlebox options if needed
-            final GameRules gameRules = new GameRules(GameType.Constructed);
+            final GameRules gameRules = HostedMatch.getDefaultRules(baseGameType);
             if (isBattleboxMatch) {
                 gameRules.setBattleboxMonarchEnabled(data.isBattleboxMonarchEnabled());
                 gameRules.setBattleboxCommandersEnabled(data.isBattleboxCommandersEnabled());
@@ -678,6 +699,11 @@ public abstract class GameLobby implements IHasGameType {
 
         private final Set<GameType> appliedVariants = EnumSet.noneOf(GameType.class);
         private final List<LobbySlot> slots = Lists.newArrayList();
+        private NetworkEventView eventView;
+        private boolean limitedMode;
+        private String activeEventId;
+        private boolean activeConformance;
+        private int maximumCommanderBracket = 5; // mirrors DECKGEN_MAXIMUM_COMMANDER_BRACKET default (off)
 
         /** Whether Battlebox monarch option is enabled for this game. */
         private boolean battleboxMonarchEnabled = false;
@@ -714,6 +740,36 @@ public abstract class GameLobby implements IHasGameType {
         /** @param enabled whether Battlebox planechase should be enabled */
         public void setBattleboxPlanechaseEnabled(boolean enabled) {
             this.battleboxPlanechaseEnabled = enabled;
+        }
+        public NetworkEventView getEventView() {
+            return eventView;
+        }
+        public void setEventView(final NetworkEventView view) {
+            this.eventView = view;
+        }
+        public boolean isLimitedMode() {
+            return limitedMode;
+        }
+        public void setLimitedMode(final boolean limited) {
+            this.limitedMode = limited;
+        }
+        public String getActiveEventId() {
+            return activeEventId;
+        }
+        public void setActiveEventId(final String id) {
+            this.activeEventId = id;
+        }
+        public boolean isActiveConformance() {
+            return activeConformance;
+        }
+        public void setActiveConformance(final boolean conformance) {
+            this.activeConformance = conformance;
+        }
+        public int getMaximumCommanderBracket() {
+            return maximumCommanderBracket;
+        }
+        public void setMaximumCommanderBracket(final int bracket) {
+            this.maximumCommanderBracket = bracket;
         }
     }
 }

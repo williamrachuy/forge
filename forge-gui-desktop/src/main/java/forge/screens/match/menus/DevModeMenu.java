@@ -113,7 +113,7 @@ public class DevModeMenu implements ActionListener, IDevListener {
     }
 
     private JCheckBoxMenuItem getCheckboxMenuItem(final DevMenuItem m) {
-        final JCheckBoxMenuItem menuItem = new JCheckBoxMenuItem(m.caption);
+        final JCheckBoxMenuItem menuItem = MenuUtil.createStayOpenCheckBox(m.caption);
         menuItem.addActionListener(this);
         return menuItem;
     }

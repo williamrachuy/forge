@@ -19,8 +19,8 @@ public class SimulationController {
     // maxRecursionDepth override below and its constructor) rather than lowering this shared default
     // and regressing that test.
     private static final int DEFAULT_MAX_DEPTH = 3;
-    private final int maxDepth;
 
+    private final int maxDepth;
     private List<Plan.Decision> currentStack;
     private List<Score> scoreStack;
     private List<GameSimulator> simulatorStack;
@@ -76,7 +76,7 @@ public class SimulationController {
     }
 
     public boolean shouldRecurse() {
-        return bestScore.value != Integer.MAX_VALUE && getRecursionDepth() < maxDepth;
+        return !GameStateEvaluator.isWinning(bestScore.value) && getRecursionDepth() < maxDepth;
     }
 
     public Plan.Decision getLastDecision() {
@@ -253,8 +253,7 @@ public class SimulationController {
                     int cardScore = evaluator.evalCard(player.getGame(), player, (Card) hostAndTarget[2]);
                     if (cardScore == effect.targetScore) {
                         Score currentScore = getCurrentScore();
-                        // TODO: summonSick score?
-                        return new Score(currentScore.value + effect.scoreDelta, currentScore.summonSickValue);
+                        return new Score(currentScore.value + effect.scoreDelta, currentScore.availableValue + effect.scoreDelta);
                     }
                 }
             }
@@ -269,10 +268,11 @@ public class SimulationController {
         if (!currentStack.isEmpty()) {
             Plan.Decision d = currentStack.get(currentStack.size() - 1);
             int scoreDelta = score.value - d.initialScore.value;
+            int availableScoreDelta = score.availableValue - d.initialScore.availableValue;
             // Needed to make sure below is only executed when target decisions are ended.
             // Also, only cache negative effects - so that in those cases we don't need to
             // recurse.
-            if (scoreDelta <= 0 && d.targets != null) {
+            if (scoreDelta <= 0 && scoreDelta == availableScoreDelta && d.targets != null) {
                 // FIXME: Support more than one target in this logic.
                 GameObject[] hostAndTarget = currentHostAndTarget;
                 if (currentHostAndTarget != null) {

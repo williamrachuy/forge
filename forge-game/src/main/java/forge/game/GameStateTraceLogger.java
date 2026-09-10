@@ -1,5 +1,6 @@
 package forge.game;
 
+import com.google.common.collect.Multiset;
 import forge.card.MagicColor;
 import forge.card.mana.ManaAtom;
 import forge.game.card.Card;
@@ -498,9 +499,9 @@ final class GameStateTraceLogger {
         } else if (event instanceof GameEventManaPool e) {
             delta.scope = "mana";
             delta.actor = name(e.player());
-            delta.summary = name(e.player()) + " mana pool " + e.mode() + " " + manaName(e.manaColor());
+            delta.summary = name(e.player()) + " mana pool " + e.mode() + " " + e.colors();
             delta.detail("mode", e.mode());
-            delta.detail("manaColor", manaName(e.manaColor()));
+            delta.detail("colors", String.valueOf(e.colors()));
         } else if (event instanceof GameEventMulligan e) {
             delta.scope = "player";
             delta.actor = name(e.player());
@@ -562,10 +563,6 @@ final class GameStateTraceLogger {
         } else if (event instanceof GameEventPlayerStatsChanged e) {
             delta.scope = "player";
             delta.detail("players", safe(e.players()));
-            delta.detail("updateCards", e.updateCards());
-            if (e.updateCards()) {
-                delta.detail("cardUpdateCount", e.allCards() == null ? 0 : e.allCards().size());
-            }
         } else if (event instanceof GameEventRandomLog e) {
             delta.scope = "log";
             delta.summary = e.message();
@@ -710,6 +707,19 @@ final class GameStateTraceLogger {
 
     private static String name(final PlayerView player) {
         return player == null ? "none" : player.getName();
+    }
+
+    private static String counterSummary(final Multiset<?> counters) {
+        if (counters == null || counters.isEmpty()) {
+            return "{}";
+        }
+        final StringJoiner joiner = new StringJoiner(",", "{", "}");
+        for (final Multiset.Entry<?> entry : counters.entrySet()) {
+            if (entry.getCount() > 0) {
+                joiner.add(entry.getElement() + "=" + entry.getCount());
+            }
+        }
+        return joiner.length() <= 2 ? "{}" : joiner.toString();
     }
 
     private static String counterSummary(final Map<?, Integer> counters) {

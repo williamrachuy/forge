@@ -651,7 +651,7 @@ public class SpecialCardAi {
                 if (predictOverwhelmingDamage(ai, sa)) {
                     // We'll try to deal lethal trample/unblocked damage, so remember the card for attack
                     // and wait until declare blockers step.
-                    AiCardMemory.rememberCard(ai, source, AiCardMemory.MemorySet.MANDATORY_ATTACKERS);
+                    AiCardMemory.rememberCard(ai, source, AiCardMemory.MemorySet.TRICK_ATTACKERS);
                     return new AiAbilityDecision(0, AiPlayDecision.CantPlayAi);
                 }
             } else if (!game.getPhaseHandler().is(PhaseType.COMBAT_DECLARE_BLOCKERS)) {
@@ -690,7 +690,6 @@ public class SpecialCardAi {
                     // Can pump to kill the planeswalker, go for it
                     return new AiAbilityDecision(100, AiPlayDecision.ImpactCombat);
                 }
-
             }
 
             for (Card c : opposition) {
@@ -708,7 +707,7 @@ public class SpecialCardAi {
                         || (canTrample && predictedPT.getLeft() - oppT > 0 && predictedPT.getRight() > oppP)) {
                     // We can deal a lot of damage (either a lot of damage directly to the opponent,
                     // or kill the blocker(s) and damage the opponent at the same time, so go for it
-                    AiCardMemory.rememberCard(ai, source, AiCardMemory.MemorySet.MANDATORY_ATTACKERS);
+                    AiCardMemory.rememberCard(ai, source, AiCardMemory.MemorySet.TRICK_ATTACKERS);
                     return new AiAbilityDecision(100, AiPlayDecision.ImpactCombat);
                 }
             }
@@ -890,7 +889,7 @@ public class SpecialCardAi {
             sa.getHostCard().setSVar("TgtNum", String.valueOf(numTgts));
 
             // Simulate random targeting
-            List<GameEntity> validTgts = sa.getTargetRestrictions().getAllCandidates(sa, true);
+            List<GameEntity> validTgts = sa.getTargetRestrictions().getAllCandidates(sa);
             sa.resetTargets();
             sa.getTargets().addAll(Aggregates.random(validTgts, numTgts));
             return new AiAbilityDecision(100, AiPlayDecision.WillPlay);
@@ -1198,27 +1197,13 @@ public class SpecialCardAi {
     public static class MairsilThePretender {
         // Scan the fetch list for a card with at least one activated ability.
         // TODO: can be improved to a full consider(sa, ai) logic which would scan the graveyard first and hand last
-        public static Card considerCardFromList(final CardCollection fetchList) {
-            for (Card c : CardLists.filter(fetchList, CardPredicates.ARTIFACTS.or(CardPredicates.CREATURES))) {
-                for (SpellAbility ab : c.getSpellAbilities()) {
-                    if (ab.isActivatedAbility()) {
-                        Player controller = c.getController();
-                        boolean wasCaged = false;
-                        for (Card caged : CardLists.filter(controller.getCardsIn(ZoneType.Exile),
-                                CardPredicates.hasCounter(CounterEnumType.CAGE))) {
-                            if (c.getName().equals(caged.getName())) {
-                                wasCaged = true;
-                                break;
-                            }
-                        }
-
-                        if (!wasCaged) {
-                            return c;
-                        }
-                    }
-                }
-            }
-            return null;
+        public static Card considerCardFromList(final CardCollection fetchList, SpellAbility sa) {
+            CardCollectionView caged = CardLists.filter(sa.getActivatingPlayer().getCardsIn(ZoneType.Exile),
+                    CardPredicates.hasCounter(CounterType.getType("CAGE")));
+            return fetchList.stream().filter(CardPredicates.ARTIFACTS.or(CardPredicates.CREATURES))
+                .filter(c -> c.getSpellAbilities().stream().anyMatch(SpellAbility::isActivatedAbility))
+                .filter(c -> caged.stream().noneMatch(CardPredicates.sharesNameWith(c)))
+                .findFirst().orElse(null);
         }
     }
 
@@ -1432,7 +1417,7 @@ public class SpecialCardAi {
                 return false;
             }
 
-            final CardCollectionView cards = ai.getCardsIn(Arrays.asList(ZoneType.Hand, ZoneType.Battlefield, ZoneType.Command));
+            final CardCollectionView cards = ai.getCardsIn(ZoneType.Hand, ZoneType.Battlefield, ZoneType.Command);
             List<SpellAbility> all = ComputerUtilAbility.getSpellAbilities(cards, ai);
 
             int numManaSrcs = CardLists.filter(ComputerUtilMana.getAvailableManaSources(ai, true), CardPredicates.UNTAPPED).size();
@@ -1500,7 +1485,7 @@ public class SpecialCardAi {
     // Power Struggle
     public static class PowerStruggle {
         public static boolean considerFirstTarget(final Player ai, final SpellAbility sa) {
-            Card firstTgt = (Card) Aggregates.random(sa.getTargetRestrictions().getAllCandidates(sa, true));
+            Card firstTgt = (Card) Aggregates.random(sa.getTargetRestrictions().getAllCandidates(sa));
             if (firstTgt != null) {
                 sa.getTargets().add(firstTgt);
                 return true;
@@ -1680,11 +1665,12 @@ public class SpecialCardAi {
                                 return copy.getNetToughness() > 0;
                             })
             );
-            CardLists.sortByCmcDesc(creaturesToGet);
 
             if (creaturesToGet.isEmpty()) {
                 return new AiAbilityDecision(0, AiPlayDecision.CantPlayAi);
             }
+
+            CardLists.sortByCmcDesc(creaturesToGet);
 
             // pick the best creature that will stay on the battlefield
             Card best = creaturesToGet.getFirst();
@@ -1742,7 +1728,7 @@ public class SpecialCardAi {
 
             // Cards in hand that are below the max CMC affordable by the AI
             CardCollection belowMaxCMC = CardLists.filter(creatsInHand, CardPredicates.lessCMC(numManaSrcs - 1));
-            belowMaxCMC.sort(Collections.reverseOrder(CardLists.CmcComparatorInv));
+            belowMaxCMC.sort(CardLists.CmcComparator);
 
             // Cards in hand that are above the max CMC affordable by the AI
             CardCollection aboveMaxCMC = CardLists.filter(creatsInHand, CardPredicates.greaterCMC(numManaSrcs + 1));
@@ -1788,7 +1774,7 @@ public class SpecialCardAi {
         }
 
         public static Card considerCardToGet(final Player ai, final SpellAbility sa) {
-            CardCollectionView creatsInLib = CardLists.filter(ai.getCardsIn(ZoneType.Library), CardPredicates.CREATURES);
+            CardCollection creatsInLib = CardLists.filter(ai.getCardsIn(ZoneType.Library), CardPredicates.CREATURES);
             if (creatsInLib.isEmpty()) {
                 return null;
             }
@@ -1805,13 +1791,12 @@ public class SpecialCardAi {
             }
             atTargetCMCInLib.sort(CardLists.CmcComparatorInv);
 
-            Card bestInLib = atTargetCMCInLib != null ? atTargetCMCInLib.getFirst() : null;
+            Card bestInLib = atTargetCMCInLib.getFirst();
 
             if (bestInLib == null && ComputerUtil.isPlayingReanimator(ai)) {
                 // For Reanimator, we don't mind grabbing the biggest thing possible to recycle it again with SotF later.
-                CardCollection creatsInLibByCMC = new CardCollection(creatsInLib);
-                creatsInLibByCMC.sort(CardLists.CmcComparatorInv);
-                return creatsInLibByCMC.getFirst();
+                creatsInLib.sort(CardLists.CmcComparatorInv);
+                return creatsInLib.getFirst();
             }
 
             return bestInLib;
@@ -1827,14 +1812,14 @@ public class SpecialCardAi {
 
             AiController aic = ((PlayerControllerAi) ai.getController()).getAi();
             int lifeInDanger = aic.getIntProperty(AiProps.AI_IN_DANGER_THRESHOLD);
-            int numCtrs = sa.getHostCard().getCounters(CounterEnumType.BURDEN);
+            int numCtrs = sa.getHostCard().getCounters(CounterType.getType("BURDEN"));
 
             if (ai.getLife() > numCtrs + 1 && ai.getLife() > lifeInDanger
                     && ai.getMaxHandSize() >= ai.getCardsIn(ZoneType.Hand).size() + numCtrs + 1) {
                 return new AiAbilityDecision(100, AiPlayDecision.WillPlay);
             }
 
-            return new AiAbilityDecision(0, AiPlayDecision.LifeInDanger);
+            return new AiAbilityDecision(0, AiPlayDecision.IncreasesLifeInDanger);
         }
     }
 

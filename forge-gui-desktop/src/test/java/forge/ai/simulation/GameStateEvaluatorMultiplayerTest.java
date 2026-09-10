@@ -48,7 +48,7 @@ public class GameStateEvaluatorMultiplayerTest extends SimulationTest {
             Deck d = new Deck();
             Set<AIOption> options = new HashSet<>();
             if (i == 0) {
-                options.add(AIOption.USE_SIMULATION);
+                options.add(AIOption.USE_FULL_SIMULATION);
             }
             players.add(new RegisteredPlayer(d).setPlayer(new LobbyPlayerAi("p" + i, options)));
         }

@@ -28,6 +28,7 @@ import forge.model.CardBlock;
 import forge.model.FModel;
 import forge.screens.CoverScreen;
 import forge.util.Aggregates;
+import forge.util.ScreenUtil;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -130,7 +131,7 @@ public class ConsoleCommandInterpreter {
     private ConsoleCommandInterpreter() {
         registerCommand(new String[]{"teleport", "to"}, s -> {
             if (s.length < 2)
-                return "Command needs 2 parameter";
+                return "Command needs 2 parameters";
             try {
                 int x = Integer.parseInt(s[0]);
                 int y = Integer.parseInt(s[1]);
@@ -153,7 +154,7 @@ public class ConsoleCommandInterpreter {
                 WorldStage.getInstance().setPosition(new Vector2(poi.getPosition().x - 16f, poi.getPosition().y + 16f));
                 WorldStage.getInstance().loadPOI(poi);
                 Forge.clearTransitionScreen();
-            }, Forge.takeScreenshot())));
+            }, ScreenUtil.getInstance().takeScreenshot())));
             return "Teleported to " + s[0] + "(" + poi.getPosition() + ")";
         });
         registerCommand(new String[]{"spawn", "enemy"}, s -> {
@@ -214,7 +215,7 @@ public class ConsoleCommandInterpreter {
         });
         registerCommand(new String[]{"debug", "collision"}, s -> {
             currentGameStage().debugCollision(true);
-            return "Got out";
+            return "Debug collision ON";
         });
         registerCommand(new String[]{"give", "card"}, s -> {
             if (s.length < 1) return "Command needs 1 parameter: Card name.";
@@ -247,7 +248,7 @@ public class ConsoleCommandInterpreter {
             return "Added card: " + card.getName();
         });
         registerCommand(new String[]{"give", "print"}, s -> {
-            if (s.length < 2) return "Command needs 2 parameters: Set code, collector number.";
+            if (s.length < 2) return "Command needs 2 parameters: Edition code, collector number.";
             CardEdition edition = StaticData.instance().getCardEdition(s[0]);
             if (edition == null) return "Cannot find edition: " + s[0];
             CardEdition.EditionEntry cis = edition.getCardFromCollectorNumber(s[1]);
@@ -314,7 +315,7 @@ public class ConsoleCommandInterpreter {
             for (PaperCard c : cards.getFilteredPool(c -> c.getMarkedFlags().noSellValue).toFlatList()) {
                 cards.remove(c);
             }
-            return "Removed all no sell flagged cards.";
+            return "Removed all no-sell flagged cards.";
         });
         registerCommand(new String[]{"sanitize", "editions"}, s -> {
             ConfigData configData = Config.instance().getConfigData();
@@ -450,9 +451,9 @@ public class ConsoleCommandInterpreter {
             return "Debug map ON";
         });
         registerCommand(new String[]{"debug", "off"}, s -> {
-            GameHUD.getInstance().setDebug(true);
+            GameHUD.getInstance().setDebug(false);
             currentGameStage().debugCollision(false);
-            return "Debug  OFF";
+            return "Debug map and collision OFF";
         });
         registerCommand(new String[]{"remove", "enemy", "all"}, s -> {
             if (!MapStage.getInstance().isInMap()) {
@@ -476,7 +477,7 @@ public class ConsoleCommandInterpreter {
                 return "Can not convert " + s[0] + " to float";
             }
             currentGameStage().hideFor(value);
-            return "removed all enemies";
+            return "Hiding";
         });
 
         registerCommand(new String[]{"fly"}, s -> {
@@ -488,7 +489,7 @@ public class ConsoleCommandInterpreter {
                 return "Can not convert " + s[0] + " to float";
             }
             currentGameStage().flyFor(value);
-            return "removed all enemies";
+            return "Flying";
         });
         registerCommand(new String[]{"sprint"}, s -> {
             if (s.length < 1) return "Command needs 1 parameter: Amount";
@@ -532,7 +533,7 @@ public class ConsoleCommandInterpreter {
             return message;
         });
         registerCommand(new String[]{"set", "event"}, s -> {
-            if(s.length < 1) return "Command needs 1 parameter: Block or edition name. ";
+            if(s.length < 1) return "Command needs 1 parameter: Block name or edition code. ";
             String blockName = s[0];
             if(MapStage.getInstance().findLocalInn() == null)
                 return "Must be used within a town with an inn.";

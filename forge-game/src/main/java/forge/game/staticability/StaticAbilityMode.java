@@ -86,17 +86,20 @@ public enum StaticAbilityMode {
     // StaticAbilityAdapt
     CanAdapt,
 
-    // StaticAbilityExhaust
-    CanExhaust,
-
     // StaticAbilityCantBeCopied
     CantBeCopied,
+
+    // StaticAbilityCantBeBeamedUp
+    CantBeBeamedUp,
 
     // StaticAbilityCantBeSuspected
     CantBeSuspected,
 
     // StaticAbilityCantBecomeMonarch
     CantBecomeMonarch,
+
+    // StaticAbilityCantGainControl
+    CantGainControl,
 
     // StaticAbilityCantAttach
     CantAttach,
@@ -170,6 +173,9 @@ public enum StaticAbilityMode {
     // StaticAbilityNumLoyaltyAct
     NumLoyaltyAct,
 
+    // StaticAbilityAdditionalActivations
+    Activations,
+
     // StaticAbilityDevotion
     Devotion,
     // StaticAbilityGainLifeRadiation
@@ -200,6 +206,9 @@ public enum StaticAbilityMode {
 
     // StaticAbilityCountersRemain
     CountersRemain,
+
+    // StaticAbilityManaRestriction
+    ManaRestriction,
     ;
 
     public static StaticAbilityMode smartValueOf(final String value) {

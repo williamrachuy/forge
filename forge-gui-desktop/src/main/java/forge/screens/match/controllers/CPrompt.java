@@ -181,8 +181,8 @@ public class CPrompt implements ICDoc {
         view.setCardView(null);
     }
     public void setMessage(final String s0, final CardView card) {
-    	view.getTarMessage().setText(FSkin.encodeSymbols(s0, false));
-    	view.setCardView(card);
+        view.getTarMessage().setText(FSkin.encodeSymbols(s0, false));
+        view.setCardView(card);
     }
 
     public void setUltronStatus(final boolean active, final String message) {

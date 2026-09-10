@@ -74,6 +74,11 @@ public final class ForgeConstants {
     public static final String NET_ARCHIVE_LEGACY_DECKS_LIST_FILE    = LISTS_DIR + "net-decks-archive-legacy.txt";
     public static final String NET_ARCHIVE_VINTAGE_DECKS_LIST_FILE   = LISTS_DIR + "net-decks-archive-vintage.txt";
     public static final String NET_ARCHIVE_BLOCK_DECKS_LIST_FILE     = LISTS_DIR + "net-decks-archive-block.txt";
+    public static final String COMMANDER_BRACKET_COMBOS_FILE         = LISTS_DIR + "commander-bracket-combos.txt";
+    public static final String COMMANDER_BRACKET_GAMECHANGERS_FILE   = LISTS_DIR + "gamechangers.txt";
+    public static final String COMMANDER_BRACKET_MASS_LAND_DENIAL_FILE = LISTS_DIR + "mass-land-denial.txt";
+    public static final String COMMANDER_BRACKET_EXTRA_TURNS_FILE    = LISTS_DIR + "extra-turns.txt";
+    public static final String COMMANDER_BRACKET_CHAINED_EXTRA_TURNS_FILE = LISTS_DIR + "chained-extra-turns.txt";
     public static final String ADVENTURE_BOOSTER_PRICE_FILE 		 = ADVENTURE_COMMON_LIST_DIR + "adventure-booster-price.txt";
 
     public static final String CHANGES_FILE                 = ASSETS_DIR + "README.txt";
@@ -235,6 +240,7 @@ public final class ForgeConstants {
     }
 
     // data that is only in the profile dirs
+    public static final String CACHE_CDN_UUID_DIR         = CACHE_DIR + "cdn_uuid" + PATH_SEPARATOR;
     public static final String USER_QUEST_DIR             = USER_DIR + "quest" + PATH_SEPARATOR;
     public static final String USER_QUEST_WORLD_DIR       = USER_QUEST_DIR + "world" + PATH_SEPARATOR;
     public static final String USER_CONQUEST_DIR          = USER_DIR + "conquest" + PATH_SEPARATOR;
@@ -262,6 +268,7 @@ public final class ForgeConstants {
     public static final String DECK_BATTLEBOX_DIR         = DECK_BASE_DIR + "battlebox" + PATH_SEPARATOR;
     public static final String DECK_NET_DIR               = DECK_BASE_DIR + "net" + PATH_SEPARATOR;
     public static final String DECK_NET_ARCHIVE_DIR       = DECK_BASE_DIR + "archive" + PATH_SEPARATOR;
+    public static final String DECK_NET_EVENT_DIR         = DECK_BASE_DIR + "network-events" + PATH_SEPARATOR;
     public static final String QUEST_SAVE_DIR             = USER_QUEST_DIR + "saves" + PATH_SEPARATOR;
     public static final String CONQUEST_SAVE_DIR          = USER_CONQUEST_DIR + "saves" + PATH_SEPARATOR;
     public static final String DECK_TINY_LEADERS_DIR      = DECK_BASE_DIR + "tiny_leaders" + PATH_SEPARATOR;
@@ -294,6 +301,7 @@ public final class ForgeConstants {
     public static final String FONTS_DIR                     = CACHE_DIR + "fonts" + PATH_SEPARATOR;
     public static final String CACHE_SKINS_DIR               = CACHE_DIR + "skins" + PATH_SEPARATOR;
     public static final String CACHE_TOKEN_PICS_DIR          = PICS_DIR + "tokens" + PATH_SEPARATOR;
+    public static final String CACHE_SLEEVE_PICS_DIR         = PICS_DIR + "sleeves" + PATH_SEPARATOR;
     public static final String CACHE_ICON_PICS_DIR           = PICS_DIR + "icons" + PATH_SEPARATOR;
     public static final String CACHE_SYMBOLS_DIR             = PICS_DIR + "symbols" + PATH_SEPARATOR;
     public static final String CACHE_BOOSTER_PICS_DIR        = PICS_DIR + "boosters" + PATH_SEPARATOR;
@@ -321,6 +329,7 @@ public final class ForgeConstants {
             DECK_OATHBREAKER_DIR,
             DECK_BATTLEBOX_DIR,
             DECK_NET_DIR,
+            DECK_NET_EVENT_DIR,
             QUEST_SAVE_DIR,
             CACHE_TOKEN_PICS_DIR,
             CACHE_ICON_PICS_DIR,
@@ -333,13 +342,14 @@ public final class ForgeConstants {
 
     // URLs
     public static final String URL_CARDFORGE = "https://downloads.cardforge.org";
-    private static final String GITHUB_ASSETS_BASE = "https://raw.githubusercontent.com/Card-Forge/forge-extras/refs/heads/main/";
+    public static final String GITHUB_ASSETS_BASE = "https://raw.githubusercontent.com/Card-Forge/forge-extras/refs/heads/main/";
 
     public static final String URL_PIC_DOWNLOAD = URL_CARDFORGE + "/images/cards/";
     public static final String URL_TOKEN_DOWNLOAD = URL_CARDFORGE + "/images/tokens/";
     public static final String URL_PRICE_DOWNLOAD = GITHUB_ASSETS_BASE + "all-prices.txt";
     private static final String URL_SCRYFALL = "https://api.scryfall.com";
     public static final String URL_PIC_SCRYFALL_DOWNLOAD = URL_SCRYFALL + "/cards/";
+    public static final String URL_SCRYFALL_CDN = "https://cards.scryfall.io/";
 
     // Constants for Display Card Identity game setting
     public static final String DISP_CURRENT_COLORS_ALWAYS = "Always";
@@ -387,6 +397,22 @@ public final class ForgeConstants {
                 localizer.getMessage("lblAlways"), "ALWAYS",
                 localizer.getMessage("lblNever"), "NEVER"
         );
+    }
+
+    public static Map<String, String> getScryfallCardLanguageMapping() {
+        final java.util.LinkedHashMap<String, String> map = new java.util.LinkedHashMap<>();
+        map.put("English", "en");
+        map.put("Spanish", "es");
+        map.put("French", "fr");
+        map.put("German", "de");
+        map.put("Italian", "it");
+        map.put("Portuguese", "pt");
+        map.put("Japanese", "ja");
+        map.put("Korean", "ko");
+        map.put("Russian", "ru");
+        map.put("Chinese Simplified", "zhs");
+        map.put("Chinese Traditional", "zht");
+        return map;
     }
 
     public enum CounterDisplayLocation {

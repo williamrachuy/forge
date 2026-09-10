@@ -3,6 +3,8 @@ package forge.game.player;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
+import com.google.common.collect.Multiset;
+
 import forge.LobbyPlayer;
 import forge.card.CardType;
 import forge.card.MagicColor;
@@ -12,6 +14,8 @@ import forge.game.card.Card;
 import forge.game.card.CardCollectionView;
 import forge.game.card.CardView;
 import forge.game.card.CounterType;
+import forge.game.keyword.KeywordView;
+import forge.game.keyword.KeywordCollectionView;
 import forge.game.zone.PlayerZone;
 import forge.game.zone.ZoneType;
 import forge.trackable.TrackableCollection;
@@ -89,13 +93,28 @@ public class PlayerView extends GameEntityView {
         set(TrackableProperty.SleeveIndex, p.getLobbyPlayer().getSleeveIndex());
     }
 
+    public String getSleeveArtKey() {
+        return get(TrackableProperty.SleeveArtKey);
+    }
+    void updateSleeveArtKey(Player p) {
+        set(TrackableProperty.SleeveArtKey, p.getLobbyPlayer().getSleeveArtKey());
+    }
+
+    public int getSleeveArtOffset() {
+        final Integer offset = get(TrackableProperty.SleeveArtOffset);
+        return offset == null ? 500 : offset;
+    }
+    void updateSleeveArtOffset(Player p) {
+        set(TrackableProperty.SleeveArtOffset, p.getLobbyPlayer().getSleeveArtOffset());
+    }
+
     public String getCurrentPlaneName() { return get(TrackableProperty.CurrentPlane); }
     void updateCurrentPlaneName( String plane ) {
         set(TrackableProperty.CurrentPlane, plane);
     }
 
-    public FCollectionView<PlayerView> getOpponents() {
-        return Objects.requireNonNullElse(this.<FCollectionView<PlayerView>>get(TrackableProperty.Opponents), new FCollection<>());
+    public List<PlayerView> getOpponents() {
+        return Objects.requireNonNullElse(get(TrackableProperty.Opponents), List.of());
     }
     void updateOpponents(Player p) {
         set(TrackableProperty.Opponents, PlayerView.getCollection(p.getOpponents()));
@@ -131,7 +150,7 @@ public class PlayerView extends GameEntityView {
             return Collections.emptyList();
         }
 
-        final FCollectionView<PlayerView> opponents = getOpponents();
+        final List<PlayerView> opponents = getOpponents();
         for (PlayerView opponent: opponents) {
             if (opponent.getCommanders() == null) {
                 return Collections.emptyList();
@@ -177,24 +196,6 @@ public class PlayerView extends GameEntityView {
         set(TrackableProperty.Life, p.getLife());
     }
 
-    public Map<CounterType, Integer> getCounters() {
-        return get(TrackableProperty.Counters);
-    }
-    public int getCounters(CounterType counterType) {
-        final Map<CounterType, Integer> counters = getCounters();
-        if (counters != null) {
-            Integer count = counters.get(counterType);
-            if (count != null) {
-                return count;
-            }
-        }
-        return 0;
-    }
-    void updateCounters(Player p) {
-        set(TrackableProperty.Counters, p.getCounters());
-        flagAsChanged(TrackableProperty.Counters);
-    }
-
     public boolean getIsExtraTurn() {
         return get(TrackableProperty.IsExtraTurn);
     }
@@ -209,11 +210,15 @@ public class PlayerView extends GameEntityView {
         set(TrackableProperty.HasLost, val);
     }
 
-    public int getAvatarLifeDifference() {
-        return (int)get(TrackableProperty.AvatarLifeDifference);
+    public boolean hasAvailableActions() {
+        return get(TrackableProperty.HasAvailableActions);
     }
-    public boolean wasAvatarLifeChanged() {
-        return (int)get(TrackableProperty.AvatarLifeDifference) != 0;
+    public void setHasAvailableActions(boolean value) {
+        set(TrackableProperty.HasAvailableActions, value);
+    }
+
+    public int getAvatarLifeDifference() {
+        return get(TrackableProperty.AvatarLifeDifference);
     }
     public void setAvatarLifeDifference(final int val) {
         set(TrackableProperty.AvatarLifeDifference, val);
@@ -325,14 +330,11 @@ public class PlayerView extends GameEntityView {
         set(TrackableProperty.AdditionalVillainousChoices, p.getAdditionalVotesAmount());
     }
 
-    public List<String> getKeywords() {
+    public KeywordCollectionView getKeywords() {
         return get(TrackableProperty.Keywords);
     }
-    public boolean hasKeyword(String keyword) {
-        return getKeywords().contains(keyword);
-    }
     void updateKeywords(Player p) {
-        set(TrackableProperty.Keywords, p.getKeywords().asStringList());
+        set(TrackableProperty.Keywords, p.getKeywords().getView());
     }
 
     public List<CardView> getCommanders() {
@@ -400,23 +402,23 @@ public class PlayerView extends GameEntityView {
     }
 
     public FCollectionView<CardView> getAnte() {
-        return get(TrackableProperty.Ante);
+        return Objects.requireNonNullElse(get(TrackableProperty.Ante), FCollection.getEmpty());
     }
 
     public FCollectionView<CardView> getBattlefield() {
-        return get(TrackableProperty.Battlefield);
+        return Objects.requireNonNullElse(get(TrackableProperty.Battlefield), FCollection.getEmpty());
     }
 
     public FCollectionView<CardView> getCommand() {
-        return get(TrackableProperty.Command);
+        return Objects.requireNonNullElse(get(TrackableProperty.Command), FCollection.getEmpty());
     }
 
     public FCollectionView<CardView> getExile() {
-        return get(TrackableProperty.Exile);
+        return Objects.requireNonNullElse(get(TrackableProperty.Exile), FCollection.getEmpty());
     }
 
     public FCollectionView<CardView> getFlashback() {
-        return get(TrackableProperty.Flashback);
+        return Objects.requireNonNullElse(get(TrackableProperty.Flashback), FCollection.getEmpty());
     }
 
     /** @return the Planar Dice roll effect card if the player may currently roll, else null. Used by
@@ -426,27 +428,27 @@ public class PlayerView extends GameEntityView {
     }
 
     public FCollectionView<CardView> getGraveyard() {
-        return get(TrackableProperty.Graveyard);
+        return Objects.requireNonNullElse(get(TrackableProperty.Graveyard), FCollection.getEmpty());
     }
 
     public FCollectionView<CardView> getHand() {
-        return get(TrackableProperty.Hand);
+        return Objects.requireNonNullElse(get(TrackableProperty.Hand), FCollection.getEmpty());
     }
 
     public FCollectionView<CardView> getLibrary() {
-        return get(TrackableProperty.Library);
+        return Objects.requireNonNullElse(get(TrackableProperty.Library), FCollection.getEmpty());
     }
 
     public FCollectionView<CardView> getSideboard() {
-        return get(TrackableProperty.Sideboard);
+        return Objects.requireNonNullElse(get(TrackableProperty.Sideboard), FCollection.getEmpty());
     }
 
     public FCollectionView<CardView> getCards(final ZoneType zone) {
         TrackableProperty prop = zone.getTrackableProperty();
         if (prop != null) {
-            return get(prop);
+            return Objects.requireNonNullElse(get(prop), FCollection.getEmpty());
         }
-        return null;
+        return FCollection.getEmpty();
     }
     private int getZoneSize(TrackableProperty zoneProp) {
         TrackableCollection<CardView> cards = get(zoneProp);
@@ -525,11 +527,11 @@ public class PlayerView extends GameEntityView {
         final List<String> details = Lists.newArrayListWithCapacity(8);
         details.add(Localizer.getInstance().getMessage("lblLifeHas", getLife()));
 
-        Map<CounterType, Integer> counters = getCounters();
+        Multiset<CounterType> counters = getCounters();
         if (counters != null) {
-            for (Entry<CounterType, Integer> p : counters.entrySet()) {
-                if (p.getValue() > 0) {
-                    details.add(Localizer.getInstance().getMessage("lblTypeCounterHas", p.getKey().getName(), p.getValue()));
+            for (Multiset.Entry<CounterType> p : counters.entrySet()) {
+                if (p.getCount() > 0) {
+                    details.add(Localizer.getInstance().getMessage("lblTypeCounterHas", p.getElement().getName(), p.getCount()));
                 }
             }
         }
@@ -557,12 +559,12 @@ public class PlayerView extends GameEntityView {
         }
         details.add(Localizer.getInstance().getMessage("lblExtraTurnCountHas", getExtraTurnCount()));
 
-        final String keywords = Lang.joinHomogenous(getKeywords());
+        final String keywords = Lang.joinHomogenous(getKeywords().getValues(), KeywordView::title);
         if (!keywords.isEmpty()) {
             details.add(keywords);
         }
         final FCollectionView<CardView> ante = getAnte();
-        if (ante != null && !ante.isEmpty()) {
+        if (!ante.isEmpty()) {
             details.add(Localizer.getInstance().getMessage("lblAntedHas", Lang.joinHomogenous(ante)));
         }
         details.addAll(getPlayerCommanderInfo());

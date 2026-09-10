@@ -1823,9 +1823,9 @@ public class UltronPlayerController extends PlayerControllerAi {
     }
 
     @Override
-    public CardCollection chooseCardsToDiscardToMaximumHandSize(int numDiscard) {
+    public CardCollectionView chooseCardsToDiscardToMaximumHandSize(int numDiscard) {
         final long __start = System.nanoTime();
-        CardCollection __result = super.chooseCardsToDiscardToMaximumHandSize(numDiscard);
+        CardCollectionView __result = super.chooseCardsToDiscardToMaximumHandSize(numDiscard);
         telemetry.record("chooseCardsToDiscardToMaximumHandSize", System.nanoTime() - __start);
         return __result;
     }

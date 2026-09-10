@@ -51,6 +51,7 @@ public class VAutoYieldsAndTriggers extends FDialog {
 
         filterField = add(new FTextField());
         filterField.setGhostText(Forge.getLocalizer().getMessage("lblSearch"));
+        filterField.setLiveChangeEvents(true); //filter as characters are typed
         filterField.setChangedHandler(e -> applyFilter());
 
         lstEntries = add(new FChoiceList<String>(allEntries) {
@@ -65,10 +66,10 @@ public class VAutoYieldsAndTriggers extends FDialog {
             }
         });
         chkDisableYields = add(new FCheckBox(Forge.getLocalizer().getMessage("lblDisableAllAutoYields"),
-                MatchController.instance.getGameController().getDisableAutoYields()));
+                MatchController.instance.getGameController().getYieldController().getDisableAutoYields()));
         chkDisableYields.setCommand(e -> MatchController.instance.getGameController().setDisableAutoYields(chkDisableYields.isSelected()));
         chkDisableTriggers = add(new FCheckBox(Forge.getLocalizer().getMessage("lblDisableAllAutoTriggers"),
-                MatchController.instance.getGameController().getDisableAutoTriggers()));
+                MatchController.instance.getGameController().getYieldController().getDisableAutoTriggers()));
         chkDisableTriggers.setCommand(e -> MatchController.instance.getGameController().setDisableAutoTriggers(chkDisableTriggers.isSelected()));
 
         initButton(0, Forge.getLocalizer().getMessage("lblOK"), e -> hide());

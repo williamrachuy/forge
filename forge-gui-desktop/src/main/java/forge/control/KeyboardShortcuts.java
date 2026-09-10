@@ -17,6 +17,7 @@ import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Consumer;
 
 import javax.swing.AbstractAction;
 import javax.swing.Action;
@@ -36,11 +37,13 @@ import forge.game.spellability.StackItemView;
 import forge.gui.framework.EDocID;
 import forge.gui.framework.SDisplayUtil;
 import forge.localinstance.properties.ForgePreferences;
+import forge.gamemodes.match.YieldController;
 import forge.localinstance.properties.ForgePreferences.FPref;
 import forge.model.FModel;
 import forge.player.AutoYieldStore.TriggerDecision;
 import forge.screens.home.settings.VSubmenuPreferences.KeyboardShortcutField;
 import forge.screens.match.CMatchUI;
+import forge.screens.match.VYieldSettings;
 import forge.toolbox.special.CardZoomer;
 import forge.util.Localizer;
 import forge.view.KeyboardShortcutsDialog;
@@ -150,7 +153,7 @@ public class KeyboardShortcuts {
             public void actionPerformed(final ActionEvent e) {
                 if (!Singletons.getControl().getCurrentScreen().isMatchScreen()) { return; }
                 if (matchUI == null) { return; }
-                matchUI.getGameController().passPriorityUntilEndOfTurn();
+                YieldController.endTurn(matchUI.getGameController(), matchUI.getCurrentPlayer());
             }
         };
 
@@ -232,23 +235,12 @@ public class KeyboardShortcuts {
             }
         };
 
-        final Action actMacroRecord = new AbstractAction() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                if (!Singletons.getControl().getCurrentScreen().isMatchScreen()) { return; }
-                if (matchUI == null) { return; }
-                matchUI.getGameController().macros().setRememberedActions();
-            }
-        };
+        final Action actMacroRecord = macroAction(matchUI, ui -> ui.getGameController().macros().setRememberedActions());
         
-        final Action actMacroNextAction = new AbstractAction() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                if (!Singletons.getControl().getCurrentScreen().isMatchScreen()) { return; }
-                if (matchUI == null) { return; }
-                matchUI.getGameController().macros().nextRememberedAction();
-            }
-        };
+        final Action actMacroNextAction = macroAction(matchUI, ui -> ui.getGameController().macros().nextRememberedAction());
+
+        final Action actMacroRepeatActions = macroAction(matchUI,
+                ui -> ui.getGameController().macros().repeatRememberedActions());
 
         final Action actZoomCard = new AbstractAction() {
             @Override
@@ -302,6 +294,25 @@ public class KeyboardShortcuts {
             }
         };
 
+        final Action actYieldOptions = new AbstractAction() {
+            @Override
+            public void actionPerformed(final ActionEvent e) {
+                if (!Singletons.getControl().getCurrentScreen().isMatchScreen()) { return; }
+                if (matchUI == null) { return; }
+                SwingUtilities.invokeLater(() -> new VYieldSettings(matchUI).showDialog());
+            }
+        };
+
+        final Action actYieldAutoPass = new AbstractAction() {
+            @Override
+            public void actionPerformed(final ActionEvent e) {
+                if (!Singletons.getControl().getCurrentScreen().isMatchScreen()) { return; }
+                if (matchUI == null) { return; }
+                YieldController.toggleAutoPassOrStopAll(matchUI.getGameController());
+                matchUI.getCDock().update();
+            }
+        };
+
         final Localizer localizer = Localizer.getInstance();
         //========== Instantiate shortcut objects and add to list.
         list.add(new Shortcut(FPref.SHORTCUT_SHOWSTACK, localizer.getMessage("lblSHORTCUT_SHOWSTACK"), actShowStack, am, im));
@@ -321,8 +332,11 @@ public class KeyboardShortcuts {
         list.add(new Shortcut(FPref.SHORTCUT_PROMPT_SECONDARY,
                 localizer.getMessageorUseDefault("lblSHORTCUT_PROMPT_SECONDARY", "Match: select Cancel or right prompt button"),
                 actPromptSecondary, am, im));
+        list.add(new Shortcut(FPref.SHORTCUT_YIELD_OPTIONS, localizer.getMessage("lblSHORTCUT_YIELD_OPTIONS"), actYieldOptions, am, im));
+        list.add(new Shortcut(FPref.SHORTCUT_YIELD_AUTO_PASS, localizer.getMessage("lblSHORTCUT_YIELD_AUTO_PASS"), actYieldAutoPass, am, im));
         list.add(new Shortcut(FPref.SHORTCUT_MACRO_RECORD, localizer.getMessage("lblSHORTCUT_MACRO_RECORD"), actMacroRecord, am, im));
         list.add(new Shortcut(FPref.SHORTCUT_MACRO_NEXT_ACTION, localizer.getMessage("lblSHORTCUT_MACRO_NEXT_ACTION"), actMacroNextAction, am, im));
+        list.add(new Shortcut(FPref.SHORTCUT_MACRO_REPEAT_ACTIONS, localizer.getMessage("lblSHORTCUT_MACRO_REPEAT_ACTIONS"), actMacroRepeatActions, am, im));
         list.add(new Shortcut(FPref.SHORTCUT_CARD_ZOOM, localizer.getMessage("lblSHORTCUT_CARD_ZOOM"), actZoomCard, am, im));
         list.add(new Shortcut(FPref.SHORTCUT_SHOWHOTKEYS, localizer.getMessage("lblSHORTCUT_SHOWHOTKEYS"), actShowHotkeys, am, im));
         list.add(new Shortcut(FPref.SHORTCUT_PANELTABS, localizer.getMessage("lblSHORTCUT_PANELTABS"), actPanelTabs, am, im));
@@ -330,6 +344,19 @@ public class KeyboardShortcuts {
         cachedShortcuts = list;
         return list;
     } // End initMatchShortcuts()
+
+    private static Action macroAction(final CMatchUI matchUI, final Consumer<CMatchUI> command) {
+        return new AbstractAction() {
+            @Override
+            public void actionPerformed(final ActionEvent e) {
+                if (!Singletons.getControl().getCurrentScreen().isMatchScreen() || matchUI == null) {
+                    return;
+                }
+                command.accept(matchUI);
+                matchUI.getCDock().refreshMacroButtons();
+            }
+        };
+    }
 
     /**
      * 
@@ -432,6 +459,25 @@ public class KeyboardShortcuts {
             return null;
         }
         return assembleKeystrokes(binding.trim().split(" "));
+    }
+
+    /**
+     * Returns display text for the currently assigned shortcut preference,
+     * or an empty string if the shortcut is unassigned.
+     */
+    public static String getShortcutDisplayText(final FPref pref) {
+        final String str = FModel.getPreferences().getPref(pref);
+        if (str == null || str.isEmpty()) {
+            return "";
+        }
+
+        final List<String> displayText = new ArrayList<>();
+        for (final String code : str.split(" ")) {
+            if (!code.isEmpty()) {
+                displayText.add(KeyEvent.getKeyText(Integer.parseInt(code)));
+            }
+        }
+        return StringUtils.join(displayText, '+');
     }
 
     private static KeyStroke assembleKeystrokes(final String[] keys0) {

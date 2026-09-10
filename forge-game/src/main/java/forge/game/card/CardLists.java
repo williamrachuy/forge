@@ -76,6 +76,7 @@ public class CardLists {
     public static final Comparator<Card> ToughnessComparator = Comparator.comparingInt(Card::getNetToughness);
     public static final Comparator<Card> ToughnessComparatorInv = Comparator.comparingInt(Card::getNetToughness).reversed();
     public static final Comparator<Card> PowerComparator = Comparator.comparingInt(Card::getNetCombatDamage);
+    public static final Comparator<Card> CmcComparator = Comparator.comparingInt(Card::getCMC);
     public static final Comparator<Card> CmcComparatorInv = Comparator.<Card>comparingInt(Card::getCMC).reversed();
 
     public static final Comparator<Card> TextLenComparator = Comparator.comparingInt(a -> a.getView().getText().length());
@@ -261,6 +262,7 @@ public class CardLists {
     }
 
     public static CardCollection canSubsequentlyTarget(CardCollection list, SpellAbility source) {
+        // TODO should check first that there's a dependent restriction
         if (source.getTargets().isEmpty()) {
             return list;
         }

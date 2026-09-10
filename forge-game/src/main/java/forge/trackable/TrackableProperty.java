@@ -12,7 +12,6 @@ import forge.trackable.TrackableTypes.TrackableType;
 
 public enum TrackableProperty {
     //Shared
-    Text(TrackableTypes.StringType),
     PreventNextDamage(TrackableTypes.IntegerType),
     AttachedCards(TrackableTypes.CardViewCollectionType),
     Counters(TrackableTypes.CounterMapType),
@@ -90,15 +89,14 @@ public enum TrackableProperty {
     Remembered(TrackableTypes.StringType),
     NamedCard(TrackableTypes.StringListType),
     PlayerMayLook(TrackableTypes.PlayerViewCollectionType, FreezeMode.IgnoresFreeze),
-    MayPlayPlayers(TrackableTypes.PlayerViewCollectionType, FreezeMode.IgnoresFreeze),
     EntityAttachedTo(TrackableTypes.GameEntityViewType),
     EncodedCards(TrackableTypes.CardViewCollectionType),
     UntilLeavesBattlefield(TrackableTypes.CardViewCollectionType),
     GainControlTargets(TrackableTypes.CardViewCollectionType),
     CloneOrigin(TrackableTypes.CardViewType),
     ExiledWith(TrackableTypes.CardViewType),
+    PreparedSpell(TrackableTypes.CardViewType),
     WasDestroyed(TrackableTypes.BooleanType),
-    CrackOverlay(TrackableTypes.IntegerType),
     NeedsTransformAnimation(TrackableTypes.BooleanType, FreezeMode.IgnoresFreeze),
     NeedsUntapAnimation(TrackableTypes.BooleanType, FreezeMode.IgnoresFreeze),
     NeedsTapAnimation(TrackableTypes.BooleanType, FreezeMode.IgnoresFreeze),
@@ -147,43 +145,15 @@ public enum TrackableProperty {
     OrigProduceMana(TrackableTypes.ColorSetType),
     OrigProduceAnyMana(TrackableTypes.BooleanType),
 
-    KeywordKey(TrackableTypes.StringType),
+    Keywords(TrackableTypes.KeywordCollectionViewType),
     HasAnnihilator(TrackableTypes.BooleanType),
-    HasDeathtouch(TrackableTypes.BooleanType),
-    HasToxic(TrackableTypes.BooleanType),
-    HasDevoid(TrackableTypes.BooleanType),
-    HasDefender(TrackableTypes.BooleanType),
-    HasDivideDamage(TrackableTypes.BooleanType),
-    HasDoubleStrike(TrackableTypes.BooleanType),
-    HasDoubleTeam(TrackableTypes.BooleanType),
-    HasExalted(TrackableTypes.BooleanType),
-    HasFirstStrike(TrackableTypes.BooleanType),
-    HasFlying(TrackableTypes.BooleanType),
-    HasFear(TrackableTypes.BooleanType),
-    HasHexproof(TrackableTypes.BooleanType),
-    HasHorsemanship(TrackableTypes.BooleanType),
-    HasIndestructible(TrackableTypes.BooleanType),
-    HasIntimidate(TrackableTypes.BooleanType),
-    HasLifelink(TrackableTypes.BooleanType),
-    HasMenace(TrackableTypes.BooleanType),
-    HasReach(TrackableTypes.BooleanType),
-    HasShadow(TrackableTypes.BooleanType),
-    HasShroud(TrackableTypes.BooleanType),
-    HasTrample(TrackableTypes.BooleanType),
-    HasVigilance(TrackableTypes.BooleanType),
-    HasLandwalk(TrackableTypes.BooleanType),
-    HasAftermath(TrackableTypes.BooleanType),
-    ProtectionKey(TrackableTypes.StringType),
-    HexproofKey(TrackableTypes.StringType),
-    HasHaste(TrackableTypes.BooleanType),
-    HasInfect(TrackableTypes.BooleanType),
-    HasStorm(TrackableTypes.BooleanType),
     HasWard(TrackableTypes.BooleanType),
-    HasWither(TrackableTypes.BooleanType),
+
     BlockAdditional(TrackableTypes.IntegerType),
     BlockAny(TrackableTypes.BooleanType),
     AbilityText(TrackableTypes.StringType),
     NonAbilityText(TrackableTypes.StringType),
+    HasDivideDamage(TrackableTypes.BooleanType),
     FoilIndex(TrackableTypes.IntegerType),
 
     CantHaveKeyword(TrackableTypes.StringSetType),
@@ -194,6 +164,8 @@ public enum TrackableProperty {
     AvatarIndex(TrackableTypes.IntegerType),
     AvatarCardImageKey(TrackableTypes.StringType),
     SleeveIndex(TrackableTypes.IntegerType),
+    SleeveArtKey(TrackableTypes.StringType),
+    SleeveArtOffset(TrackableTypes.IntegerType),
     Opponents(TrackableTypes.PlayerViewCollectionType),
     Life(TrackableTypes.IntegerType),
     MaxHandSize(TrackableTypes.IntegerType),
@@ -208,7 +180,6 @@ public enum TrackableProperty {
     OptionalAdditionalVote(TrackableTypes.IntegerType),
     ControlVotes(TrackableTypes.BooleanType),
     AdditionalVillainousChoices(TrackableTypes.IntegerType),
-    Keywords(TrackableTypes.StringListType, FreezeMode.IgnoresFreeze),
     Commander(TrackableTypes.CardViewCollectionType, FreezeMode.IgnoresFreeze),
     CommanderCast(TrackableTypes.IntegerMapType),
     CommanderDamage(TrackableTypes.IntegerMapType),
@@ -236,6 +207,7 @@ public enum TrackableProperty {
     HasPriority(TrackableTypes.BooleanType, FreezeMode.IgnoresFreeze),
     AvatarLifeDifference(TrackableTypes.IntegerType, FreezeMode.IgnoresFreeze),
     HasLost(TrackableTypes.BooleanType),
+    HasAvailableActions(TrackableTypes.BooleanType),
 
     //SpellAbility
     HostCard(TrackableTypes.CardViewType),
@@ -244,16 +216,7 @@ public enum TrackableProperty {
     PromptIfOnlyPossibleAbility(TrackableTypes.BooleanType),
     SA_IsSpell(TrackableTypes.BooleanType),
 
-    //ReplacementEffectView
-    RE_HostCard(TrackableTypes.CardViewType),
-    RE_Description(TrackableTypes.StringType),
-
-    //StaticAbilityView
-    ST_HostCard(TrackableTypes.CardViewType),
-    ST_Description(TrackableTypes.StringType),
-
     //HasBackSide
-    BackSideName(TrackableTypes.StringType),
     HasBackSide(TrackableTypes.BooleanType),
 
     //StackItem
@@ -294,6 +257,7 @@ public enum TrackableProperty {
     PoisonCountersToLose(TrackableTypes.IntegerType),
     PlayerTurn(TrackableTypes.PlayerViewType, FreezeMode.IgnoresFreeze),
     Phase(TrackableTypes.EnumType(PhaseType.class), FreezeMode.IgnoresFreeze),
+    Object(TrackableTypes.ObjectType, FreezeMode.IgnoresFreeze),
     Dependencies(TrackableTypes.StringType);
 
     public enum FreezeMode {
@@ -325,10 +289,6 @@ public enum TrackableProperty {
     @SuppressWarnings("unchecked")
     public <T> void updateObjLookup(Tracker tracker, T newObj) {
         ((TrackableType<T>) type).updateObjLookup(tracker, newObj);
-    }
-
-    public void copyChangedProps(TrackableObject from, TrackableObject to) {
-        type.copyChangedProps(from, to, this);
     }
 
     @SuppressWarnings("unchecked")
