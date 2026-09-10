@@ -1188,7 +1188,7 @@ public class Game {
     }
 
     public final boolean isBattleboxGame() {
-        return rules.getGameType() == GameType.Battlebox || rules.hasAppliedVariant(GameType.Battlebox);
+        return rules.isBattlebox();
     }
 
     Player getReplacementMonarchAfterPlayerLost(final Player lostMonarch) {

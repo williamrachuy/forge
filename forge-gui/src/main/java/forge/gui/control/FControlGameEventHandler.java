@@ -4,7 +4,6 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Multimap;
 import com.google.common.eventbus.Subscribe;
-import forge.game.GameType;
 import forge.game.GameView;
 import forge.game.card.CardView;
 import forge.game.event.*;
@@ -349,7 +348,7 @@ public class FControlGameEventHandler extends IGameEventVisitor.Base<Void> {
             if (event.zoneType() == ZoneType.Library || event.zoneType() == ZoneType.Command || event.zoneType() == ZoneType.Graveyard) {
                 final GameView gameView = matchController.getGameView();
                 if (gameView != null && gameView.getGame() != null
-                        && gameView.getGame().getRules().hasAppliedVariant(GameType.Battlebox)
+                        && gameView.getGame().getRules().isBattlebox()
                         && gameView.getPlayers() != null) {
                     for (final PlayerView player : gameView.getPlayers()) {
                         updateZone(player, event.zoneType());
@@ -495,7 +494,7 @@ public class FControlGameEventHandler extends IGameEventVisitor.Base<Void> {
         processPlayer(event.player(), livesUpdate);
         final GameView gameView = matchController.getGameView();
         if (gameView != null && gameView.getGame() != null
-                && gameView.getGame().getRules().hasAppliedVariant(GameType.Battlebox)
+                && gameView.getGame().getRules().isBattlebox()
                 && gameView.getPlayers() != null) {
             for (final PlayerView player : gameView.getPlayers()) {
                 updateZone(player, ZoneType.Command);

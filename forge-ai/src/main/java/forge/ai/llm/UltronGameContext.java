@@ -631,7 +631,7 @@ final class UltronGameContext {
     private static String buildInitialContext(Game game, Player advisor, boolean includeFullDecklists) {
         StringBuilder sb = new StringBuilder(32768);
         GameRules rules = game.getRules();
-        boolean battlebox = rules.hasAppliedVariant(GameType.Battlebox) || rules.getGameType() == GameType.Battlebox;
+        boolean battlebox = rules.isBattlebox();
 
         sb.append("contextScope=").append(includeFullDecklists ? "full_first_advisor_request" : "recurring_compact_request").append('\n');
         if (!includeFullDecklists) {
@@ -677,7 +677,7 @@ final class UltronGameContext {
     private static String buildChatContext(Game game, Player advisor) {
         StringBuilder sb = new StringBuilder(2048);
         GameRules rules = game.getRules();
-        boolean battlebox = rules.hasAppliedVariant(GameType.Battlebox) || rules.getGameType() == GameType.Battlebox;
+        boolean battlebox = rules.isBattlebox();
 
         sb.append("contextScope=chat_compact_request\n");
         sb.append("format=").append(rules.getGameType().getEnglishName()).append('\n');

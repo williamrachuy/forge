@@ -129,7 +129,7 @@ public class ComputerUtil {
         // Spell Permanents inherit their cost from Mana Cost
         final Cost cost = sa.getPayCosts();
 
-        final boolean isBattleboxCmdr = game.getRules().getGameType() == forge.game.GameType.Battlebox
+        final boolean isBattleboxCmdr = game.getRules().isBattlebox()
                 && hz != null && hz.is(forge.game.zone.ZoneType.Command)
                 && game.isBattleboxCommandersEnabled();
         final long stationTappedBefore = isBattleboxCmdr

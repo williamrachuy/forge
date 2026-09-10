@@ -653,7 +653,30 @@ public class GameAction {
             copied.clearControllers();
         }
 
+        purgeStaleBattleboxStationEntry(copied);
+
         return copied;
+    }
+
+    /**
+     * The Battlebox land station lives in a zone shared by every seat, and the origin zone of a move
+     * is resolved from the card's last known zone. When that bookkeeping is stale the removal above
+     * hits the wrong zone, and the card is left sitting in the station's list with its own zone
+     * already pointing at the battlefield — so an open command / playable zone panel keeps showing a
+     * land that is already in play. Drop it here so every move path, not just
+     * {@link forge.game.player.Player#playLand}, leaves the station consistent and fans the change
+     * out to all seats.
+     */
+    private void purgeStaleBattleboxStationEntry(final Card c) {
+        if (c == null || !isBattleboxGame() || game.getPlayers().isEmpty()) {
+            return;
+        }
+        final Player host = game.getPlayers().get(0);
+        final PlayerZone station = host.getZone(ZoneType.Command);
+        if (station != null && host.isSharedCommandZone(station)
+                && c.getZone() != station && station.contains(c)) {
+            station.remove(c);
+        }
     }
 
     private Card setupStaticEffect(Card copied, SpellAbility cause) {
@@ -859,7 +882,7 @@ public class GameAction {
     }
 
     private Player getBattleboxSharedLibraryClaimant(final Card c, final Zone zoneTo, final SpellAbility cause) {
-        if (c == null || !game.getRules().hasAppliedVariant(GameType.Battlebox)) {
+        if (c == null || !game.getRules().isBattlebox()) {
             return null;
         }
         final Zone zoneFrom = game.getZoneOf(c);
@@ -906,7 +929,7 @@ public class GameAction {
     }
 
     private Player getBattleboxSharedGraveyardClaimant(final Card c, final Zone zoneTo, final SpellAbility cause) {
-        if (c == null || !game.getRules().hasAppliedVariant(GameType.Battlebox)) {
+        if (c == null || !game.getRules().isBattlebox()) {
             return null;
         }
         final Zone zoneFrom = game.getZoneOf(c);
@@ -1652,7 +1675,7 @@ public class GameAction {
                 if ((game.getRules().hasAppliedVariant(GameType.Commander)
                         || game.getRules().hasAppliedVariant(GameType.Brawl)
                         || game.getRules().hasAppliedVariant(GameType.Planeswalker)
-                        || (game.getRules().hasAppliedVariant(GameType.Battlebox) && game.getRules().isBattleboxCommandersEnabled())) && !checkAgain) {
+                        || (game.getRules().isBattlebox() && game.getRules().isBattleboxCommandersEnabled())) && !checkAgain) {
                     for (final Card c : p.getCardsIn(ZoneType.Graveyard).threadSafeIterable()) {
                         checkAgain |= stateBasedAction_Commander(c, mapParams);
                     }
@@ -2731,8 +2754,7 @@ public class GameAction {
     }
 
     private boolean isBattleboxGame() {
-        return game.getRules().getGameType() == GameType.Battlebox
-                || game.getRules().hasAppliedVariant(GameType.Battlebox);
+        return game.getRules().isBattlebox();
     }
 
     private Player getBattleboxMonarchDecisionPlayer() {

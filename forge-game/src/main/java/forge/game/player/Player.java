@@ -1587,21 +1587,40 @@ public class Player extends GameEntity implements Comparable<Player> {
         }
     }
 
-    /** Cards shown in the playable/Flashback zone view. In Battlebox the shared land station,
-     *  commanders, active plane and Planar Dice effect are surfaced in the Command zone / Planechase
-     *  panel instead, so they are filtered out here. */
+    /**
+     * Cards shown in the playable/Flashback zone view.
+     *
+     * <p>Effect cards sitting in a command zone (emblems and boons — The Monarch, the Planechase
+     * Planar Dice) are rules objects, not playable cards: the UI draws the monarch as a battlefield
+     * marker and the die as a Planechase button, so they never belong in this panel.
+     *
+     * <p>In Battlebox the shared command zone also holds the commander pool, the active plane and
+     * phenomena, which have their own panels. Only the shared land station is playable from here,
+     * and a station land drops out of this view the instant it is played, because the list is
+     * derived from {@link #isBattleboxSharedLandStationCard(Card)}, which requires the card to
+     * still be in the station.
+     */
     public CardCollectionView getCardsForFlashbackView() {
-        final CardCollectionView all = getCardsIn(ZoneType.Flashback);
-        if (!isBattleboxGame() || sharedCommandZone == null) {
-            return all;
-        }
         final CardCollection filtered = new CardCollection();
-        for (final Card c : all) {
-            if (c.getZone() != sharedCommandZone) {
+        for (final Card c : getCardsIn(ZoneType.Flashback)) {
+            if (!isHiddenFromPlayableZoneView(c)) {
                 filtered.add(c);
             }
         }
         return filtered;
+    }
+
+    private boolean isHiddenFromPlayableZoneView(final Card c) {
+        final Zone zone = c.getZone();
+        // Emblems and boons in a command zone (shared or personal) are never playable cards.
+        if (c.isImmutable() && zone != null && zone.is(ZoneType.Command)) {
+            return true;
+        }
+        if (!isBattleboxGame() || sharedCommandZone == null || zone != sharedCommandZone) {
+            return false;
+        }
+        // Battlebox: only the land station is played from the playable zone.
+        return !c.isLand();
     }
 
     /** @return the Planar Dice roll effect if the player may currently roll (it is activatable),
@@ -1873,6 +1892,15 @@ public class Player extends GameEntity implements Comparable<Player> {
                 && battleboxSharedStationZone != null && battleboxSharedStationZone.contains(land)) {
             battleboxSharedStationZone.remove(land);
         }
+        if (battleboxSharedStationLand) {
+            // The station is shared by every seat, so every seat's playable zone must drop the land.
+            // Done unconditionally: the zone removals above only fan out a view refresh when they
+            // actually changed a card list, and an already-removed card would leave open panels
+            // showing a land that is now on the battlefield.
+            for (final Player viewer : game.getPlayers()) {
+                viewer.updateFlashbackForView();
+            }
+        }
         game.updateLastStateForCard(c);
 
         // Run triggers
@@ -1978,8 +2006,7 @@ public class Player extends GameEntity implements Comparable<Player> {
     }
 
     private boolean isBattleboxGame() {
-        return game.getRules().getGameType() == GameType.Battlebox
-                || game.getRules().hasAppliedVariant(GameType.Battlebox);
+        return game.getRules().isBattlebox();
     }
 
     public final void addMaingameCardMapping(Card subgameCard, Card maingameCard) {
@@ -2296,7 +2323,7 @@ public class Player extends GameEntity implements Comparable<Player> {
         }
 
         if (game.getRules().hasAppliedVariant(GameType.Commander) ||
-            (game.getRules().hasAppliedVariant(GameType.Battlebox) && game.isBattleboxCommandersEnabled())) {
+            (game.getRules().isBattlebox() && game.isBattleboxCommandersEnabled())) {
             for (Entry<Card, Integer> entry : getCommanderDamage()) {
                 if (entry.getValue() >= 21 && loseConditionMet(GameLossReason.CommanderDamage, null)) {
                     return true;

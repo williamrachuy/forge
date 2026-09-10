@@ -2315,6 +2315,177 @@ Commit: `e957ff0` (Move Battlebox options from prompts to lobby checkboxes)
 Monarch, Commanders, Planechase options now in lobby UI rather than runtime prompts.
 `GameRules` carries the flags; Match propagates to Game.
 
+### TICKET-B005: Battlebox Type 2 — basic-land station [DONE 2026-09-05]
+New `GameType.Battlebox2` ("Battlebox Type 2"), a second Battlebox format that differs from
+Type 1 in exactly one place: how the shared command-zone land station is built.
+
+- **Type 1:** [LandStation] section + one extra basic-land set per player beyond the second.
+- **Type 2:** [LandStation] ignored entirely. The station is one of each basic land type per
+  player (2p = 10 lands, 3p = 15, 4p = 20), using the prints chosen by the deck's
+  [BasicLandsSet] section — the same selection path the seeded library basics use.
+  Type 2 seeds the station regardless of the `SeedBasicLands` metadata flag; that flag still
+  governs library seeding only.
+
+Everything else — shared library, shared graveyard, monarch / commanders / planechase
+checkboxes, deck folder, starting life/hand metadata — is identical to Type 1.
+
+**Key design decision:** rather than fork ~40 `GameType.Battlebox` checks, the engine now asks
+`GameRules.isBattlebox()` (true for either type, whether Battlebox arrives as the base game type
+in the sim path or as an applied variant in the lobby path) and `GameRules.isBattleboxType2()`
+only where the station is built. `GameType.isBattlebox()` covers the GUI/deck-chooser side.
+Adding a Battlebox Type 3 should follow the same shape: one new enum constant, one new branch in
+`BattleboxConfig.getLandStation`.
+
+Files: `GameType`, `GameRules`, `BattleboxConfig.getLandStation(deck, players, type2)`,
+`Match.prepareBattleboxSharedCommand`, `GameLobby` (variant exclusivity, validation skips the
+[LandStation] requirement for Type 2), `VLobby`/`PlayerPanel` (checkbox + deck-chooser routing),
+`SimulateMatch`/`SimulateStats` (`-f battlebox2`, `game.format=battlebox2`),
+`PreferencesStore` (variant persistence), `en-US.properties` (`lblBattlebox2*`).
+Test: `forge-gui-desktop/src/test/java/forge/game/BattleboxType2LandStationTest.java` (5 tests).
+
+> AGENT NOTE [2026-09-05]: `RegisteredPlayer.getBattleboxLandStation()` has no readers anywhere —
+> the real station is built in `Match.prepareBattleboxSharedCommand`. The setter calls in
+> `GameLobby` and `SimulateMatch` were left in place (null-guarded, Type-2-aware) but the field
+> looks like dead weight and is a candidate for removal.
+> Pre-existing failures, NOT caused by this ticket (verified by stashing): forge-game's
+> `BattleboxCommandersTest` / `BattleboxCommandersCastingTest` / `MatchBattleboxSharedZoneTest`
+> NPE because nothing initializes `StaticData` in that module's tests, and
+> `forge.ai.BattleboxCommandersTest.testAICanSeeBattleboxCommanders` asserts 2 commanders in the
+> command zone and finds 0. That is why the new test lives in forge-gui-desktop, which does
+> `FModel.initialize`.
+
+### TICKET-B006: Playable (Flashback) zone — monarch emblem out, land station in and consistent [DONE 2026-09-05]
+
+Two reports: the monarch emblem shows up in the playable zone as a card (it should only be the
+decorative battlefield marker), and station lands sometimes are not removed from that zone when
+played while the panel is left open.
+
+**What the code actually did.** `bdb8571fe87` added `Player.getCardsForFlashbackView()`, which
+hid the *entire* shared command zone from the playable zone by instance comparison
+(`c.getZone() != sharedCommandZone`). That over-shot: it also hid the land station, contradicting
+`Player.getCardsActivatableInExternalZones` ("Battlebox playable zone: land station always") and
+making `FControlGameEventHandler.visit(GameEventLandPlayed)` — which exists purely to refresh the
+playable zone on a battlebox land play — dead code. It also never covered the *personal* command
+zone, where the monarch emblem actually lives.
+
+**Now.** `getCardsForFlashbackView()` filters per card: effect cards (`isImmutable()`, i.e.
+`GamePieceType.EFFECT` — The Monarch, Planar Dice) sitting in *any* command zone are dropped, and
+in Battlebox only lands survive from the shared command zone (commander pool, planes and phenomena
+keep their own panels). The land station is playable from the playable zone again.
+
+**Consistent removal.** Three layers, in order of strength:
+1. Model: admission requires `isBattleboxSharedLandStationCard(c)`, which requires
+   `c.getZone() == sharedCommandZone` — a played land can never be re-admitted.
+2. `GameAction.changeZone` now calls `purgeStaleBattleboxStationEntry(copied)`: the station is
+   shared and a move's origin zone comes from the card's *last known* zone, so stale bookkeeping
+   makes `zoneFrom.remove(c)` hit the wrong zone and fire no change event, leaving the card in the
+   station list with its own zone already on the battlefield. Every move path now scrubs it and
+   fans the change out to all seats. This is the load-bearing fix for the "sometimes" case — the
+   regression test fails without it.
+3. `Player.playLand` refreshes every seat's playable-zone view after a station land play
+   (belt-and-braces: the zone removals only fan out when they actually changed a list).
+
+**Command zone panel.** The monarch emblem must stay in the Command *collection* —
+`PlayArea.findMonarchMarker` reads it from there to draw the battlefield marker — so it is hidden
+at the panel level instead: `PlayArea.isMonarchMarker` is now public and both `VZone.refresh()`
+and `FloatingZone.getCards()` skip it for `ZoneType.Command`.
+
+Test: `forge-gui-desktop/src/test/java/forge/game/BattleboxPlayableZoneTest.java` (5 tests, runs a
+real 2-player Battlebox setup off `~/.forge/decks/battlebox/BattleBox.dck`).
+
+> AGENT NOTE [2026-09-05]: could NOT reproduce the monarch symptom on this HEAD. A full real
+> 2-player Battlebox game (AI vs AI, monarch enabled and actually assigned) never put the emblem in
+> any seat's playable zone: `PlayerZone.OwnCardsActivationFilter` finds no activatable ability on
+> it, so it never enters the Flashback collection in the first place. The filter added here is
+> therefore hardening, not a proven repro — the *reproducible* half of the report is the land
+> station, which the blanket filter had removed from the playable zone entirely. If the emblem is
+> still visible after this change, it is the **Command zone** panel, which is why that panel is
+> filtered too. Verified by ablation: reverting each fix in turn fails the matching test, except
+> the `playLand` fan-out, which is redundant with the existing removal fan-out and kept only as
+> insurance. A `PlayerView.updateZone` refresh on every Battlefield change was tried and dropped:
+> unproven, and it would put `getCardsActivatableInExternalZones` on every battlefield change in
+> non-copy sim games.
+> Pre-existing failures unchanged by this ticket (verified by stashing): 8 `forge.ai.llm.runtime.
+> Ultron*` tests, `forge.ai.BattleboxCommandersTest.testAICanSeeBattleboxCommanders`, and the
+> forge-game Battlebox tests that NPE on an uninitialized `StaticData`.
+
+
+### TICKET-B007: "Each player" effects resolve in APNAP order — Exhume and the shared graveyard [DONE 2026-09-06]
+
+Exhume (`Each player puts a creature card from their graveyard onto the battlefield`) resolves
+through `ChangeZoneEffect.changeHiddenOriginResolve`, which iterated the players returned by
+`AbilityUtils.getDefinedPlayers(..., "Player", ...)`. That falls through to
+`Game.getPlayersInTurnOrder()` — **seating order**, always starting at seat 0, regardless of whose
+turn it is.
+
+In stock Magic that is nearly cosmetic: each player searches their own graveyard, so who picks
+first rarely matters. In Battlebox the graveyard is **shared**, and this method already de-dupes
+picks (`battleboxSharedGraveyardChoices`), so the first chooser takes the best creature out from
+under everyone else. Seat 0 got that pick on every Exhume in the game, no matter who cast it.
+
+Fixed by ordering the fetchers APNAP (CR 101.4 — active player chooses first, then turn order)
+via a new `ChangeZoneEffect.inApnapOrder(game, players)`. Exhume is a sorcery, so the active player
+is the caster; the helper is written against the active player because that is what the rule says,
+not against the activating player. Players the current turn order does not seat (already out of the
+game) keep their slot at the end rather than being dropped from the effect.
+
+Test: `forge-gui-desktop/src/test/java/forge/game/BattleboxExhumeOrderTest.java` — 4 seats, exactly
+one creature in the shared graveyard, Exhume cast from each seat in turn; the caster must be the one
+who gets it. Fails on the old order for every seat but seat 0.
+
+> AGENT NOTE [2026-09-06]: the same seat-order fall-through reaches every other "each player"
+> effect — `DiscardEffect`, `SacrificeEffect`, `MillEffect`, `ChooseCardEffect`, `DigEffect` all
+> resolve their player list through `getTargetPlayers` / `getDefinedPlayersOrTargeted`, which lands
+> in the same `getPlayersInTurnOrder()` branch. Left alone: for discard/sacrifice the zone is
+> per-player so the order is genuinely cosmetic, but **mill is not** — Battlebox's library is shared
+> too, so a multi-player mill effect has the same seat-0 bias. Worth a follow-up ticket if such a
+> card shows up in the box.
+
+
+### TICKET-B008: Currency Converter fired on every player's discard [DONE 2026-09-06, CORRECTED 2026-09-08]
+
+Report: "my Currency Converter is triggering when another player discards (Frantic Search)."
+
+Currency Converter was scripted the stock way — `T:Mode$ Discarded | ValidCard$ Card.YouCtrl` — which
+is how ~20 cards in the DB express "whenever **you** discard a card". It works in vanilla because a
+discarded card's controller falls back to its owner, i.e. the discarder.
+
+`CardProperty.isBattleboxSharedZoneCardFor` makes any card in the shared library or graveyard count
+as controlled/owned by whoever is asking — the hatch that makes the communal zones usable at all.
+`Player.discard` hands the trigger the card object *after* `moveToGraveyard` has repointed its zone
+at the shared graveyard, so `Card.YouCtrl` matched for **every** seat and one Frantic Search set off
+every Currency Converter at the table.
+
+**First attempt (2026-09-06) was wrong and is reverted.** It split the hatch, restricting
+`YouCtrl`/`YouDontCtrl`/`OppCtrl` to the shared library only. That regressed every "target a card in
+your graveyard" effect: Sevinne's Reclamation targets with `ValidTgts$ Permanent.cmcLE3+YouCtrl`,
+the same stock shorthand, and could no longer reach anything that died under an opponent — which is
+the entire point of a shared graveyard. `YouCtrl` cannot carry both meanings, and selection is the
+one the format depends on.
+
+**Shipped fix:** leave `CardProperty` alone and fix the trigger where the real information lives.
+`TriggerDiscarded` already supports `ValidPlayer`, and `Player.discard` already passes
+`AbilityKey.Player`, so the script now reads
+`T:Mode$ Discarded | ValidPlayer$ You | ValidCard$ Card.YouCtrl | ...` — exactly what the Oracle text
+says. `ValidCard` stays permissive (harmless), `ValidPlayer` pins the discarder.
+
+Currency Converter is the **only** `Mode$ Discarded` card in either box (checked against
+`BattleBox.dck` and `BattleBoxType2.dck`), so this is one card, not a scripting campaign.
+
+Tests:
+- `BattleboxDiscardTriggerTest` — drives the real `TriggerDiscarded.performTest`: another seat's
+  discard must not match, the controller's own must, and an unclaimed shared-library card must still
+  satisfy `Card.YouCtrl` for anyone. Fails without the script fix.
+- `BattleboxSharedGraveyardTargetTest` — Sevinne's `ValidTgts` must reach a permanent that died under
+  an opponent, must still reach your own, and must not reach one still on the battlefield. The first
+  fails under the reverted first attempt.
+
+> AGENT NOTE [2026-09-08]: the lesson is that in this fork `YouCtrl` on a shared-graveyard card is
+> deliberately communal, and that is load-bearing for the format. Do NOT narrow it. Any card whose
+> `YouCtrl` is meant as "this happened to you" rather than "this is available to you" has to be
+> pinned on the event side (`ValidPlayer`, `ValidCause`, ...), not on the property side. Cards to
+> watch if more get added to the box: `Mode$ Discarded`, `Mode$ Milled`, `Mode$ ChangesZone` with a
+> `ValidCard$ ...YouCtrl` and no `ValidPlayer`.
 ---
 
 # PROJECT: SIMSTATS-INFRA

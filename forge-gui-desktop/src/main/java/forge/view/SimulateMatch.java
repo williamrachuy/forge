@@ -91,7 +91,7 @@ public class SimulateMatch {
         rules.setAppliedVariants(EnumSet.of(type));
 
         // Enable Battlebox commanders by default for Battlebox games
-        if (type == GameType.Battlebox) {
+        if (type.isBattlebox()) {
             rules.setBattleboxCommandersEnabled(true);
             rules.setBattleboxMonarchEnabled(true);
             rules.setBattleboxPlanechaseEnabled(true);
@@ -354,7 +354,7 @@ public class SimulateMatch {
             }
 
             String baseDir = type.equals(GameType.Commander) ? ForgeConstants.DECK_COMMANDER_DIR
-                    : type.equals(GameType.Battlebox) ? ForgeConstants.DECK_BATTLEBOX_DIR
+                    : type.isBattlebox() ? ForgeConstants.DECK_BATTLEBOX_DIR
                     : ForgeConstants.DECK_CONSTRUCTED_DIR;
 
             File f = new File(baseDir + deckname);
@@ -370,7 +370,7 @@ public class SimulateMatch {
         // Add other game types here...
         if (type.equals(GameType.Commander)) {
             deckStore = FModel.getDecks().getCommander();
-        } else if (type.equals(GameType.Battlebox)) {
+        } else if (type.isBattlebox()) {
             deckStore = FModel.getDecks().getBattlebox();
         } else {
             deckStore = FModel.getDecks().getConstructed();
@@ -388,7 +388,7 @@ public class SimulateMatch {
                 ? RegisteredPlayer.forCommander(deck)
                 : new RegisteredPlayer(deck);
 
-        if (type.equals(GameType.Battlebox)) {
+        if (type.isBattlebox()) {
             final BattleboxConfig config = BattleboxConfig.fromDeck(deck);
             final int startingLife = commandersEnabled
                     ? config.getCommanderStartingLife()
@@ -396,7 +396,8 @@ public class SimulateMatch {
             rp.setStartingLife(startingLife);
             rp.setStartingHand(config.getStartingHandSize());
             rp.setMaxHand(config.getMaxHandSize());
-            if (BattleboxConfig.getLandStation(deck) != null) {
+            // Type 2 builds its station from [BasicLandsSet] at game setup, not from the deck.
+            if (type != GameType.Battlebox2 && BattleboxConfig.getLandStation(deck) != null) {
                 rp.setBattleboxLandStation(BattleboxConfig.getLandStation(deck).toFlatList());
             }
         }

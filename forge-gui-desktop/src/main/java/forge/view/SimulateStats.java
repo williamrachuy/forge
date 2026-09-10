@@ -103,7 +103,7 @@ public final class SimulateStats {
                 rules.setAppliedVariants(EnumSet.of(format));
                 rules.setSimTimeout(config.getTimeoutSeconds());
 
-                if (format == GameType.Battlebox && config.getBattleboxMonarch() != null) {
+                if (format.isBattlebox() && config.getBattleboxMonarch() != null) {
                     rules.setBattleboxMonarchEnabled(config.getBattleboxMonarch());
                 }
                 final List<String> gameAiProfiles = rotateSeats

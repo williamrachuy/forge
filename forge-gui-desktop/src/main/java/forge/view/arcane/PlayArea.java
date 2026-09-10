@@ -1050,7 +1050,12 @@ public class PlayArea extends CardPanelContainer implements CardPanelMouseListen
         return null;
     }
 
-    private static boolean isMonarchMarker(final CardView card) {
+    /**
+     * The monarch emblem is a command-zone rules object that this play area renders as a decorative
+     * battlefield marker. Zone panels ask this so the same card is not also listed as a card in the
+     * command zone.
+     */
+    public static boolean isMonarchMarker(final CardView card) {
         return card != null && card.isImmutable() && MONARCH_MARKER_NAME.equals(card.getName());
     }
 

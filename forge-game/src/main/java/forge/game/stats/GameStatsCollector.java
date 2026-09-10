@@ -13,7 +13,6 @@ import com.google.common.eventbus.Subscribe;
 import forge.game.Game;
 import forge.game.GameEntityView;
 import forge.game.GameOutcome;
-import forge.game.GameType;
 import forge.game.card.Card;
 import forge.game.card.CardView;
 import forge.game.card.CounterEnumType;
@@ -407,8 +406,7 @@ public final class GameStatsCollector {
 
     private Map<String, Object> featureMap() {
         final Map<String, Object> result = new LinkedHashMap<>();
-        final boolean battlebox = game.getRules().getGameType() == GameType.Battlebox
-                || game.getRules().hasAppliedVariant(GameType.Battlebox);
+        final boolean battlebox = game.getRules().isBattlebox();
         result.put("battlebox", battlebox);
         result.put("hasMonarchConfigured", context.getBattleboxMonarch());
         result.put("monarchObserved", monarchObserved);

@@ -147,6 +147,26 @@ public class GameRules {
         this.warnAboutAICards = warnAboutAICards;
     }
 
+    /**
+     * @return whether this game is a Battlebox game of either type. Battlebox may arrive either
+     *         as the base game type (simulator paths) or as an applied variant (lobby path),
+     *         so both are checked.
+     */
+    public boolean isBattlebox() {
+        return gameType.isBattlebox()
+                || appliedVariants.contains(GameType.Battlebox)
+                || appliedVariants.contains(GameType.Battlebox2);
+    }
+
+    /**
+     * @return whether this game is Battlebox Type 2, where the land station is built from the
+     *         deck's [BasicLandsSet] prints (one of each basic per player) instead of the
+     *         deck's [LandStation] section.
+     */
+    public boolean isBattleboxType2() {
+        return gameType == GameType.Battlebox2 || appliedVariants.contains(GameType.Battlebox2);
+    }
+
     public boolean isBattleboxMonarchEnabled() {
         return battleboxMonarchEnabled;
     }

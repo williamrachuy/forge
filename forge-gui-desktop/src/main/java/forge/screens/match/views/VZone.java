@@ -27,6 +27,7 @@ import forge.view.arcane.CardArea;
 import forge.util.Localizer;
 import forge.view.arcane.CardPanel;
 import forge.view.arcane.FloatingZone;
+import forge.view.arcane.PlayArea;
 import net.miginfocom.swing.MigLayout;
 
 /**
@@ -104,6 +105,9 @@ public class VZone implements IVDoc<CZone> {
                 cardList.sort(FloatingZone.ZONE_ORDER_COMPARATOR);
             }
             for (final CardView card : cardList) {
+                if (zone == ZoneType.Command && PlayArea.isMonarchMarker(card)) {
+                    continue; // drawn as a battlefield marker instead
+                }
                 CardPanel cardPanel = cardArea.getCardPanel(card.getId());
                 if (cardPanel == null) {
                     cardPanel = new CardPanel(matchUI, card);

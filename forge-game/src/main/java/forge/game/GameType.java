@@ -42,6 +42,7 @@ public enum GameType {
     Archenemy           (DeckFormat.Archenemy, false, false, true, "lblArchenemy", "lblArchenemyDesc"),
     ArchenemyRumble     (DeckFormat.Archenemy, false, false, true, "lblArchenemyRumble", "lblArchenemyRumbleDesc"),
     Battlebox           (DeckFormat.Constructed, false, false, false, "lblBattlebox", "lblBattleboxDesc"),
+    Battlebox2          (DeckFormat.Constructed, false, false, false, "lblBattlebox2", "lblBattlebox2Desc"),
     MomirBasic          (DeckFormat.Constructed, false, false, false, "lblMomirBasic", "lblMomirBasicDesc", player -> {
         Deck deck = new Deck();
         CardPool mainDeck = deck.getMain();
@@ -72,6 +73,7 @@ public enum GameType {
     });
 
     private static final EnumSet<GameType> DRAFT_FORMATS = EnumSet.of(Draft, QuestDraft, AdventureEvent);
+    private static final EnumSet<GameType> BATTLEBOX_FORMATS = EnumSet.of(Battlebox, Battlebox2);
 
     private final DeckFormat deckFormat;
     private final boolean isCardPoolLimited, canSideboard, addWonCardsMidGame;
@@ -133,6 +135,15 @@ public enum GameType {
         return DRAFT_FORMATS.contains(this);
     }
 
+    /**
+     * @return whether this game type is one of the Battlebox formats (Type 1 or Type 2).
+     *         Both share the entire shared-zone rules engine; they differ only in how the
+     *         command-zone land station is built.
+     */
+    public boolean isBattlebox() {
+        return BATTLEBOX_FORMATS.contains(this);
+    }
+
     public String toString() {
         return name;
     }
@@ -159,7 +170,7 @@ public enum GameType {
             return EnumSet.noneOf(DeckSection.class); //Already an extra deck, like a dedicated Scheme or Planar deck.
         if(deckFormat == DeckFormat.Limited)
             return EnumSet.of(DeckSection.Conspiracy, DeckSection.Contraptions, DeckSection.Attractions);
-        if(this == Constructed || this == Commander || this == Battlebox)
+        if(this == Constructed || this == Commander || this.isBattlebox())
             return EnumSet.of(DeckSection.Avatar, DeckSection.Schemes, DeckSection.Planes, DeckSection.Conspiracy,
                     DeckSection.Attractions, DeckSection.Contraptions);
         return EnumSet.of(DeckSection.Attractions, DeckSection.Contraptions);

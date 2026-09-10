@@ -428,7 +428,7 @@ public class PlayerPanel extends FPanel {
         final boolean isPlanechaseApplied = mayEdit && lobby.hasVariant(GameType.Planechase);
         final boolean isVanguardApplied = mayEdit && lobby.hasVariant(GameType.Vanguard);
         final boolean isArchenemyApplied = mayEdit && lobby.hasVariant(GameType.Archenemy);
-        final boolean isBattleboxApplied = mayEdit && lobby.hasVariant(GameType.Battlebox);
+        final boolean isBattleboxApplied = mayEdit && lobby.hasBattleboxVariant();
         final boolean archenemyVisiblity = mayEdit && lobby.hasVariant(GameType.ArchenemyRumble) || (isArchenemyApplied && isArchenemy());
         // Commander deck building replaces normal one, so hide it
         final boolean isDeckBuildingAllowed = mayEdit && !isCommanderApplied && !lobby.hasVariant(GameType.MomirBasic)
@@ -684,7 +684,8 @@ public class PlayerPanel extends FPanel {
 
     private void addHandlersDeckSelector() {
         deckBtn.setCommand((Runnable) () -> {
-            final GameType mode = lobby.hasVariant(GameType.Battlebox) ? GameType.Battlebox : GameType.Constructed;
+            final GameType mode = lobby.hasVariant(GameType.Battlebox2) ? GameType.Battlebox2
+                    : lobby.hasVariant(GameType.Battlebox) ? GameType.Battlebox : GameType.Constructed;
             lobby.setCurrentGameMode(mode);
             deckBtn.requestFocusInWindow();
             lobby.changePlayerFocus(index, mode);

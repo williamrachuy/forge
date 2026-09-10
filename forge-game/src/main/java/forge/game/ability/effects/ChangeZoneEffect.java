@@ -29,6 +29,7 @@ import forge.util.collect.FCollectionView;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.tuple.Pair;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -908,7 +909,8 @@ public class ChangeZoneEffect extends SpellAbilityEffect {
         Map<Player, HiddenOriginChoices> hiddenChoices = new LinkedHashMap<>();
         CardCollection battleboxSharedGraveyardChoices = new CardCollection();
 
-        List<Player> fetchers = AbilityUtils.getDefinedPlayers(sa.getHostCard(), sa.getParam("DefinedPlayer"), sa);
+        List<Player> fetchers = inApnapOrder(game,
+                AbilityUtils.getDefinedPlayers(sa.getHostCard(), sa.getParam("DefinedPlayer"), sa));
         Player chooser = null;
         if (sa.hasParam("Chooser")) {
             final FCollectionView<Player> choosers = AbilityUtils.getDefinedPlayers(sa.getHostCard(), sa.getParam("Chooser"), sa);
@@ -1579,14 +1581,48 @@ public class ChangeZoneEffect extends SpellAbilityEffect {
         ZoneType destination;
     }
 
+    /**
+     * CR 101.4: when an effect has several players make choices at the same time, the active player
+     * chooses first and the rest follow in turn order (APNAP). {@code DefinedPlayer$ Player} hands
+     * back seating order, which starts at seat 0 no matter whose turn it is.
+     *
+     * <p>For a stock "each player searches their own graveyard" effect the order is nearly
+     * cosmetic. For Battlebox it is the whole game: the graveyard is shared, so Exhume's first
+     * chooser takes the best creature out from under everyone else, and seating order handed that
+     * pick to seat 0 on every single turn.
+     */
+    private static List<Player> inApnapOrder(final Game game, final List<Player> players) {
+        if (players.size() < 2) {
+            return players;
+        }
+        final Player active = game.getPhaseHandler() == null ? null : game.getPhaseHandler().getPlayerTurn();
+        if (active == null) {
+            return players;
+        }
+        final List<Player> ordered = new ArrayList<>(players.size());
+        for (final Player p : game.getPlayersInTurnOrder(active)) {
+            if (players.contains(p) && !ordered.contains(p)) {
+                ordered.add(p);
+            }
+        }
+        // Keep anything the current turn order does not seat (a player already out of the game, a
+        // duplicate entry) rather than silently dropping it from the effect.
+        for (final Player p : players) {
+            if (!ordered.contains(p)) {
+                ordered.add(p);
+            }
+        }
+        return ordered;
+    }
+
     private static boolean isBattleboxSharedGraveyardSearch(final Game game, final Player player, final List<ZoneType> origin) {
-        return game.getRules().hasAppliedVariant(GameType.Battlebox)
+        return game.getRules().isBattlebox()
                 && origin.contains(ZoneType.Graveyard)
                 && player != null;
     }
 
     private static boolean isBattleboxSharedLibrarySearch(final Game game, final Player player, final List<ZoneType> origin) {
-        return game.getRules().hasAppliedVariant(GameType.Battlebox)
+        return game.getRules().isBattlebox()
                 && origin.contains(ZoneType.Library)
                 && player != null
                 && player.getZone(ZoneType.Library) instanceof SharedPlayerZone;
@@ -1596,7 +1632,7 @@ public class ChangeZoneEffect extends SpellAbilityEffect {
             final Player destinationController, final Zone originZone, final SpellAbility sa) {
         if (destinationController != null
                 && originZone != null
-                && game.getRules().hasAppliedVariant(GameType.Battlebox)) {
+                && game.getRules().isBattlebox()) {
             if (originZone.is(ZoneType.Library) && destinationController.isBattleboxSharedLibraryCard(card)) {
                 destinationController.claimBattleboxSharedLibraryCard(card);
                 return destinationController;
@@ -1640,7 +1676,7 @@ public class ChangeZoneEffect extends SpellAbilityEffect {
 
     private static Card moveToBattleboxSharedOriginExile(final Game game, final Player player, final Card card,
             final List<ZoneType> origin, final SpellAbility sa, final Map<AbilityKey, Object> moveParams) {
-        if (player != null && game.getRules().hasAppliedVariant(GameType.Battlebox)) {
+        if (player != null && game.getRules().isBattlebox()) {
             if (origin.contains(ZoneType.Library) && player.isBattleboxSharedLibraryCard(card)) {
                 return game.getAction().moveTo(player.getZone(ZoneType.Exile), card, sa, moveParams);
             }

@@ -82,7 +82,7 @@ public class Match {
 
     public void startGame(final Game game, Runnable startGameHook) {
         // Propagate battlebox options from rules to game (GUI path also does this via HostedMatch).
-        if (rules.getGameType() == GameType.Battlebox && !game.isBattleboxCommandersChoiceMade()) {
+        if (rules.isBattlebox() && !game.isBattleboxCommandersChoiceMade()) {
             game.setBattleboxCommandersChoice(rules.isBattleboxCommandersEnabled());
             game.setBattleboxMonarchChoice(rules.isBattleboxMonarchEnabled());
             game.setBattleboxPlanechaseChoice(rules.isBattleboxPlanechaseEnabled());
@@ -277,8 +277,10 @@ public class Match {
 
         final BattleboxConfig config = BattleboxConfig.fromDeck(battleboxDeck);
 
-        // Add Land Station
-        final CardPool landStation = config.getLandStation(battleboxDeck, players.size());
+        // Add Land Station. Type 2 ignores [LandStation] and stocks the station with one of
+        // each basic land type per player, drawn from the deck's [BasicLandsSet] prints.
+        final boolean type2 = game != null && game.getRules().isBattleboxType2();
+        final CardPool landStation = config.getLandStation(battleboxDeck, players.size(), type2);
         game.traceState("LandStation pool: " + (landStation == null ? "null" : landStation.countAll() + " cards"));
         if (landStation != null) {
             for (final PaperCard pc : landStation.toFlatList()) {
@@ -385,7 +387,7 @@ public class Match {
         final List<RegisteredPlayer> playersConditions = game.getMatch().getPlayers();
 
         boolean isFirstGame = gameOutcomes.isEmpty();
-        final boolean isBattlebox = rules.hasAppliedVariant(GameType.Battlebox);
+        final boolean isBattlebox = rules.isBattlebox();
         boolean canSideBoard = !isFirstGame && rules.getGameType().isSideboardingAllowed() && !isBattlebox;
         // Only allow this if feature flag is on AND for certain match types
         boolean sideboardForAIs = rules.getSideboardForAI() &&

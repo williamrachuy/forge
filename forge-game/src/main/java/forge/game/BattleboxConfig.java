@@ -135,6 +135,28 @@ public final class BattleboxConfig {
     }
 
     public CardPool getLandStation(final Deck deck, final int playerCount) {
+        return getLandStation(deck, playerCount, false);
+    }
+
+    /**
+     * Builds the shared command-zone land station.
+     *
+     * <p>Type 1 (the original Battlebox) starts from the deck's [LandStation] section and tops it
+     * up with one extra basic-land set per player beyond the second.
+     *
+     * <p>Type 2 ignores [LandStation] entirely: the station is exactly one of each basic land type
+     * per player, using the prints chosen by the deck's [BasicLandsSet] section — the same
+     * selection the seeded library basics use. Two players get 10 lands, three get 15, and so on.
+     */
+    public CardPool getLandStation(final Deck deck, final int playerCount, final boolean type2) {
+        if (type2) {
+            final CardPool station = new CardPool();
+            for (int i = 0; i < Math.max(1, playerCount); i++) {
+                addBasicLandSet(station);
+            }
+            return station;
+        }
+
         final CardPool base = getLandStation(deck);
         if (base == null) {
             return null;

@@ -597,6 +597,10 @@ public class FloatingZone extends FloatingCardArea {
             } else if (zone == ZoneType.Flashback) {
                 cardList.sort(ZONE_ORDER_COMPARATOR);
             }
+            if (zone == ZoneType.Command) {
+                // The monarch emblem is drawn as a battlefield marker, not listed as a card.
+                cardList.removeIf(PlayArea::isMonarchMarker);
+            }
             if (!filter.isEmpty()) {
                 final String needle = filter.toLowerCase(Locale.ROOT);
                 cardList.removeIf(card -> !getMatchUI().mayView(card)

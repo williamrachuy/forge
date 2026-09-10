@@ -1,7 +1,7 @@
 Name:Currency Converter
 ManaCost:1
 Types:Artifact
-T:Mode$ Discarded | ValidCard$ Card.YouCtrl | TriggerZones$ Battlefield | Execute$ TrigExile | OptionalDecider$ You | TriggerDescription$ Whenever you discard a card, you may exile that card from your graveyard.
+T:Mode$ Discarded | ValidPlayer$ You | ValidCard$ Card.YouCtrl | TriggerZones$ Battlefield | Execute$ TrigExile | OptionalDecider$ You | TriggerDescription$ Whenever you discard a card, you may exile that card from your graveyard.
 SVar:TrigExile:DB$ ChangeZone | Defined$ TriggeredCard | Origin$ Graveyard | Destination$ Exile
 A:AB$ Draw | Cost$ 2 T | SubAbility$ DBDiscard | SpellDescription$ Draw a card,
 SVar:DBDiscard:DB$ Discard | Mode$ TgtChoose | SpellDescription$ then discard a card.
