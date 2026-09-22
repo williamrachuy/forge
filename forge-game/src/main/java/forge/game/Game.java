@@ -1115,7 +1115,10 @@ public class Game {
                 planarController = getNextPlayerAfter(p);
             }
             CardCollection planesLeavingGame =  new CardCollection();
-            for (Card c : getActivePlanes()) {
+            // Iterate a snapshot: getActivePlanes() may be the same backing list as
+            // planarController's currentPlanes, and removeCurrentPlane() below mutates it,
+            // which would otherwise throw ConcurrentModificationException mid-iteration.
+            for (Card c : Lists.newArrayList(getActivePlanes())) {
                 if (c.getOwner().equals(p)) {
                     planesLeavingGame.add(c);
                     planarController.removeCurrentPlane(c);
