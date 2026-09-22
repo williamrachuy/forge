@@ -107,7 +107,11 @@ public abstract class GameLobby implements IHasGameType {
     }
     /** @param enabled whether Battlebox monarch should be enabled */
     public void setBattleboxMonarchEnabled(boolean enabled) {
+        if (data.isBattleboxMonarchEnabled() == enabled) {
+            return;
+        }
         data.setBattleboxMonarchEnabled(enabled);
+        updateView(false);
     }
 
     /** @return whether Battlebox commanders are enabled */
@@ -116,7 +120,11 @@ public abstract class GameLobby implements IHasGameType {
     }
     /** @param enabled whether Battlebox commanders should be enabled */
     public void setBattleboxCommandersEnabled(boolean enabled) {
+        if (data.isBattleboxCommandersEnabled() == enabled) {
+            return;
+        }
         data.setBattleboxCommandersEnabled(enabled);
+        updateView(false);
     }
 
     /** @return whether Battlebox planechase is enabled */
@@ -125,7 +133,11 @@ public abstract class GameLobby implements IHasGameType {
     }
     /** @param enabled whether Battlebox planechase should be enabled */
     public void setBattleboxPlanechaseEnabled(boolean enabled) {
+        if (data.isBattleboxPlanechaseEnabled() == enabled) {
+            return;
+        }
         data.setBattleboxPlanechaseEnabled(enabled);
+        updateView(false);
     }
 
     public int getNumberOfSlots() {

@@ -1,5 +1,6 @@
 package forge.net;
 
+import forge.game.GameType;
 import forge.game.GameView;
 import forge.game.card.CardView;
 import forge.game.player.PlayerView;
@@ -176,6 +177,109 @@ public class NetworkPlayIntegrationTest implements IHasForgeLog {
 
         netLog.info("Test PASSED: {} turns, {} setGameView updates, 0 send errors",
                 result.turnCount, result.clientSetGameViewCount);
+    }
+
+    /**
+     * Battlebox over real TCP: players x type x option-set matrix, every non-host seat a remote
+     * client (converted to AI server-side). Gated behind -Drun.stress.tests=true; needs the
+     * user's ~/.forge/decks/battlebox/BattleBox.dck. Knobs:
+     * -Dtest.battlebox.players=2,4  -Dtest.battlebox.types=1,2
+     * -Dtest.battlebox.options=none,all  (tokens: none, all, monarch, commanders, planechase; '+' combines)
+     * -Dtest.battlebox.timeoutMs=900000
+     */
+    @Test(description = "Battlebox network matrix")
+    public void testBattleboxNetworkMatrix() {
+        skipUnlessStressTestsEnabled();
+
+        long timeoutMs = Long.getLong("test.battlebox.timeoutMs", 900000L);
+        List<String> failures = new ArrayList<>();
+        List<String> summaries = new ArrayList<>();
+
+        for (String players : System.getProperty("test.battlebox.players", "2,4").split(",")) {
+            int playerCount = Integer.parseInt(players.trim());
+            for (String type : System.getProperty("test.battlebox.types", "1,2").split(",")) {
+                GameType gameType = "2".equals(type.trim()) ? GameType.Battlebox2 : GameType.Battlebox;
+                for (String options : System.getProperty("test.battlebox.options", "none,all").split(",")) {
+                    String opts = options.trim().toLowerCase();
+                    boolean all = opts.equals("all");
+                    boolean monarch = all || opts.contains("monarch");
+                    boolean commanders = all || opts.contains("commanders");
+                    boolean planechase = all || opts.contains("planechase");
+
+                    UnifiedNetworkHarness.GameResult result = new UnifiedNetworkHarness()
+                            .playerCount(playerCount)
+                            .remoteClients(playerCount - 1)
+                            .battlebox(gameType, monarch, commanders, planechase)
+                            .gameTimeout(timeoutMs)
+                            .execute();
+
+                    String label = playerCount + "p " + result.gameFormat;
+                    summaries.add(label + ": " + result.toSummary());
+                    List<String> problems = checkBattleboxResult(result, playerCount);
+                    if (!problems.isEmpty()) {
+                        failures.add(label + ": " + String.join("; ", problems));
+                    }
+                }
+            }
+        }
+
+        for (String summary : summaries) {
+            netLog.info("{}", summary);
+        }
+        Assert.assertTrue(failures.isEmpty(), "Battlebox network failures:\n" + String.join("\n", failures));
+    }
+
+    private static List<String> checkBattleboxResult(UnifiedNetworkHarness.GameResult result, int playerCount) {
+        List<String> problems = new ArrayList<>();
+        if (!result.gameStarted) {
+            problems.add("game did not start (" + result.errorMessage + ")");
+            return problems;
+        }
+        if (!result.gameCompleted) {
+            problems.add("game did not complete (" + result.errorMessage + ")");
+        }
+        if (result.deltaPacketsReceived == 0) {
+            problems.add("no delta packets received");
+        }
+        if (result.eventStateMismatches > 0) {
+            problems.add(result.eventStateMismatches + " event/state mismatches");
+        }
+        if (result.clientBattleboxOptionsMismatch != null) {
+            problems.add("lobby options not synced: " + result.clientBattleboxOptionsMismatch);
+        }
+        GameView gv = result.clientGameView;
+        if (gv == null) {
+            problems.add("client has no GameView");
+            return problems;
+        }
+        if (!gv.isBattlebox()) {
+            problems.add("client GameView.isBattlebox() is false");
+        }
+        if (gv.getPlayers() == null || gv.getPlayers().size() != playerCount) {
+            problems.add("client sees " + (gv.getPlayers() == null ? 0 : gv.getPlayers().size()) + " players");
+            return problems;
+        }
+        // Shared physical zones: every seat's view of them must hold the same cards.
+        for (ZoneType zone : new ZoneType[] {ZoneType.Library, ZoneType.Graveyard}) {
+            java.util.Set<Integer> reference = null;
+            for (PlayerView pv : gv.getPlayers()) {
+                java.util.Set<Integer> ids = new java.util.TreeSet<>();
+                FCollectionView<CardView> cards = pv.getCards(zone);
+                if (cards != null) {
+                    for (CardView cv : cards) {
+                        ids.add(cv.getId());
+                    }
+                }
+                if (reference == null) {
+                    reference = ids;
+                } else if (!reference.equals(ids)) {
+                    problems.add("client shared " + zone + " differs between seats ("
+                            + reference.size() + " vs " + ids.size() + " cards, " + pv.getName() + ")");
+                    break;
+                }
+            }
+        }
+        return problems;
     }
 
     @Test(timeOut = 150000, description = "UnifiedNetworkHarness local mode test")

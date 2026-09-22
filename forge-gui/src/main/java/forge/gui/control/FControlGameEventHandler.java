@@ -369,8 +369,7 @@ public class FControlGameEventHandler extends IGameEventVisitor.Base<Void> {
             // Battlebox uses physical library, command, and graveyard zones shared by every player view.
             if (event.zoneType() == ZoneType.Library || event.zoneType() == ZoneType.Command || event.zoneType() == ZoneType.Graveyard) {
                 final GameView gameView = matchController.getGameView();
-                if (gameView != null && gameView.getGame() != null
-                        && gameView.getGame().getRules().isBattlebox()
+                if (gameView != null && gameView.isBattlebox()
                         && gameView.getPlayers() != null) {
                     for (final PlayerView player : gameView.getPlayers()) {
                         updateZone(player, event.zoneType());
@@ -521,8 +520,7 @@ public class FControlGameEventHandler extends IGameEventVisitor.Base<Void> {
     public Void visit(final GameEventLandPlayed event) {
         processPlayer(event.player(), livesUpdate);
         final GameView gameView = matchController.getGameView();
-        if (gameView != null && gameView.getGame() != null
-                && gameView.getGame().getRules().isBattlebox()
+        if (gameView != null && gameView.isBattlebox()
                 && gameView.getPlayers() != null) {
             for (final PlayerView player : gameView.getPlayers()) {
                 updateZone(player, ZoneType.Command);

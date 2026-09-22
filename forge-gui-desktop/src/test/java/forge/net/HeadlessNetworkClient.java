@@ -363,14 +363,39 @@ public class HeadlessNetworkClient implements AutoCloseable, IHasForgeLog {
                 }
             }
             for (forge.game.event.GameEventCardTapped tapEvent : lastTapPerCard.values()) {
-                forge.game.card.CardView card = tapEvent.card();
-                if (card != null && card.getZone() == forge.game.zone.ZoneType.Battlefield && card.isTapped() != tapEvent.tapped()) {
+                // Compare against the card the client actually shows, not the event's CardView. The
+                // server sends an event card as a detached name-only snapshot whenever its tracker holds
+                // a different object for that id — i.e. for nearly every card that has changed zones —
+                // and a token that is tapped and sacrificed within one batch resolves to an orphan the
+                // client no longer lists anywhere. Neither carries meaningful zone/tapped props.
+                forge.game.card.CardView card = displayedBattlefieldCard(tapEvent.card());
+                if (card != null && card.isTapped() != tapEvent.tapped()) {
                     client.eventStateMismatches.incrementAndGet();
                     netLog.warn("[EventDeltaCheck] MISMATCH: GameEventCardTapped says tapped={} but CardView.isTapped()={} for {}",
                             tapEvent.tapped(), card.isTapped(), card);
                 }
             }
             super.handleGameEvents(events);
+        }
+
+        /** The client's canonical CardView for the event card, if it is listed on some battlefield; else null. */
+        private forge.game.card.CardView displayedBattlefieldCard(forge.game.card.CardView eventCard) {
+            forge.game.GameView gv = getGameView();
+            if (eventCard == null || gv == null || gv.getPlayers() == null) {
+                return null;
+            }
+            for (forge.game.player.PlayerView pv : gv.getPlayers()) {
+                forge.util.collect.FCollectionView<forge.game.card.CardView> field = pv.getCards(forge.game.zone.ZoneType.Battlefield);
+                if (field == null) {
+                    continue;
+                }
+                for (forge.game.card.CardView cv : field) {
+                    if (cv.getId() == eventCard.getId()) {
+                        return cv;
+                    }
+                }
+            }
+            return null;
         }
 
         @Override

@@ -2486,6 +2486,74 @@ Tests:
 > pinned on the event side (`ValidPlayer`, `ValidCause`, ...), not on the property side. Cards to
 > watch if more get added to the box: `Mode$ Discarded`, `Mode$ Milled`, `Mode$ ChangesZone` with a
 > `ValidCard$ ...YouCtrl` and no `ValidPlayer`.
+
+### TICKET-B009: Network (and internet) multiplayer for Battlebox Type 1/2 [DONE 2026-09-21 — manual test pending]
+
+Goal: host/join Battlebox (either type) over LAN or the internet with Monarch / Commanders /
+Planechase working.
+
+**Already worked, no change needed.** The 2026-09-09 upstream merge collapsed VLobby's local/network
+variant lists into one `vntBoxes`, so the online lobby already offers both Battlebox types and the
+options panel. The option flags ride in the serialized `GameLobbyData`; the host builds the match
+from its own copy. Battlebox uses slot 0's deck (`GameLobby.startGame`), remote seats need no deck.
+Remote players' actions resolve server-side in `PlayerControllerHuman`, and Battlebox code has no
+direct GUI calls, so shared graveyard / land station / commander pool actions go through the normal
+networked prompts. Server binds all interfaces on TCP 36743 (`NET_PORT`), UPnP pref `ASK`.
+
+**Fixed:**
+1. *Client-side shared-zone refresh.* `FControlGameEventHandler` fanned Battlebox zone refreshes out
+   to every seat only when `gameView.getGame() != null` — always null on a remote client (the host
+   forwards events; the client runs its own handler). Remote clients refreshed only the acting
+   seat's shared-zone panels (the B006 symptom, remote-only). Now keyed on a new serialized
+   `GameView.isBattlebox()` (`TrackableProperty.IsBattlebox`, set from `GameRules.isBattlebox()`).
+   `getGameType()` can't be used: the lobby path reports `Constructed` with Battlebox as a variant.
+2. *Live option toggles didn't reach clients.* `GameLobby.setBattlebox*Enabled` changed data without
+   `updateView()`. Now broadcasts (guarded on actual change so the checkbox echo can't loop).
+   Cosmetic for play (host is authoritative) but clients saw stale checkboxes.
+
+**Test:** `NetworkPlayIntegrationTest#testBattleboxNetworkMatrix` (stress-gated) over real TCP via
+`UnifiedNetworkHarness.battlebox(type, monarch, commanders, planechase)`. Knobs
+`-Dtest.battlebox.players/types/options/timeoutMs`. Checks completion, deltas, tap-state
+consistency, client lobby options == host (toggled after clients join), client `isBattlebox()`,
+and every seat's client view of the shared Library/Graveyard being identical.
+Results: 2p+4p × Type 1/2 × none/all, plus 2p each single option — all games completed.
+Ablation: removing the `updateView` calls fails the lobby-options check; restoring passes.
+Fix 1 is a display refresh — headless can only assert the flag reaches the client; the panel
+refresh itself needs the manual two-window test.
+
+**Harness changes worth knowing:** the harness never set the host lobby's `IUpdateable` listener
+(production `NetConnectUtil.host` does, and that listener is what broadcasts lobby changes), so
+host-side lobby edits after connect never reached clients in tests. Now mirrored.
+
+**Tap "event/state mismatch" was a check bug, not a desync — and the old check was blind.**
+Root cause is upstream netplay, not Battlebox (plain Constructed precons show the same pattern):
+server-side tracker registration is first-wins (`TrackableObjectType.lookup`/`updateObjLookup`
+only `putObj` when the id is absent), while every engine zone change makes a new `Card` + `CardView`.
+So for nearly every card that has moved zones, the server tracker holds a *different* object than
+the live view, `TrackableSerializer.replace` sets `preserveSnapshot`, and the client decodes the
+event card as a **detached name-only CardView** (zone=null, untapped, in no zone, not in tracker).
+The client's displayed board (zone lists + tracker instance) was correct in every inspected case.
+- The old check (`event.card().getZone() == Battlefield`) silently skipped all detached snapshots,
+  so it only ever compared fresh tokens — which, tapped+sacrificed within one batch, resolve to an
+  orphan frozen at their last reachable state (delta sync ships only reachable objects). All 34
+  original flags were such tokens (Treasure, Food, a planeswalker-made Black Lotus *token*).
+- Fix (`HeadlessNetworkClient`): resolve the event id to the card the client actually lists on a
+  battlefield and compare that. Verified: 0 mismatches over 4 Battlebox + 2 Constructed 2p games;
+  inverting the comparison fires 73× in one game, so the check genuinely inspects tapped cards.
+- UI impact: none observed. `FControlGameEventHandler.visit(GameEventCardTapped)` sets
+  `refreshFieldUpdate`, so fields redraw from the correct lists; `CMatchUI.updateCards` skips the
+  zone-null snapshot. Other handlers that read props off `event.card()` (e.g. attachment zone
+  updates) would see the snapshot — an upstream latent issue, not touched here.
+
+**Hosting over the internet:** public IPv4 + UPnP or a manual TCP 36743 forward works if not behind
+CGNAT (router WAN IP must equal the public IP). IPv6 works without NAT (open 36743 in the router's
+v6 firewall). Tailscale/ZeroTier otherwise. **Host and all clients must run the same fork build** —
+stock Forge can't deserialize `GameType.Battlebox*` or the fork's extra TrackableProperties, and
+the version check (`FServerManager` ~1129) only warns.
+
+> AGENT NOTE [2026-09-21]: open follow-ups — (a) make the version mismatch a hard refusal or add a
+> fork tag to the version string; (b) manual two-window test of fix 1 (station land play / shared
+> graveyard updating other seats' panels on the client) is William's.
 ---
 
 # PROJECT: SIMSTATS-INFRA

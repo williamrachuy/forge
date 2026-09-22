@@ -48,6 +48,7 @@ public class GameView extends TrackableObject {
         GameRules rules = game.getRules();
         set(TrackableProperty.IsCommander, rules.hasCommander());
         set(TrackableProperty.GameType, rules.getGameType());
+        set(TrackableProperty.IsBattlebox, rules.isBattlebox());
         set(TrackableProperty.PoisonCountersToLose, rules.getPoisonCountersToLose());
         set(TrackableProperty.NumGamesInMatch, rules.getGamesPerMatch());
 
@@ -79,6 +80,12 @@ public class GameView extends TrackableObject {
 
     public GameType getGameType() {
         return get(TrackableProperty.GameType);
+    }
+
+    /** Battlebox in either form (base game type or applied variant). Unlike {@code getGame().getRules()},
+     *  this survives serialization, so remote clients can see it. */
+    public boolean isBattlebox() {
+        return get(TrackableProperty.IsBattlebox);
     }
 
     public int getPoisonCountersToLose() {

@@ -1,6 +1,7 @@
 package forge.net;
 
 import forge.deck.Deck;
+import forge.deck.io.DeckSerializer;
 import forge.game.Game;
 import forge.game.GameOutcome;
 import forge.game.GameType;
@@ -20,6 +21,8 @@ import forge.gamemodes.net.server.FServerManager;
 import forge.gamemodes.net.server.RemoteClient;
 import forge.gamemodes.net.server.ServerGameLobby;
 import forge.interfaces.ILobbyListener;
+import forge.interfaces.IUpdateable;
+import forge.localinstance.properties.ForgeConstants;
 
 import forge.net.analysis.GameLogMetrics;
 import forge.net.analysis.NetworkLogAnalyzer;
@@ -68,6 +71,10 @@ public class UnifiedNetworkHarness implements IHasForgeLog {
     private int specifiedPort = -1; // -1 means auto-allocate
     private boolean useAiForRemotePlayers = true;
     private boolean commander = false;
+    private GameType battleboxType = null; // Battlebox or Battlebox2; null = not a Battlebox game
+    private boolean battleboxMonarch = false;
+    private boolean battleboxCommanders = false;
+    private boolean battleboxPlanechase = false;
     private List<Deck> decks = null;
 
     // Runtime state
@@ -131,6 +138,56 @@ public class UnifiedNetworkHarness implements IHasForgeLog {
         return this;
     }
 
+    /**
+     * Play Battlebox (Type 1 or 2) off the user's battlebox deck folder
+     * (BattleBox.dck / BattleBoxType2.dck). Only slot 0 gets the deck, as in a real lobby.
+     * In network mode the options are toggled after the clients join, so the run also checks
+     * that live option changes reach the clients' lobbies.
+     */
+    public UnifiedNetworkHarness battlebox(GameType type, boolean monarch, boolean commanders, boolean planechase) {
+        if (!type.isBattlebox()) {
+            throw new IllegalArgumentException("Not a Battlebox type: " + type);
+        }
+        this.battleboxType = type;
+        this.battleboxMonarch = monarch;
+        this.battleboxCommanders = commanders;
+        this.battleboxPlanechase = planechase;
+        return this;
+    }
+
+    private String formatName() {
+        if (battleboxType != null) {
+            return (battleboxType == GameType.Battlebox2 ? "Battlebox2" : "Battlebox")
+                    + (battleboxMonarch ? "+Monarch" : "")
+                    + (battleboxCommanders ? "+Commanders" : "")
+                    + (battleboxPlanechase ? "+Planechase" : "");
+        }
+        return commander ? "Commander" : "Constructed";
+    }
+
+    private static String deckName(Deck deck) {
+        return deck == null ? "(shared Battlebox library)" : deck.getName();
+    }
+
+    private void applyBattleboxOptions() {
+        lobby.setBattleboxMonarchEnabled(battleboxMonarch);
+        lobby.setBattleboxCommandersEnabled(battleboxCommanders);
+        lobby.setBattleboxPlanechaseEnabled(battleboxPlanechase);
+    }
+
+    private static Deck loadBattleboxDeck(GameType type) {
+        File deckFile = new File(ForgeConstants.DECK_BATTLEBOX_DIR
+                + (type == GameType.Battlebox2 ? "BattleBoxType2.dck" : "BattleBox.dck"));
+        if (type == GameType.Battlebox2 && !deckFile.isFile()) {
+            // Type 2 ignores [LandStation], so a Type 1 deck plays fine as Type 2.
+            deckFile = new File(ForgeConstants.DECK_BATTLEBOX_DIR + "BattleBox.dck");
+        }
+        if (!deckFile.isFile()) {
+            throw new IllegalStateException("Battlebox deck not found: " + deckFile);
+        }
+        return DeckSerializer.fromFile(deckFile);
+    }
+
     /** If not set, random precon decks are used. */
     public UnifiedNetworkHarness decks(List<Deck> decks) {
         this.decks = decks;
@@ -163,8 +220,8 @@ public class UnifiedNetworkHarness implements IHasForgeLog {
         GameResult result = new GameResult();
         result.playerCount = playerCount;
         result.remoteClientCount = 0;
-        result.description = playerCount + "-player local AI" + (commander ? " Commander" : "");
-        result.gameFormat = commander ? "Commander" : "Constructed";
+        result.description = playerCount + "-player local AI " + formatName();
+        result.gameFormat = formatName();
         long startTime = System.currentTimeMillis();
 
         try {
@@ -193,6 +250,14 @@ public class UnifiedNetworkHarness implements IHasForgeLog {
                 lobby.applyVariant(GameType.Commander);
                 netLog.info("Applied Commander variant");
             }
+            if (battleboxType != null) {
+                lobby.applyVariant(battleboxType);
+                netLog.info("Applied {} variant", battleboxType);
+            }
+
+            if (battleboxType != null) {
+                applyBattleboxOptions();
+            }
 
             // 3. Configure all slots as AI with decks
             List<Deck> gameDecks = getDecks(playerCount);
@@ -200,7 +265,7 @@ public class UnifiedNetworkHarness implements IHasForgeLog {
 
             for (int i = 0; i < playerCount; i++) {
                 Deck deck = gameDecks.get(i);
-                result.deckNames.add(deck.getName());
+                result.deckNames.add(deckName(deck));
 
                 LobbySlot slot = lobby.getSlot(i);
                 slot.setType(LobbySlotType.AI);
@@ -209,7 +274,7 @@ public class UnifiedNetworkHarness implements IHasForgeLog {
                 slot.setIsReady(true);
 
                 netLog.info("Configured slot {}: {} with deck: {}",
-                        i, PLAYER_NAMES[i], deck.getName());
+                        i, PLAYER_NAMES[i], deckName(deck));
             }
 
             // 4. Start game
@@ -250,8 +315,8 @@ public class UnifiedNetworkHarness implements IHasForgeLog {
         GameResult result = new GameResult();
         result.playerCount = playerCount;
         result.remoteClientCount = remoteClientCount;
-        result.description = playerCount + "-player network" + (commander ? " Commander" : "");
-        result.gameFormat = commander ? "Commander" : "Constructed";
+        result.description = playerCount + "-player network " + formatName();
+        result.gameFormat = formatName();
         long startTime = System.currentTimeMillis();
 
         AtomicInteger successfulConnections = new AtomicInteger(0);
@@ -286,6 +351,10 @@ public class UnifiedNetworkHarness implements IHasForgeLog {
                 lobby.applyVariant(GameType.Commander);
                 netLog.info("Applied Commander variant");
             }
+            if (battleboxType != null) {
+                lobby.applyVariant(battleboxType);
+                netLog.info("Applied {} variant", battleboxType);
+            }
 
             // 3. Configure player slots
             List<Deck> gameDecks = getDecks(playerCount);
@@ -293,7 +362,7 @@ public class UnifiedNetworkHarness implements IHasForgeLog {
 
             for (int i = 0; i < playerCount; i++) {
                 Deck deck = gameDecks.get(i);
-                result.deckNames.add(deck.getName());
+                result.deckNames.add(deckName(deck));
 
                 LobbySlot slot = lobby.getSlot(i);
                 if (i == 0) {
@@ -303,14 +372,14 @@ public class UnifiedNetworkHarness implements IHasForgeLog {
                     slot.setDeck(deck);
                     slot.setIsReady(true);
                     netLog.info("Slot 0: {} (AI host) with {}",
-                            PLAYER_NAMES[0], deck.getName());
+                            PLAYER_NAMES[0], deckName(deck));
                 } else if (i <= remoteClientCount) {
                     // Remote client slots - stay OPEN, deck pre-loaded
                     slot.setType(LobbySlotType.OPEN);
                     slot.setDeck(deck);
                     slot.setIsReady(false);
                     netLog.info("Slot {}: OPEN for remote client (deck: {})",
-                            i, deck.getName());
+                            i, deckName(deck));
                 } else {
                     // Additional local AI slots
                     slot.setType(LobbySlotType.AI);
@@ -318,7 +387,7 @@ public class UnifiedNetworkHarness implements IHasForgeLog {
                     slot.setDeck(deck);
                     slot.setIsReady(true);
                     netLog.info("Slot {}: {} (AI) with {}",
-                            i, PLAYER_NAMES[i], deck.getName());
+                            i, PLAYER_NAMES[i], deckName(deck));
                 }
             }
 
@@ -361,6 +430,13 @@ public class UnifiedNetworkHarness implements IHasForgeLog {
 
             // Brief pause for server to process ready states
             Thread.sleep(1000);
+
+            if (battleboxType != null) {
+                // Toggle the options now that clients are in the lobby, the way a host would.
+                applyBattleboxOptions();
+                Thread.sleep(1000);
+                result.clientBattleboxOptionsMismatch = checkClientBattleboxOptions();
+            }
 
             // 6. Start game
             logLobbyState();
@@ -474,7 +550,37 @@ public class UnifiedNetworkHarness implements IHasForgeLog {
         }
     }
 
+    /** @return null if every connected client's lobby shows the host's Battlebox options, else a description. */
+    private String checkClientBattleboxOptions() {
+        synchronized (remoteClients) {
+            for (HeadlessNetworkClient client : remoteClients) {
+                ClientGameLobby clientLobby = client.getLobby();
+                if (clientLobby == null) {
+                    return "client has no lobby";
+                }
+                if (clientLobby.isBattleboxMonarchEnabled() != battleboxMonarch
+                        || clientLobby.isBattleboxCommandersEnabled() != battleboxCommanders
+                        || clientLobby.isBattleboxPlanechaseEnabled() != battleboxPlanechase) {
+                    return String.format("client lobby options monarch=%s commanders=%s planechase=%s, host monarch=%s commanders=%s planechase=%s",
+                            clientLobby.isBattleboxMonarchEnabled(), clientLobby.isBattleboxCommandersEnabled(),
+                            clientLobby.isBattleboxPlanechaseEnabled(),
+                            battleboxMonarch, battleboxCommanders, battleboxPlanechase);
+                }
+            }
+        }
+        return null;
+    }
+
     private List<Deck> getDecks(int count) {
+        if (battleboxType != null) {
+            // Only slot 0's deck is used; the other seats draw from the shared library.
+            List<Deck> result = new ArrayList<>();
+            result.add(loadBattleboxDeck(battleboxType));
+            for (int i = 1; i < count; i++) {
+                result.add(null);
+            }
+            return result;
+        }
         if (decks != null && decks.size() >= count) {
             return decks.subList(0, count);
         }
@@ -487,6 +593,15 @@ public class UnifiedNetworkHarness implements IHasForgeLog {
     }
 
     private void setupLobbyListener() {
+        // Mirror NetConnectUtil.host: lobby changes on the host are broadcast to clients.
+        lobby.setListener(new IUpdateable() {
+            @Override
+            public void update(boolean fullUpdate) {
+                server.updateLobbyState();
+            }
+            @Override
+            public void update(int slot, LobbySlotType type) {}
+        });
         server.setLobbyListener(new ILobbyListener() {
             @Override
             public void update(GameLobbyData state, int slot) {
@@ -770,6 +885,8 @@ public class UnifiedNetworkHarness implements IHasForgeLog {
         public boolean clientOpenViewCalled;
         public int clientSetGameViewCount;
         public GameView clientGameView;
+        /** Battlebox network runs: null when clients saw the host's live option changes. */
+        public String clientBattleboxOptionsMismatch;
 
         // Deck information
         public List<String> deckNames = new ArrayList<>();
