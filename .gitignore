@@ -114,3 +114,6 @@ diag/
 # EDHREC commander matrix tool intermediates
 forge-gui/tools/build
 forge-gui-ios/robovm.properties
+
+# tools/package_friends.sh output
+/dist/
