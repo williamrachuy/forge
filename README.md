@@ -1,96 +1,123 @@
-# ⚔️  Forge: The Magic: The Gathering Rules Engine
+# ⚔️  Forge Battlebox
 
-Join the **Forge community** on [Discord](https://discord.gg/HcPJNyD66a)!
+A fork of [**Card-Forge/forge**](https://github.com/Card-Forge/forge) that adds **Battlebox** as a first-class game variant, playable against the AI or with friends over the network.
 
-[![Test build](https://github.com/Card-Forge/forge/actions/workflows/test-build.yaml/badge.svg)](https://github.com/Card-Forge/forge/actions/workflows/test-build.yaml)
+[![Latest release](https://img.shields.io/github/v/release/williamrachuy/forge?style=flat-square&label=release)](https://github.com/williamrachuy/forge/releases/latest)
 
 ---
 
 ## ✨ Introduction
-**Forge** is a dynamic and open-source **Rules Engine** tailored for **Magic: The Gathering** enthusiasts. Developed by a community of passionate programmers, Forge allows players to explore the rich universe of MTG through a flexible, engaging platform. 
+**Battlebox** is a shared-pool way to play Magic: instead of bringing your own deck, every player draws from **one communal library** built from a single curated box of cards, plays lands from a **shared land station**, and fights over a **shared graveyard**. Nobody out-builds anyone; the game is decided at the table.
 
-**Note:** Forge operates independently and is not affiliated with Wizards of the Coast.
+Everything else — the rules engine, cards, AI, and all of Forge's other modes — comes from the original project. For Forge itself, see the [Card-Forge repository](https://github.com/Card-Forge/forge), its [User Guide](https://github.com/Card-Forge/forge/wiki/User-Guide), and the Forge [Discord](https://discord.gg/HcPJNyD66a).
+
+**Note:** Forge operates independently and is not affiliated with Wizards of the Coast. This fork is not an official Forge release — please report Battlebox issues here, not upstream.
 
 ---
 
 ## 🌟 Key Features
-- **🌐 Cross-Platform Support:** Play on **Windows, Mac, Linux,** and **Android**.
-- **🔧 Extensible Architecture:** Built in **Java**, Forge encourages developers to contribute by adding features and cards.
-- **🎮 Versatile Gameplay:** Dive into single-player modes or challenge opponents online!
+- **📚 Shared Library:** One library for the whole table, sampled fresh from the box each game. A card becomes yours when you draw it.
+- **🏞️ Land Station:** Lands aren't drawn — each player may play them from a shared pool in the command zone.
+- **🪦 Shared Graveyard:** One graveyard for everyone; graveyard effects can reach anything that died, whoever it belonged to.
+- **👑 Optional Monarch, Commanders & Planechase:** Toggle each from the lobby.
+- **🌐 Network Play:** Host or join Battlebox games over LAN or the internet, 2–4 players, with AI filling empty seats.
+- **🧩 Deck-File Configuration:** Life totals, hand sizes, library size and land seeding live in the Battlebox deck file — no code changes to tune the format.
+
+---
+
+## 🎲 Battlebox Formats
+
+### 🅰️ Type 1 — Curated Land Station
+The land station is the box's own `[LandStation]` section, plus one extra set of basic lands for each player beyond the second.
+
+### 🅱️ Type 2 — Basic Land Station
+The `[LandStation]` section is ignored. The station is **one of each basic land per player** (2 players = 10 lands, 3 = 15, 4 = 20), using the prints chosen in the deck's `[BasicLandsSet]`.
+
+Everything else — shared library, shared graveyard, options, and deck metadata — is identical between the two types.
+
+### ⚙️ Options
+Set by the host in the lobby's **Battlebox Options** panel:
+- **Play with Monarch** — the first player to deal combat damage to an opponent becomes the monarch.
+- **Play with Commanders** — the box's `[Commanders]` pool sits in the shared command zone; each player may claim and cast **one** commander per game.
+- **Play with Planechase** — the table shares a planar deck built from the box's `[Planechase]` section.
 
 ---
 
 ## 🛠️ Installation Steps
 
-### 📥 Desktop
-1. **Latest Releases:** Download the latest version [here](https://github.com/Card-Forge/forge/releases/latest).
-2. **Snapshot Build:** For the latest development version, grab the `forge-gui-desktop` tarball from our [Snapshot Build](https://github.com/Card-Forge/forge/releases/tag/daily-snapshots).
-   - **Tip:** Extract to a new folder to prevent version conflicts.
-3. **User Data Management:** Previous players’ data is preserved during upgrades.
-4. **Java Requirement:** Ensure you have **Java 17 or later** installed.
+### 📥 Desktop (Windows, Linux, macOS)
+1. **Latest Release:** Download `Forge-Battlebox-<version>.zip` from the [Releases page](https://github.com/williamrachuy/forge/releases/latest).
+2. **Java Requirement:** Install **Java 17 or later**, 64-bit ([Temurin 21](https://adoptium.net) recommended).
+3. **Extract:** Unzip to a folder you own (not *Program Files*) — Forge writes files next to itself.
+4. **Launch:** Run `forge.exe` or `forge.cmd` on Windows, `forge.sh` on Linux/macOS.
+   - **Tip:** Windows SmartScreen may warn about the unsigned exe — choose *More info* → *Run anyway*.
 
-### 📱 Android
-- _(Note: **Android 11** is the minimum requirement with at least **6GB RAM** to run smoothly. You need to enable **"Install unknown apps"** for Forge to initialize and update itself)_
-- Download the **APK** from the [Snapshot Build](https://github.com/Card-Forge/forge/releases/tag/daily-snapshots). On the first launch, Forge will automatically download all necessary assets.
-
-### 📱 iOS (early stage)
-- Build the **IPA** according to Wiki
-- No jailbreak needed, only developer mode and iOS 16-26
-- Connect your device to a PC to self-sign and upload the app file, multiple tools exist e.g. [Sideloadly](https://sideloadly.io)
+Full steps are in `README.txt` inside the zip.
 
 ---
 
-## 🎮 Modes of Play
-Forge offers various exciting gameplay options:
+## 🎮 Playing Battlebox
 
-### 🌍 Adventure Mode
-Embark on a thrilling single-player journey where you can:
-- Explore an overworld map.
-- Challenge diverse AI opponents.
-- Collect cards and items to boost your abilities.
+### 🧑‍💻 Against the AI
+1. Put a Battlebox deck in your Forge decks folder under `battlebox/` (`%APPDATA%\Forge\decks\battlebox\` on Windows, `~/.forge/decks/battlebox/` on Linux). The release zip ships ready-made decks in `battlebox-decks/`.
+2. In **Constructed**, tick **Battlebox** or **Battlebox Type 2** under variants.
+3. Pick the Battlebox deck for the first player — the other seats draw from the same shared library, so they need no deck.
+4. Choose your options and start.
 
-<img width="1282" height="752" alt="Shandalar World" src="https://github.com/user-attachments/assets/9af31471-d688-442f-9418-9807d8635b72" />
+### 🌐 Online Multiplayer
+- **Host:** *Online Multiplayer* → *Host a Game*, apply a Battlebox variant, and pick the deck. Only the host needs the deck file.
+- **Join:** *Online Multiplayer* → *Join a Game* and enter the host's address, e.g. `203.0.113.7:36743`.
+- **Reaching the host:** allow incoming **TCP 36743** (UPnP or a router port forward), or use a VPN such as Tailscale or ZeroTier when the host is behind carrier-grade NAT.
+- **⚠️ Same build required:** every player must run the **same release** as the host — compare the `version` and `commit` lines in `BUILD.txt`. An official Forge build will not connect to a Battlebox game.
 
-### 🔍 Quest Mode
-Engage in focused gameplay without the overworld exploration—perfect for quick sessions!
+### 📦 Deck File Format
+A Battlebox deck is a normal `.dck` file with extra sections and metadata:
 
-<img width="1282" height="752" alt="Quest Duels" src="https://github.com/user-attachments/assets/b9613b1c-e8c3-4320-8044-6922c519aad4" />
+| Section            | Purpose                                                        |
+|--------------------|----------------------------------------------------------------|
+| **`[metadata]`**   | Format settings (see below)                                    |
+| **`[Main]`**       | The box — the shared library is sampled from here each game    |
+| **`[LandStation]`**| Type 1 land station (lands only)                               |
+| **`[BasicLandsSet]`** | Basic land prints used for seeding and the Type 2 station   |
+| **`[Commanders]`** | Commander pool for the *Play with Commanders* option           |
+| **`[Planechase]`** | Planar deck for the *Play with Planechase* option              |
 
-### 🤖 AI Formats
-Test your skills against AI in multiple formats:
-- **Sealed**
-- **Draft**
-- **Commander**
-- **Cube**
+| Metadata key                 | Default | Meaning                                                   |
+|------------------------------|---------|-----------------------------------------------------------|
+| `BattleboxStartingLife`      | 20      | Starting life                                             |
+| `CommanderStartingLife`      | = life  | Starting life when commanders are enabled                 |
+| `BattleboxStartingHandSize`  | 7       | Opening hand size                                         |
+| `BattleboxMaxHandSize`       | 7       | Maximum hand size                                         |
+| `PlayerLibrarySize`          | 40      | Library cards contributed per player                      |
+| `CommanderPlayerLibrarySize` | = size  | Per-player library size when commanders are enabled       |
+| `SeedBasicLands`             | true    | Add one of each basic per player to the shared library    |
 
-For comprehensive gameplay instructions, visit our [User Guide](https://github.com/Card-Forge/forge/wiki/User-Guide).
+`= life` / `= size`: falls back to `BattleboxStartingLife` / `PlayerLibrarySize`.
 
-<img width="1282" height="752" alt="Sealed" src="https://github.com/user-attachments/assets/ae603dbd-4421-4753-a333-87cb0a28d772" />
+Invalid setups (for example a library larger than the box, or non-lands in the station) are rejected in the lobby with a clear error, before the match starts.
 
 ---
 
-## 💬 Support & Community
-Need help? Join our vibrant Discord community! 
-- 📜 Read the **#rules** and explore the **FAQ**.
-- ❓ Ask your questions in the **#help** channel for assistance.
+## 🧱 Building From Source
+Requires **Java 17+** and **Maven 3.9+**.
+```bash
+mvn -pl forge-gui-desktop -am -DskipTests package
+```
+To produce the same single-zip package as the releases (and optionally publish one with the GitHub CLI):
+```bash
+tools/package_friends.sh              # build + zip into dist/
+tools/package_friends.sh --release    # build + zip + GitHub release (clean, pushed tree required)
+```
 
 ---
 
-## 🤝 Contributing to Forge
-We love community contributions! Interested in helping? Check out our [Contributing Guidelines](CONTRIBUTING.md) for details on how to get started.
+## 🤝 Contributing
+Battlebox issues and pull requests are welcome here. For anything that isn't Battlebox-specific — card scripts, rules, the AI, other game modes — please contribute to [Card-Forge/forge](https://github.com/Card-Forge/forge) following its [Contributing Guidelines](CONTRIBUTING.md).
 
 ---
 
-## ℹ️ About Forge
-Forge aims to deliver an immersive and customizable Magic: The Gathering experience for fans around the world. 
-
-### 📊 Repository Statistics
-
-| Metric         | Count                                                       |
-|----------------|-------------------------------------------------------------|
-| **⭐ Stars:**   | [![GitHub stars](https://img.shields.io/github/stars/Card-Forge/forge?style=flat-square)](https://github.com/Card-Forge/forge/stargazers) |
-| **🍴 Forks:**   | [![GitHub forks](https://img.shields.io/github/forks/Card-Forge/forge?style=flat-square)](https://github.com/Card-Forge/forge/network) |
-| **👥 Contributors:** | [![GitHub contributors](https://img.shields.io/github/contributors/Card-Forge/forge?style=flat-square)](https://github.com/Card-Forge/forge/graphs/contributors) |
+## ℹ️ About This Fork
+This fork tracks upstream Forge and periodically merges it in, so cards and rules fixes from the Forge community arrive here too. All credit for Forge belongs to the [Card-Forge contributors](https://github.com/Card-Forge/forge/graphs/contributors).
 
 ---
 
