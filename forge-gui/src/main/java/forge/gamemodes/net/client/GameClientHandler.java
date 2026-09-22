@@ -11,6 +11,7 @@ import forge.util.IHasForgeLog;
 import forge.gamemodes.net.IRemote;
 import forge.gamemodes.net.ProtocolMethod;
 import forge.gamemodes.net.ReplyPool;
+import forge.gamemodes.net.WireFingerprint;
 import forge.gamemodes.net.event.LoginEvent;
 import forge.gamemodes.net.server.RemoteClientGuiGame;
 import forge.gui.interfaces.IGuiGame;
@@ -230,7 +231,8 @@ final class GameClientHandler extends GameProtocolHandler<IGuiGame> implements I
                 Integer.parseInt(FModel.getPreferences().getPref(FPref.UI_AVATARS).split(",")[0]),
                 Integer.parseInt(FModel.getPreferences().getPref(FPref.UI_SLEEVES).split(",")[0]),
                 BuildInfo.getVersionString(),
-                GuiBase.getInterface().isLibgdxPort()
+                GuiBase.getInterface().isLibgdxPort(),
+                WireFingerprint.get()
         ));
     }
 

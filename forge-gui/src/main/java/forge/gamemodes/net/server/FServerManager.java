@@ -17,6 +17,7 @@ import forge.gamemodes.net.CompatibleObjectDecoder;
 import forge.gamemodes.net.CompatibleObjectEncoder;
 import forge.gamemodes.net.EventPhase;
 import forge.gamemodes.net.NetworkLogConfig;
+import forge.gamemodes.net.WireFingerprint;
 import forge.gamemodes.net.draft.BoosterDraftHost;
 import forge.util.IHasForgeLog;
 import forge.gamemodes.net.event.*;
@@ -1074,6 +1075,22 @@ public final class FServerManager implements IHasForgeLog {
                 // lookup in agreement.
                 final String username = LogSafe.forDisplay(event.getUsername(), maxNameLength());
                 client.setUsername(username);
+
+                // Refuse builds that can't decode this host's game state. Checked before the
+                // reconnect lookup so a rejected client can't consume a parked reconnect slot.
+                final String clientWire = event.getWireFingerprint();
+                if (!WireFingerprint.get().equals(clientWire)) {
+                    netLog.warn("Refusing {}: wire fingerprint {} (host {}), version {} (host {})",
+                            username, clientWire, WireFingerprint.get(),
+                            LogSafe.forDisplay(event.getVersion(), 64), BuildInfo.getVersionString());
+                    ctx.channel().writeAndFlush(MessageEvent.warning(String.format(
+                            "Connection refused: your Forge build (%s, wire %s) is not compatible with the host's "
+                            + "(%s, wire %s). Everyone must run the same Forge build as the host.",
+                            LogSafe.forDisplay(event.getVersion(), 64), clientWire == null ? "none" : LogSafe.forDisplay(clientWire, 32),
+                            BuildInfo.getVersionString(), WireFingerprint.get())))
+                            .addListener(ChannelFutureListener.CLOSE);
+                    return;
+                }
 
                 // Check if this is a reconnecting player
                 final RemoteClient disconnected = disconnectedClients.remove(username);

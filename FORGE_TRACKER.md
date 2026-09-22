@@ -2587,6 +2587,20 @@ the version check (`FServerManager` ~1129) only warns.
 > AGENT NOTE [2026-09-21]: open follow-ups — (a) make the version mismatch a hard refusal or add a
 > fork tag to the version string; (b) manual two-window test of fix 1 (station land play / shared
 > graveyard updating other seats' panels on the client) is William's.
+
+**Follow-up (a) done 2026-09-22 — wire-fingerprint login gate.** An exact version-string refusal
+would be wrong: `BuildInfo.getVersionString()` carries a per-build local counter, so two builds of
+the same commit differ. What must match is the wire format, so `forge.gamemodes.net.WireFingerprint`
+hashes the ordered names of the enums that travel by name or ordinal (`TrackableProperty`,
+`GameType`, `ZoneType`, `PhaseType`, `CardStateName`). `LoginEvent` carries it (new field, same
+serialVersionUID so a stock/older client's login still deserializes with null), and
+`FServerManager` refuses a missing/different fingerprint *before* the reconnect lookup and seat
+assignment, telling the client why (both builds + fingerprints). The old version-mismatch warning
+stays for same-wire builds. Verified live: matching client plays a full game; a client sending a
+bogus fingerprint is refused with the message and never gets a seat.
+**Consequence:** this changes the login protocol, so hosts on this build refuse `2.0.15-bb.1`
+clients — released as `2.0.15-bb.2`. Any future change to those enums (e.g. a new TrackableProperty)
+likewise needs everyone on the new release, which the gate now enforces instead of desyncing.
 ---
 
 # PROJECT: SIMSTATS-INFRA
