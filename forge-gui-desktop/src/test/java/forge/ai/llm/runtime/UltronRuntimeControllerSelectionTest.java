@@ -37,7 +37,8 @@ public class UltronRuntimeControllerSelectionTest extends AITest {
 
         List<SpellAbility> pruned = UltronCandidatePruner.prune(List.of(filler), ctx);
 
-        Assert.assertTrue(ctx.intent.avoidTappingOut, "Ahead-state setup should preserve mana");
+        // No avoidTappingOut precondition: TICKET-118 stopped CONTROL from setting it. Filler
+        // pruning is keyed on the role (and board value), which is what this test is about.
         Assert.assertEquals(ctx.intent.role, UltronRuntimeRole.CONTROL);
         Assert.assertTrue(pruned.isEmpty(), "Small candidate lists should still honor filler pruning");
     }
@@ -53,6 +54,9 @@ public class UltronRuntimeControllerSelectionTest extends AITest {
         addCard("Runeclaw Bear", opponent);
 
         SpellAbility filler = candidateFromHand("Savannah Lions", ultron);
+        // TICKET-118: an ahead/control Ultron only holds mana when it has a counterspell to hold
+        // it for; without one, an all-pruned list falls back to Forge instead of passing.
+        addCardToZone("Counterspell", ultron, ZoneType.Hand);
         UltronRuntimeController runtime = UltronRuntimeController.getOrCreate(
                 game, ultron, new AiCardMemory());
 

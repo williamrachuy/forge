@@ -2487,6 +2487,39 @@ Tests:
 > watch if more get added to the box: `Mode$ Discarded`, `Mode$ Milled`, `Mode$ ChangesZone` with a
 > `ValidCard$ ...YouCtrl` and no `ValidPlayer`.
 
+### TICKET-B010: CI green — the 10 long-standing test failures [DONE 2026-09-22]
+
+GitHub Actions `Test build` (`mvn -U -B clean test`) had failed on every fork run, dying in
+forge-game; Maven's stop-at-first-module hid 10 more failures in forge-gui-desktop. All were
+stale tests, not product bugs. Nothing in main code changed.
+
+- **forge-game `BattleboxCommandersTest`** — added cards by name without a card DB (forge-game tests
+  never load StaticData → NPE). Moved to `forge-gui-desktop/.../game/BattleboxConfigCommandersTest`
+  with the standard `FModel.initialize` setup.
+- **forge-game `BattleboxCommandersCastingTest`** — deleted. It asserted nothing, gave both players an
+  empty `new Deck()`, had no player controllers, and waited on a `DEBUG: AI CASTING COMMANDER`
+  println that no longer exists anywhere in production code.
+- **`forge.ai.BattleboxCommandersTest`** — was never a Battlebox game (plain Constructed, no shared
+  command zone). Rewritten to build a real Battlebox game from an in-test deck (runs in CI, unlike
+  tests reading `~/.forge/decks`) via `Match.prepareAllZones`. Ablation: commanders off → fails.
+- **`AiDeckStatisticsCacheTest`** — upstream #11440 added an `AiCache` layer in `fromPlayer()` in
+  front of the fork's `fromDeck()` cache, so the `getCallCount()==25` assertion can't hold. Dropped
+  it; the one-compute / same-instance assertions (the real TICKET-V3-207 guard) remain.
+- **8 `forge.ai.llm.runtime.Ultron*` tests** — encoded the pre-TICKET-118 posture. TICKET-118 made
+  CONTROL/AHEAD stop setting `avoidTappingOut` (and CONTROL/PRESSURING set `lookForLethal`), 86bf891
+  made an all-pruned list PASS only with a reason to hold mana (else FALLBACK), and TICKET-116 moved
+  thresholds to preferred-target <=13 / escalation <=8. Setups updated to the current design, each
+  test keeping its purpose: a Counterspell in hand gives state A a real reason to hold mana
+  (4 cache-invalidation tests + runtime selection); the pruning test drops its stale
+  `avoidTappingOut` precondition; the tap-out-penalty test compares COMBO_DEFENSE (10 Sol Rings →
+  comboThreat 50) vs STABILIZING; the combat test uses a neutral table (role AHEAD) with the
+  vulnerable player at 10 life. Note "ahead" = board value >1.25x the *average* opponent, so empty
+  seats in 4p fixtures make a modest board read as dominant.
+
+> AGENT NOTE [2026-09-22]: the known-failure lists under B005/B006 are obsolete as of this ticket.
+> Local full runs: use `-Dmaven.test.failure.ignore=true` to see every module's failures in one pass,
+> and don't use `-o` right after an upstream merge (new dependency versions, e.g. libGDX 1.14.2).
+
 ### TICKET-B009: Network (and internet) multiplayer for Battlebox Type 1/2 [DONE 2026-09-21 — manual test pending]
 
 Goal: host/join Battlebox (either type) over LAN or the internet with Monarch / Commanders /

@@ -87,18 +87,23 @@ public class UltronMainPhasePolicyTest extends AITest {
     }
 
     @Test
-    public void testTapOutRiskPenaltyIsHigherWhenAheadThanWhenStabilizing() {
+    public void testTapOutRiskPenaltyIsHigherInComboDefenseThanWhenStabilizing() {
         Game aheadGame = createFourPlayerGame();
         Player aheadUltron = aheadGame.getPlayers().get(0);
         Player aheadOpponent = aheadGame.getPlayers().get(1);
 
+        // TICKET-118: only COMBO_DEFENSE still sets avoidTappingOut (the tap-out penalty's gate);
+        // an ahead/control Ultron no longer does. Ten artifacts put the opponent at comboThreat 50.
         addCards("Grizzly Bears", 5, aheadUltron);
         addCards("Forest", 4, aheadUltron);
         addCard("Runeclaw Bear", aheadOpponent);
+        addCards("Sol Ring", 10, aheadOpponent);
         candidateFromHand("Counterspell", aheadUltron);
         SpellAbility hillGiantAhead = candidateFromHand("Hill Giant", aheadUltron);
 
         UltronDecisionContext aheadCtx = contextFor(aheadGame, aheadUltron, List.of(hillGiantAhead));
+        Assert.assertEquals(aheadCtx.intent.role, UltronRuntimeRole.COMBO_DEFENSE,
+                "This setup should place Ultron in the hold-mana combo-defense role");
         UltronManaReservation aheadReservation = UltronManaReservationPolicy.compute(aheadCtx);
         UltronScore aheadScore = UltronActionScorer.score(hillGiantAhead, aheadCtx, aheadReservation);
 
@@ -123,7 +128,7 @@ public class UltronMainPhasePolicyTest extends AITest {
         UltronScore desperateScore = UltronActionScorer.score(hillGiantDesperate, desperateCtx, desperateReservation);
 
         Assert.assertTrue(aheadScore.reason.contains("tap-out-risk"),
-                "Ahead scoring should record the tap-out penalty");
+                "Combo-defense scoring should record the tap-out penalty");
         Assert.assertTrue(desperateScore.value > aheadScore.value,
                 "Stabilizing mode should relax the tap-out penalty for the same stabilizing-sized play");
     }

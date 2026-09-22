@@ -1,14 +1,39 @@
 package forge.game;
 
+import forge.GuiDesktop;
 import forge.deck.CardPool;
 import forge.deck.Deck;
 import forge.deck.DeckSection;
+import forge.gui.GuiBase;
+import forge.localinstance.properties.ForgePreferences.FPref;
+import forge.model.FModel;
 import org.testng.Assert;
+import org.testng.annotations.BeforeClass;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
-public class BattleboxCommandersTest {
+/**
+ * BattleboxConfig reads the [Commanders] and [LandStation] sections of a Battlebox deck. Lives in
+ * forge-gui-desktop because adding cards by name needs the card database, which forge-game's tests
+ * never load.
+ */
+public class BattleboxConfigCommandersTest {
+    private static boolean initialized = false;
+
     private Deck testDeck;
+
+    @BeforeClass
+    public static void init() {
+        if (!initialized) {
+            GuiBase.setInterface(new GuiDesktop());
+            FModel.initialize(null, preferences -> {
+                preferences.setPref(FPref.LOAD_CARD_SCRIPTS_LAZILY, false);
+                preferences.setPref(FPref.UI_LANGUAGE, "en-US");
+                return null;
+            });
+            initialized = true;
+        }
+    }
 
     @BeforeMethod
     public void setUp() {

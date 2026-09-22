@@ -28,22 +28,32 @@ public class UltronCombatPolicyTest extends AITest {
         Player leader = game.getPlayers().get(1);
         Player vulnerable = game.getPlayers().get(2);
 
-        addCards("Grizzly Bears", 5, ultron);
+        Player bystander = game.getPlayers().get(3);
+
+        // A neutral table: Ultron's board value sits within 0.75x-1.25x of the average opponent,
+        // so the role is the neutral AHEAD one. Since TICKET-118, CONTROL and PRESSURING both set
+        // lookForLethal, so a dominant Ultron can no longer exercise the "without" case.
+        addCards("Grizzly Bears", 2, ultron);
         Card attacker = addCard("Hill Giant", ultron);
         addCards("Forest", 4, ultron);
 
         addCards("Grizzly Bears", 6, leader);
         addCards("Forest", 3, leader);
 
-        // 8 life: triggers preferredAttackTarget (<=10) but NOT the <=5 PRESSURING escalation,
-        // so lookForLethal stays false — the scoring bonus alone should prefer the vulnerable kill.
-        vulnerable.setLife(8, null);
+        addCards("Grizzly Bears", 4, bystander);
+        addCards("Forest", 3, bystander);
+
+        // 10 life: inside the preferredAttackTarget window (<=13) but above the <=8 PRESSURING
+        // escalation (TICKET-116 thresholds for 20-life Battlebox), so lookForLethal stays false —
+        // the scoring bonus alone should prefer the vulnerable kill.
+        vulnerable.setLife(10, null);
         addCard("Runeclaw Bear", vulnerable);
 
         UltronTableThreatSummary table = tableFor(game, ultron);
         UltronTurnIntent intent = UltronTurnIntentBuilder.build(table, game.getPhaseHandler().getTurn());
 
-        Assert.assertFalse(intent.lookForLethal, "Ahead/control setup should not require all-in lethal mode");
+        Assert.assertEquals(intent.role, UltronRuntimeRole.AHEAD, "setup should be a neutral table");
+        Assert.assertFalse(intent.lookForLethal, "Neutral setup should not require all-in lethal mode");
         Assert.assertEquals(intent.preferredAttackTarget, vulnerable);
 
         int vulnerableScore = UltronCombatPolicy.scoreAttack(

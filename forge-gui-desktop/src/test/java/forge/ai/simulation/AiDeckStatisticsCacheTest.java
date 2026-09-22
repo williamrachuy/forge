@@ -111,8 +111,9 @@ public class AiDeckStatisticsCacheTest extends SimulationTest {
             last = stats;
         }
 
-        Assert.assertEquals(AiDeckStatistics.getCallCount(), callsToSimulate,
-                "every invocation should be counted");
+        // No getCallCount() == callsToSimulate check: upstream #11440 put an AiCache layer in
+        // fromPlayer() in front of fromDeck(), so repeat calls never reach the fork's counter.
+        // The property that matters -- one expensive compute, one shared instance -- is below.
         Assert.assertEquals(AiDeckStatistics.getComputeCount(), 1,
                 "TICKET-V3-207: repeated evaluation of the same real Deck object across a "
                         + "nested simulation tree must only pay the expensive full-deck reparse once");

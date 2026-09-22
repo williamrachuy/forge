@@ -36,6 +36,9 @@ public class UltronRuntimeStackHookInvalidationTest extends AITest {
         addCard("Runeclaw Bear", opponentA);
 
         SpellAbility filler = candidateFromHand("Savannah Lions", ultron);
+        // TICKET-118: an ahead/control Ultron only holds mana when it has a counterspell to hold
+        // it for; without one, an all-pruned list falls back to Forge instead of passing.
+        addCardToZone("Counterspell", ultron, ZoneType.Hand);
         UltronRuntimeController runtime = UltronRuntimeController.getOrCreate(
                 game, ultron, new AiCardMemory());
 
