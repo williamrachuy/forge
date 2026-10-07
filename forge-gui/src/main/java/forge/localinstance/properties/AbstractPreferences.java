@@ -161,5 +161,7 @@ public abstract class AbstractPreferences<T extends Enum<T> & IPreferences.IPref
             result.add(GameType.Battlebox);
         else if (gameType.equals("Battlebox Type 2"))
             result.add(GameType.Battlebox2);
+        else if (gameType.equals("Battlebox Type 3"))
+            result.add(GameType.Battlebox3);
     }
 }

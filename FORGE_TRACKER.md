@@ -2601,6 +2601,37 @@ bogus fingerprint is refused with the message and never gets a seat.
 **Consequence:** this changes the login protocol, so hosts on this build refuse `2.0.15-bb.1`
 clients — released as `2.0.15-bb.2`. Any future change to those enums (e.g. a new TrackableProperty)
 likewise needs everyone on the new release, which the gate now enforces instead of desyncing.
+
+### TICKET-B011: Battlebox Type 3 — basic-land station, no library basics [DONE 2026-10-07]
+New `GameType.Battlebox3` ("Battlebox Type 3"). Same as Type 2 except for the library:
+
+- **Land station:** identical to Type 2. Each player contributes one of each basic land type
+  (5 per player) from the deck's [BasicLandsSet] prints; [LandStation] is ignored.
+- **Shared library:** no basics are seeded, whatever `SeedBasicLands` says. All
+  `PlayerLibrarySize` (or `CommanderPlayerLibrarySize`) cards per player come from [Main], so
+  4 players x 40 = 160 cards needed from [Main]. Lobby validation uses these semantics.
+- **Starting hand:** 7 by default (`BattleboxConfig.DEFAULT_STARTING_HAND_SIZE`); the deck's
+  `BattleboxStartingHandSize` still overrides it. No logic change was needed — same path as Types 1/2.
+
+Shape follows B005 as planned: `GameRules.isBattleboxType3()` and `usesBasicLandStation()` (Types 2 and 3);
+`BattleboxConfig.fromDeck(deck, forceNoLibraryBasics)` and `getLibrarySizeProblem(deck, players,
+forceNoLibraryBasics)`. The flag is stored on the config so `getSharedLibrary` revalidates consistently.
+`getLandStation`'s `type2` parameter is renamed to `basicLandStation`. [BasicLandsSet] warnings now show for
+Types 2 and 3 even when `SeedBasicLands=false`, because the station uses those prints.
+
+Wired through `GameLobby` (three-way mutual exclusivity, validation, match construction), `VLobby`/`PlayerPanel`
+(checkbox, deck chooser), `AbstractPreferences` ("Battlebox Type 3"), `SimulateMatch` (`-f battlebox3`;
+SimStats `game.format=battlebox3` works through `GameType.valueOf`), `UltronGameContext` (reports
+`seedBasicLands=false`), and `en-US.properties` (`lblBattlebox3*`).
+Test: `forge-gui-desktop/src/test/java/forge/game/BattleboxType3Test.java` (5 tests).
+
+**Netplay:** a new `GameType` constant changes the wire fingerprint, so hosts and clients must all run the
+new release. The B009 gate enforces this.
+
+> AGENT NOTE [2026-10-07]: `lblBattlebox2Desc` contains an apostrophe ("deck's"), which `MessageFormat`
+> treats as a quote and drops. The Type 3 description avoids apostrophes; Type 2's quirk is still there.
+> The network test harness (`UnifiedNetworkHarness`, `NetworkPlayIntegrationTest`) only knows Types 1 and 2.
+
 ---
 
 # PROJECT: SIMSTATS-INFRA

@@ -43,6 +43,7 @@ public enum GameType {
     ArchenemyRumble     (DeckFormat.Archenemy, false, false, true, "lblArchenemyRumble", "lblArchenemyRumbleDesc"),
     Battlebox           (DeckFormat.Constructed, false, false, false, "lblBattlebox", "lblBattleboxDesc"),
     Battlebox2          (DeckFormat.Constructed, false, false, false, "lblBattlebox2", "lblBattlebox2Desc"),
+    Battlebox3          (DeckFormat.Constructed, false, false, false, "lblBattlebox3", "lblBattlebox3Desc"),
     MomirBasic          (DeckFormat.Constructed, false, false, false, "lblMomirBasic", "lblMomirBasicDesc", player -> {
         Deck deck = new Deck();
         CardPool mainDeck = deck.getMain();
@@ -73,7 +74,7 @@ public enum GameType {
     });
 
     private static final EnumSet<GameType> DRAFT_FORMATS = EnumSet.of(Draft, QuestDraft, AdventureEvent);
-    private static final EnumSet<GameType> BATTLEBOX_FORMATS = EnumSet.of(Battlebox, Battlebox2);
+    private static final EnumSet<GameType> BATTLEBOX_FORMATS = EnumSet.of(Battlebox, Battlebox2, Battlebox3);
 
     private final DeckFormat deckFormat;
     private final boolean isCardPoolLimited, canSideboard, addWonCardsMidGame;
@@ -136,9 +137,9 @@ public enum GameType {
     }
 
     /**
-     * @return whether this game type is one of the Battlebox formats (Type 1 or Type 2).
-     *         Both share the entire shared-zone rules engine; they differ only in how the
-     *         command-zone land station is built.
+     * @return whether this game type is one of the Battlebox formats (Type 1, 2 or 3).
+     *         They share the entire shared-zone rules engine; they differ only in how the
+     *         command-zone land station is built and whether basics are seeded into the library.
      */
     public boolean isBattlebox() {
         return BATTLEBOX_FORMATS.contains(this);

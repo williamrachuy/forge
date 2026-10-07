@@ -725,7 +725,7 @@ final class UltronGameContext {
         }
 
         Deck sourceDeck = game.getMatch().getPlayers().get(0).getDeck();
-        BattleboxConfig config = BattleboxConfig.fromDeck(sourceDeck);
+        BattleboxConfig config = BattleboxConfig.fromDeck(sourceDeck, game.getRules().isBattleboxType3());
         sb.append("\n<battlebox_context>\n");
         sb.append("This local Battlebox implementation uses one shared spell library for all players.\n");
         sb.append("The shared spell library is generated from the first registered player's Battlebox deck.\n");

@@ -91,8 +91,9 @@ public class VLobby implements ILobbyView {
     private final VariantCheckBox vntArchenemyRumble = new VariantCheckBox(GameType.ArchenemyRumble);
     private final VariantCheckBox vntBattlebox = new VariantCheckBox(GameType.Battlebox);
     private final VariantCheckBox vntBattlebox2 = new VariantCheckBox(GameType.Battlebox2);
+    private final VariantCheckBox vntBattlebox3 = new VariantCheckBox(GameType.Battlebox3);
     private final ImmutableList<VariantCheckBox> vntBoxes  =
-            ImmutableList.of(vntVanguard, vntMomirBasic, vntMoJhoSto, vntCommander, vntOathbreaker, vntBrawl, vntTinyLeaders, vntPlanechase, vntArchenemy, vntArchenemyRumble, vntBattlebox, vntBattlebox2);
+            ImmutableList.of(vntVanguard, vntMomirBasic, vntMoJhoSto, vntCommander, vntOathbreaker, vntBrawl, vntTinyLeaders, vntPlanechase, vntArchenemy, vntArchenemyRumble, vntBattlebox, vntBattlebox2, vntBattlebox3);
 
     // Player frame elements
     private final JPanel playersFrame = new JPanel(new MigLayout("insets 0, gap 0 5, wrap, hidemode 3"));
@@ -853,6 +854,7 @@ public class VLobby implements ILobbyView {
             break;
         case Battlebox:
         case Battlebox2:
+        case Battlebox3:
             if (playerWithFocus == 0) {
                 decksFrame.add(getDeckChooser(playerWithFocus), "grow, push");
             }
@@ -1209,6 +1211,7 @@ public class VLobby implements ILobbyView {
                 break;
             case Battlebox:
             case Battlebox2:
+            case Battlebox3:
                 forCommander = false;
                 deckType = DeckType.BATTLEBOX_DECK;
                 prefKey = FPref.BATTLEBOX_DECK_STATES[iSlot];
@@ -1220,7 +1223,7 @@ public class VLobby implements ILobbyView {
                 break;
         }
         return cachedDeckChoosers.computeIfAbsent(prefKey, (key) -> {
-            // Both Battlebox types share the one battlebox deck folder and chooser.
+            // All Battlebox types share the one battlebox deck folder and chooser.
             final GameType gameType = type.isBattlebox() ? GameType.Battlebox : forCommander ? type : GameType.Constructed;
             final FDeckChooser fdc = new FDeckChooser(null, ai, gameType, forCommander);
             fdc.initialize(prefKey, deckType);

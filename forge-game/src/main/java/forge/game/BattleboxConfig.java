@@ -43,12 +43,13 @@ public final class BattleboxConfig {
     private final int playerLibrarySize;
     private final int commanderPlayerLibrarySize;
     private final boolean seedBasicLands;
+    private final boolean forceNoLibraryBasics;
     private final Map<String, List<BasicLandOption>> basicLandOptions;
 
     private BattleboxConfig(final int startingLife, final int commanderStartingLife,
             final int startingHandSize, final int maxHandSize,
             final int playerLibrarySize, final int commanderPlayerLibrarySize,
-            final boolean seedBasicLands,
+            final boolean seedBasicLands, final boolean forceNoLibraryBasics,
             final Map<String, List<BasicLandOption>> basicLandOptions) {
         this.startingLife = startingLife;
         this.commanderStartingLife = commanderStartingLife;
@@ -57,10 +58,19 @@ public final class BattleboxConfig {
         this.playerLibrarySize = playerLibrarySize;
         this.commanderPlayerLibrarySize = commanderPlayerLibrarySize;
         this.seedBasicLands = seedBasicLands;
+        this.forceNoLibraryBasics = forceNoLibraryBasics;
         this.basicLandOptions = basicLandOptions;
     }
 
     public static BattleboxConfig fromDeck(final Deck deck) {
+        return fromDeck(deck, false);
+    }
+
+    /**
+     * @param forceNoLibraryBasics Battlebox Type 3: never seed basic lands into the shared library,
+     *        whatever the deck's {@code SeedBasicLands} metadata says.
+     */
+    public static BattleboxConfig fromDeck(final Deck deck, final boolean forceNoLibraryBasics) {
         final Map<String, String> metadata = deck == null ? Map.of() : deck.getMetadata();
         final int startingLife = getInt(metadata, STARTING_LIFE, DEFAULT_STARTING_LIFE);
         final int commanderStartingLife = getInt(metadata, COMMANDER_STARTING_LIFE, startingLife);
@@ -68,9 +78,10 @@ public final class BattleboxConfig {
         final int maxHandSize = getInt(metadata, MAX_HAND_SIZE, DEFAULT_MAX_HAND_SIZE);
         final int playerLibrarySize = getInt(metadata, PLAYER_LIBRARY_SIZE, DEFAULT_PLAYER_LIBRARY_SIZE);
         final int commanderPlayerLibrarySize = getInt(metadata, COMMANDER_PLAYER_LIBRARY_SIZE, playerLibrarySize);
-        final boolean seedBasicLands = getBoolean(metadata, SEED_BASIC_LANDS, DEFAULT_SEED_BASIC_LANDS);
+        final boolean seedBasicLands = !forceNoLibraryBasics
+                && getBoolean(metadata, SEED_BASIC_LANDS, DEFAULT_SEED_BASIC_LANDS);
         return new BattleboxConfig(startingLife, commanderStartingLife, startingHandSize, maxHandSize,
-                playerLibrarySize, commanderPlayerLibrarySize, seedBasicLands,
+                playerLibrarySize, commanderPlayerLibrarySize, seedBasicLands, forceNoLibraryBasics,
                 parseBasicLandOptions(deck).options);
     }
 
@@ -110,7 +121,7 @@ public final class BattleboxConfig {
         if (deck == null) {
             return null;
         }
-        final String librarySizeProblem = getLibrarySizeProblem(deck, playerCount);
+        final String librarySizeProblem = getLibrarySizeProblem(deck, playerCount, forceNoLibraryBasics);
         if (librarySizeProblem != null) {
             throw new IllegalArgumentException(librarySizeProblem);
         }
@@ -144,12 +155,13 @@ public final class BattleboxConfig {
      * <p>Type 1 (the original Battlebox) starts from the deck's [LandStation] section and tops it
      * up with one extra basic-land set per player beyond the second.
      *
-     * <p>Type 2 ignores [LandStation] entirely: the station is exactly one of each basic land type
-     * per player, using the prints chosen by the deck's [BasicLandsSet] section — the same
-     * selection the seeded library basics use. Two players get 10 lands, three get 15, and so on.
+     * <p>Types 2 and 3 ({@code basicLandStation}) ignore [LandStation] entirely: the station is
+     * exactly one of each basic land type per player, using the prints chosen by the deck's
+     * [BasicLandsSet] section — the same selection the seeded library basics use. Two players
+     * get 10 lands, three get 15, and so on.
      */
-    public CardPool getLandStation(final Deck deck, final int playerCount, final boolean type2) {
-        if (type2) {
+    public CardPool getLandStation(final Deck deck, final int playerCount, final boolean basicLandStation) {
+        if (basicLandStation) {
             final CardPool station = new CardPool();
             for (int i = 0; i < Math.max(1, playerCount); i++) {
                 addBasicLandSet(station);
@@ -233,13 +245,30 @@ public final class BattleboxConfig {
     }
 
     public static List<String> getBasicLandsSetWarnings(final Deck deck) {
-        if (deck == null || !getBoolean(deck.getMetadata(), SEED_BASIC_LANDS, DEFAULT_SEED_BASIC_LANDS)) {
+        return getBasicLandsSetWarnings(deck, false);
+    }
+
+    /**
+     * @param basicLandStation Battlebox Types 2 and 3 build the land station from the
+     *        [BasicLandsSet] prints, so its warnings apply even when {@code SeedBasicLands} is false.
+     */
+    public static List<String> getBasicLandsSetWarnings(final Deck deck, final boolean basicLandStation) {
+        if (deck == null || (!basicLandStation
+                && !getBoolean(deck.getMetadata(), SEED_BASIC_LANDS, DEFAULT_SEED_BASIC_LANDS))) {
             return Collections.emptyList();
         }
         return parseBasicLandOptions(deck).warnings;
     }
 
     public static String getLibrarySizeProblem(final Deck deck, final int playerCount) {
+        return getLibrarySizeProblem(deck, playerCount, false);
+    }
+
+    /**
+     * @param forceNoLibraryBasics Battlebox Type 3: no basics are seeded, so every one of the
+     *        {@code PlayerLibrarySize} cards per player comes from [Main].
+     */
+    public static String getLibrarySizeProblem(final Deck deck, final int playerCount, final boolean forceNoLibraryBasics) {
         if (deck == null) {
             return null;
         }
@@ -257,7 +286,7 @@ public final class BattleboxConfig {
             return seedBasicLandsProblem;
         }
 
-        final BattleboxConfig config = fromDeck(deck);
+        final BattleboxConfig config = fromDeck(deck, forceNoLibraryBasics);
         if (config.seedBasicLands && config.playerLibrarySize < MagicColor.Constant.BASIC_LANDS.size()) {
             return PLAYER_LIBRARY_SIZE + " must be at least " + MagicColor.Constant.BASIC_LANDS.size()
                     + " when " + SEED_BASIC_LANDS + " is true.";
