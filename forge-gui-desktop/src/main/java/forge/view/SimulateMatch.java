@@ -421,15 +421,15 @@ public class SimulateMatch {
                 : new RegisteredPlayer(deck);
 
         if (type.isBattlebox()) {
-            final BattleboxConfig config = BattleboxConfig.fromDeck(deck);
+            final BattleboxConfig config = BattleboxConfig.fromDeck(deck, type == GameType.Battlebox3);
             final int startingLife = commandersEnabled
                     ? config.getCommanderStartingLife()
                     : config.getStartingLife();
             rp.setStartingLife(startingLife);
             rp.setStartingHand(config.getStartingHandSize());
             rp.setMaxHand(config.getMaxHandSize());
-            // Type 2 builds its station from [BasicLandsSet] at game setup, not from the deck.
-            if (type != GameType.Battlebox2 && BattleboxConfig.getLandStation(deck) != null) {
+            // Types 2 and 3 build their station from [BasicLandsSet] at game setup, not from the deck.
+            if (type != GameType.Battlebox2 && type != GameType.Battlebox3 && BattleboxConfig.getLandStation(deck) != null) {
                 rp.setBattleboxLandStation(BattleboxConfig.getLandStation(deck).toFlatList());
             }
         }

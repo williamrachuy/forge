@@ -249,7 +249,8 @@ public class Match {
             player.setSharedLibraryZone(sharedLibrary);
         }
         final RegisteredPlayer battleboxSource = playersConditions.get(0);
-        final BattleboxConfig config = BattleboxConfig.fromDeck(battleboxSource.getDeck());
+        final BattleboxConfig config = BattleboxConfig.fromDeck(battleboxSource.getDeck(),
+                game != null && game.getRules().isBattleboxType3());
         final boolean commandersEnabled = game != null && game.getRules().isBattleboxCommandersEnabled();
         sharedLibrary.setCards(createCardsForZone(host, config.getSharedLibrary(battleboxSource.getDeck(), players.size(), commandersEnabled),
                 battleboxSource.useRandomFoil()));
@@ -277,10 +278,10 @@ public class Match {
 
         final BattleboxConfig config = BattleboxConfig.fromDeck(battleboxDeck);
 
-        // Add Land Station. Type 2 ignores [LandStation] and stocks the station with one of
-        // each basic land type per player, drawn from the deck's [BasicLandsSet] prints.
-        final boolean type2 = game != null && game.getRules().isBattleboxType2();
-        final CardPool landStation = config.getLandStation(battleboxDeck, players.size(), type2);
+        // Add Land Station. Types 2 and 3 ignore [LandStation] and stock the station with one
+        // of each basic land type per player, drawn from the deck's [BasicLandsSet] prints.
+        final boolean basicLandStation = game != null && game.getRules().usesBasicLandStation();
+        final CardPool landStation = config.getLandStation(battleboxDeck, players.size(), basicLandStation);
         game.traceState("LandStation pool: " + (landStation == null ? "null" : landStation.countAll() + " cards"));
         if (landStation != null) {
             for (final PaperCard pc : landStation.toFlatList()) {

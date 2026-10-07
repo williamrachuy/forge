@@ -60,7 +60,10 @@ Full steps are in `README.txt` inside the zip.
 
 ### 🧑‍💻 Against the AI
 1. Put a Battlebox deck in your Forge decks folder under `battlebox/` (`%APPDATA%\Forge\decks\battlebox\` on Windows, `~/.forge/decks/battlebox/` on Linux). The release zip ships ready-made decks in `battlebox-decks/`.
-2. In **Constructed**, tick **Battlebox** or **Battlebox Type 2** under variants.
+2. In **Constructed**, tick **Battlebox**, **Battlebox Type 2** or **Battlebox Type 3** under variants.
+   - **Type 1:** land station from the deck's `[LandStation]`, plus one basic set per player beyond the second.
+   - **Type 2:** land station is one of each basic per player (from `[BasicLandsSet]`); `[LandStation]` is ignored.
+   - **Type 3:** Type 2's basic-land station, but **no** basic lands are seeded into the shared library (`SeedBasicLands` is ignored), so every library card comes from `[Main]`. Opening hand is 7 unless `BattleboxStartingHandSize` says otherwise.
 3. Pick the Battlebox deck for the first player — the other seats draw from the same shared library, so they need no deck.
 4. Choose your options and start.
 
@@ -78,7 +81,7 @@ A Battlebox deck is a normal `.dck` file with extra sections and metadata:
 | **`[metadata]`**   | Format settings (see below)                                    |
 | **`[Main]`**       | The box — the shared library is sampled from here each game    |
 | **`[LandStation]`**| Type 1 land station (lands only)                               |
-| **`[BasicLandsSet]`** | Basic land prints used for seeding and the Type 2 station   |
+| **`[BasicLandsSet]`** | Basic land prints used for seeding and the Type 2/3 station |
 | **`[Commanders]`** | Commander pool for the *Play with Commanders* option           |
 | **`[Planechase]`** | Planar deck for the *Play with Planechase* option              |
 
@@ -90,7 +93,7 @@ A Battlebox deck is a normal `.dck` file with extra sections and metadata:
 | `BattleboxMaxHandSize`       | 7       | Maximum hand size                                         |
 | `PlayerLibrarySize`          | 40      | Library cards contributed per player                      |
 | `CommanderPlayerLibrarySize` | = size  | Per-player library size when commanders are enabled       |
-| `SeedBasicLands`             | true    | Add one of each basic per player to the shared library    |
+| `SeedBasicLands`             | true    | Add one of each basic per player to the shared library (ignored by Type 3) |
 
 `= life` / `= size`: falls back to `BattleboxStartingLife` / `PlayerLibrarySize`.
 

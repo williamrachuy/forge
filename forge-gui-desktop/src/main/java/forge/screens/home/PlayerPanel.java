@@ -619,7 +619,8 @@ public class PlayerPanel extends FPanel {
 
     private void addHandlersDeckSelector() {
         deckBtn.setCommand((Runnable) () -> {
-            final GameType mode = lobby.hasVariant(GameType.Battlebox2) ? GameType.Battlebox2
+            final GameType mode = lobby.hasVariant(GameType.Battlebox3) ? GameType.Battlebox3
+                    : lobby.hasVariant(GameType.Battlebox2) ? GameType.Battlebox2
                     : lobby.hasVariant(GameType.Battlebox) ? GameType.Battlebox : GameType.Constructed;
             lobby.setCurrentGameMode(mode);
             deckBtn.requestFocusInWindow();

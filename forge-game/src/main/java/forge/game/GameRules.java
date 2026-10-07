@@ -148,14 +148,15 @@ public class GameRules {
     }
 
     /**
-     * @return whether this game is a Battlebox game of either type. Battlebox may arrive either
+     * @return whether this game is a Battlebox game of any type. Battlebox may arrive either
      *         as the base game type (simulator paths) or as an applied variant (lobby path),
      *         so both are checked.
      */
     public boolean isBattlebox() {
         return gameType.isBattlebox()
                 || appliedVariants.contains(GameType.Battlebox)
-                || appliedVariants.contains(GameType.Battlebox2);
+                || appliedVariants.contains(GameType.Battlebox2)
+                || appliedVariants.contains(GameType.Battlebox3);
     }
 
     /**
@@ -165,6 +166,22 @@ public class GameRules {
      */
     public boolean isBattleboxType2() {
         return gameType == GameType.Battlebox2 || appliedVariants.contains(GameType.Battlebox2);
+    }
+
+    /**
+     * @return whether this game is Battlebox Type 3: like Type 2 (basic-land station), but no
+     *         basic lands are seeded into the shared library.
+     */
+    public boolean isBattleboxType3() {
+        return gameType == GameType.Battlebox3 || appliedVariants.contains(GameType.Battlebox3);
+    }
+
+    /**
+     * @return whether the land station is built from the deck's [BasicLandsSet] prints (one of
+     *         each basic per player) rather than its [LandStation] section: Types 2 and 3.
+     */
+    public boolean usesBasicLandStation() {
+        return isBattleboxType2() || isBattleboxType3();
     }
 
     public boolean isBattleboxMonarchEnabled() {
