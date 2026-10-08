@@ -2660,6 +2660,25 @@ its Battlebox deck in memory (no `BattleBox.dck` needed). Another seat flashes b
 (fails without the fix), a full cast/pay/resolve ends with the card exiled and the target under the
 caster, the owner still can, and sorcery timing still blocks it on another player's turn.
 
+### TICKET-B013: Ghost Vacuum asked the wrong player to order the returning creatures [DONE 2026-10-08]
+Report: an AI opponent activated Ghost Vacuum's {6} ability, and the human (seat 0) was asked to order
+the creatures entering the battlefield.
+
+**Root cause (upstream code, not Battlebox-specific).** `ChangeZoneAllEffect` orders the moving cards via
+`GameActionUtil.orderCardsByTheirOwners`. Under `GainControl`, the decider is the player gaining control,
+resolved with `AbilityUtils.getDefinedPlayers(host, sa.getParam("GainControl"), sa).get(0)`. 287 scripts
+write `GainControl$ True`, and "True" is not a defined-player keyword, so `getDefinedPlayers` falls through
+to every player in seat order and `.get(0)` is always seat 0. `ChangeZoneEffect` already special-cases
+"True" as the activator; this path did not. Ghost Vacuum hits it even with a single creature, because its
+`StaticEffect$` adds a helper card to the activator's ordering list, which forces the ordering prompt.
+
+**Fix.** `orderCardsByTheirOwners` treats `GainControl$ True` as the activating player, the same way
+`ChangeZoneEffect` does. Any other value still goes through `getDefinedPlayers`.
+
+Test: `forge-gui-desktop/src/test/java/forge/game/GainControlOrderingDeciderTest.java`. Seat 2 activates
+Ghost Vacuum over creatures owned by seats 0 and 1. Only seat 2 may be asked to order them, and they must
+enter under seat 2's control with a flying counter. Fails without the fix (seat 0 / p1 is asked).
+
 ---
 
 # PROJECT: SIMSTATS-INFRA
