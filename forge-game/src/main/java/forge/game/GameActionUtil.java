@@ -919,7 +919,11 @@ public final class GameActionUtil {
                 Player decider = dest == ZoneType.Battlefield ? c.getController() : c.getOwner();
                 if (sa != null && sa.hasParam("GainControl")) {
                     // TODO this doesn't account for changes from e.g. Gather Specimens yet
-                    decider = AbilityUtils.getDefinedPlayers(sa.getHostCard(), sa.getParam("GainControl"), sa).get(0);
+                    // "True" means the activator (as in ChangeZoneEffect); it is not a defined player, and
+                    // getDefinedPlayers would fall through to every player, making seat 0 the decider
+                    final String g = sa.getParam("GainControl");
+                    decider = g.equals("True") ? sa.getActivatingPlayer() :
+                            AbilityUtils.getDefinedPlayers(sa.getHostCard(), g, sa).get(0);
                 }
                 if (decider.equals(p)) {
                     subList.add(c);
