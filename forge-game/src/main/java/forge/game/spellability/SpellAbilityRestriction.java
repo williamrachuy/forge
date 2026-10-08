@@ -35,6 +35,7 @@ import forge.game.staticability.StaticAbilityAdditionalActivations;
 import forge.game.staticability.StaticAbilityCastWithFlash;
 import forge.game.staticability.StaticAbilityNumLoyaltyAct;
 import forge.game.zone.CostPaymentStack;
+import forge.game.zone.PlayerZone;
 import forge.game.zone.Zone;
 import forge.game.zone.ZoneType;
 import forge.util.Expressions;
@@ -274,10 +275,12 @@ public class SpellAbilityRestriction extends SpellAbilityVariables {
     // player, so the owner-only zone rules above treat their cards as the activator's own.
     // Upstream #11398 moved this owner check here from PlayerControllerHuman, which is where
     // the fork's exemption used to live.
+    // Checked by last known zone: when the activator isn't the card's controller (e.g. flashing
+    // back a spell an opponent cast), Spell.canPlayFromHost passes an LKI copy, which has no
+    // current zone, so the Player.isBattleboxShared*Card(c) helpers never match it.
     private static boolean isBattleboxSharedCard(final Player activator, final Card c) {
-        return activator != null && (activator.isBattleboxSharedGraveyardCard(c)
-                || activator.isBattleboxSharedLandStationCard(c)
-                || activator.isBattleboxSharedCommandCard(c));
+        return activator != null && c.getLastKnownZone() instanceof PlayerZone zone
+                && (activator.isSharedGraveyardZone(zone) || activator.isSharedCommandZone(zone));
     }
 
     /**
