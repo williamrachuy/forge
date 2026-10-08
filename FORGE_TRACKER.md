@@ -2632,6 +2632,34 @@ new release. The B009 gate enforces this.
 > treats as a quote and drops. The Type 3 description avoids apostrophes; Type 2's quirk is still there.
 > The network test harness (`UnifiedNetworkHarness`, `NetworkPlayIntegrationTest`) only knows Types 1 and 2.
 
+### TICKET-B012: Flashback from the shared graveyard only worked for the card's owner [DONE 2026-10-08]
+Report: an opponent cast Sevinne's Reclamation; on the reporter's own turn, with priority, they
+could not flash it back from the graveyard.
+
+**Root cause.** `SpellAbilityRestriction.checkZoneRestrictions` enforces "a spell cast from a
+graveyard must be cast from *your* graveyard" (activator must be the owner) and exempts Battlebox
+shared zones through `isBattleboxSharedCard(activator, c)`. That helper used
+`Player.isBattleboxShared*Card(c)`, which compare `c.getZone()`. But when the activator is not the
+card's controller, `Spell.canPlayFromHost` hands the restriction check an **LKI copy** (so it can set
+the activator as controller), and LKI copies carry only `getLastKnownZone()` — `getZone()` is null. The
+exemption never matched, so only the owner (whose check uses the real card) could cast it. The
+exemption used to live in `PlayerControllerHuman` until upstream #11398 moved the owner check into
+`SpellAbilityRestriction`, downstream of the LKI copy — likely when this broke (not verified; the
+fork's pre-squash history is gone).
+
+**Fix.** `isBattleboxSharedCard` now checks `c.getLastKnownZone()` against the shared graveyard /
+shared command zone (`isSharedGraveyardZone` / `isSharedCommandZone`). Same zones as before
+(station + commander pool = the whole shared command zone); works for real cards and LKI copies.
+Applies to every Battlebox type and every cast-from-graveyard spell owned by someone else
+(flashback, jump-start, retrace, escape, aftermath, disturb), for humans and AI alike. Activated
+graveyard abilities (unearth etc.) were never affected — they go through
+`checkActivatorRestrictions`, which already passed because the LKI copy's controller is the activator.
+
+Test: `forge-gui-desktop/src/test/java/forge/game/BattleboxSharedGraveyardFlashbackTest.java` — builds
+its Battlebox deck in memory (no `BattleBox.dck` needed). Another seat flashes back Sevinne's
+(fails without the fix), a full cast/pay/resolve ends with the card exiled and the target under the
+caster, the owner still can, and sorcery timing still blocks it on another player's turn.
+
 ---
 
 # PROJECT: SIMSTATS-INFRA
